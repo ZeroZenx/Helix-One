@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import LiveMarketState from '../src/components/LiveMarketState';
+import LivePerformanceChart from '../src/components/LivePerformanceChart';
 
 export default function Home() {
   const [models, setModels] = useState<any[]>([
@@ -150,12 +151,16 @@ export default function Home() {
 
   // Update model portfolios with real-time market data
   const updateModelPortfolios = () => {
+    console.log('📊 Updating model portfolios...', new Date().toLocaleTimeString());
+    
     setModels(prevModels => 
       prevModels.map(model => {
         // Simulate real-time portfolio changes based on market movements
-        const marketVolatility = Math.random() * 0.02 - 0.01; // -1% to +1% random change
+        const marketVolatility = Math.random() * 0.04 - 0.02; // -2% to +2% for more visible changes
         const newBalance = model.currentBalance * (1 + marketVolatility);
         const newROI = ((newBalance - 10000) / 10000) * 100;
+        
+        console.log(`  ${model.name}: $${model.currentBalance.toFixed(2)} → $${newBalance.toFixed(2)}`);
         
         // Update active positions with current market prices
         const updatedActivePositions = (model.activePositions || []).map((asset: string) => {
@@ -632,7 +637,13 @@ ${i + 1}. **${pos.asset}**: $${pos.currentPrice.toLocaleString()} (${pos.change 
         {/* Total Account Value Display - Show only on LEADERBOARD tab */}
         <div className={`mb-8 ${activeTab !== 'LEADERBOARD' ? 'hidden' : ''}`}>
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-2xl font-bold">Total Account Value</h2>
+            <div className="flex items-center gap-3">
+              <h2 className="text-2xl font-bold">Total Account Value</h2>
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                <span className="text-xs text-green-400 font-bold">UPDATING</span>
+              </div>
+            </div>
             <div className="flex items-center gap-4">
               <div className="flex bg-gray-800 rounded-md">
                 <button
@@ -1231,12 +1242,7 @@ ${i + 1}. **${pos.asset}**: $${pos.currentPrice.toLocaleString()} (${pos.change 
         {activeTab === 'LIVE' && subTab !== 'MODEL CHAT >' && (
           <div className="space-y-8">
             {/* Live Performance Chart */}
-            <div className="bg-gray-900 rounded-lg p-6">
-              <h3 className="text-lg font-bold mb-4">Live Performance</h3>
-              <div className="h-64 bg-black rounded border border-gray-700 flex items-center justify-center">
-                <div className="text-gray-500">Loading Chart Data...</div>
-              </div>
-            </div>
+            <LivePerformanceChart models={models} />
 
             {/* Live Stats Grid */}
             <div className="grid grid-cols-4 gap-4">
