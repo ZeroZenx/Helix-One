@@ -22,8 +22,8 @@ export const LiveMarketState: React.FC = () => {
 
     fetchData();
     
-    // Update every 30 seconds
-    const interval = setInterval(fetchData, 30000);
+    // Update every 60 seconds (CoinGecko rate limit)
+    const interval = setInterval(fetchData, 60000);
     return () => clearInterval(interval);
   }, []);
 
@@ -83,8 +83,14 @@ export const LiveMarketState: React.FC = () => {
     <div className="bg-gray-900 rounded-lg p-6">
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-2xl font-bold text-white">CURRENT MARKET STATE - ALL COINS</h2>
-        <div className="text-sm text-gray-400">
-          Last updated: {lastUpdate.toLocaleTimeString()}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+            <span className="text-xs text-green-400 font-bold">LIVE</span>
+          </div>
+          <div className="text-sm text-gray-400">
+            Last updated: {lastUpdate.toLocaleTimeString()}
+          </div>
         </div>
       </div>
 

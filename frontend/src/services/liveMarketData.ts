@@ -26,7 +26,7 @@ class LiveMarketDataService {
   private baseUrl = 'https://api.coingecko.com/api/v3';
   private cache: Map<string, LiveMarketData> = new Map();
   private lastUpdate: number = 0;
-  private updateInterval = 30000; // 30 seconds
+  private updateInterval = 60000; // 60 seconds (CoinGecko free tier limit)
 
   // Calculate technical indicators (simplified)
   private calculateRSI(prices: number[]): number {
@@ -112,15 +112,24 @@ class LiveMarketDataService {
     try {
       const now = Date.now();
       if (now - this.lastUpdate < this.updateInterval && this.cache.size > 0) {
+        console.log('Using cached market data');
         return Array.from(this.cache.values());
       }
 
+      console.log('Fetching fresh market data from CoinGecko...');
+      
       // Fetch detailed market data
       const response = await fetch(
         `${this.baseUrl}/coins/markets?vs_currency=usd&ids=bitcoin,ethereum,solana,ripple,dogecoin,binancecoin&order=market_cap_desc&per_page=6&page=1&sparkline=true&price_change_percentage=24h`
       );
       
+      if (!response.ok) {
+        console.error('CoinGecko API error:', response.status, response.statusText);
+        return this.cache.size > 0 ? Array.from(this.cache.values()) : [];
+      }
+      
       const data = await response.json();
+      console.log('Fetched data for', data.length, 'coins');
       
       // Fetch additional data for each coin
       const detailedData = await Promise.all(

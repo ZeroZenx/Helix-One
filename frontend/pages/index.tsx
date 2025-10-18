@@ -57,77 +57,91 @@ export default function Home() {
 
   const fetchRealCryptoPrices = async () => {
     try {
+      console.log('🔄 Fetching live crypto prices...');
+      
       // Using CoinGecko API (free, no API key required)
       const coins = 'bitcoin,ethereum,solana,ripple,dogecoin,binancecoin';
-      const response = await fetch(
-        `https://api.coingecko.com/api/v3/simple/price?ids=${coins}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_last_updated_at=true`
-      );
-      const data = await response.json();
       
-      // Also fetch market data for high/low
+      // Fetch comprehensive market data (includes high/low/volume)
       const marketResponse = await fetch(
-        `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${coins}&order=market_cap_desc`
+        `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${coins}&order=market_cap_desc&sparkline=false&price_change_percentage=24h`
       );
-      const marketData = await response.json();
       
-      console.log('Real crypto data fetched:', data);
+      if (!marketResponse.ok) {
+        console.error('❌ CoinGecko API error:', marketResponse.status);
+        return;
+      }
+      
+      const marketData = await marketResponse.json();
+      console.log('✅ Live data fetched for', marketData.length, 'coins at', new Date().toLocaleTimeString());
+      
+      // Map the market data to our format
+      const btcData = marketData.find((c: any) => c.id === 'bitcoin');
+      const ethData = marketData.find((c: any) => c.id === 'ethereum');
+      const solData = marketData.find((c: any) => c.id === 'solana');
+      const xrpData = marketData.find((c: any) => c.id === 'ripple');
+      const dogeData = marketData.find((c: any) => c.id === 'dogecoin');
+      const bnbData = marketData.find((c: any) => c.id === 'binancecoin');
       
       setCryptoPrices([
         {
           symbol: 'BTC',
           name: 'Bitcoin',
-          price: data.bitcoin?.usd || 0,
-          change: data.bitcoin?.usd_24h_change || 0,
-          volume: (data.bitcoin?.usd_24h_vol || 0) / 1000000000,
-          high: data.bitcoin?.usd * 1.02 || 0, // Approximate high
-          low: data.bitcoin?.usd * 0.98 || 0    // Approximate low
+          price: btcData?.current_price || 0,
+          change: btcData?.price_change_percentage_24h || 0,
+          volume: (btcData?.total_volume || 0) / 1000000000,
+          high: btcData?.high_24h || 0,
+          low: btcData?.low_24h || 0
         },
         {
           symbol: 'ETH',
           name: 'Ethereum',
-          price: data.ethereum?.usd || 0,
-          change: data.ethereum?.usd_24h_change || 0,
-          volume: (data.ethereum?.usd_24h_vol || 0) / 1000000000,
-          high: data.ethereum?.usd * 1.02 || 0,
-          low: data.ethereum?.usd * 0.98 || 0
+          price: ethData?.current_price || 0,
+          change: ethData?.price_change_percentage_24h || 0,
+          volume: (ethData?.total_volume || 0) / 1000000000,
+          high: ethData?.high_24h || 0,
+          low: ethData?.low_24h || 0
         },
         {
           symbol: 'SOL',
           name: 'Solana',
-          price: data.solana?.usd || 0,
-          change: data.solana?.usd_24h_change || 0,
-          volume: (data.solana?.usd_24h_vol || 0) / 1000000000,
-          high: data.solana?.usd * 1.02 || 0,
-          low: data.solana?.usd * 0.98 || 0
+          price: solData?.current_price || 0,
+          change: solData?.price_change_percentage_24h || 0,
+          volume: (solData?.total_volume || 0) / 1000000000,
+          high: solData?.high_24h || 0,
+          low: solData?.low_24h || 0
         },
         {
           symbol: 'XRP',
           name: 'Ripple',
-          price: data.ripple?.usd || 0,
-          change: data.ripple?.usd_24h_change || 0,
-          volume: (data.ripple?.usd_24h_vol || 0) / 1000000000,
-          high: data.ripple?.usd * 1.02 || 0,
-          low: data.ripple?.usd * 0.98 || 0
+          price: xrpData?.current_price || 0,
+          change: xrpData?.price_change_percentage_24h || 0,
+          volume: (xrpData?.total_volume || 0) / 1000000000,
+          high: xrpData?.high_24h || 0,
+          low: xrpData?.low_24h || 0
         },
         {
           symbol: 'DOGE',
           name: 'Dogecoin',
-          price: data.dogecoin?.usd || 0,
-          change: data.dogecoin?.usd_24h_change || 0,
-          volume: (data.dogecoin?.usd_24h_vol || 0) / 1000000000,
-          high: data.dogecoin?.usd * 1.02 || 0,
-          low: data.dogecoin?.usd * 0.98 || 0
+          price: dogeData?.current_price || 0,
+          change: dogeData?.price_change_percentage_24h || 0,
+          volume: (dogeData?.total_volume || 0) / 1000000000,
+          high: dogeData?.high_24h || 0,
+          low: dogeData?.low_24h || 0
         },
         {
           symbol: 'BNB',
           name: 'Binance Coin',
-          price: data.binancecoin?.usd || 0,
-          change: data.binancecoin?.usd_24h_change || 0,
-          volume: (data.binancecoin?.usd_24h_vol || 0) / 1000000000,
-          high: data.binancecoin?.usd * 1.02 || 0,
-          low: data.binancecoin?.usd * 0.98 || 0
+          price: bnbData?.current_price || 0,
+          change: bnbData?.price_change_percentage_24h || 0,
+          volume: (bnbData?.total_volume || 0) / 1000000000,
+          high: bnbData?.high_24h || 0,
+          low: bnbData?.low_24h || 0
         }
       ]);
+      
+      setConnected(true); // Set to LIVE after successful API fetch
+      console.log('💹 Crypto prices updated successfully!');
     } catch (error) {
       console.error('Error fetching real crypto prices:', error);
       // Keep existing prices on error
@@ -176,7 +190,7 @@ export default function Home() {
       { id: 6, name: 'Qwen 3 Max', currentBalance: 9437.07, roi: -5.63, drawdown: -6.2, winRate: 58.2, avgLeverage: 3.1, totalTrades: 89, status: 'active', strategy: 'momentum', icon: '🟣', color: '#A855F7' },
       { id: 7, name: 'BTC BUY&HOLD', currentBalance: 9992.41, roi: -0.08, drawdown: -0.5, winRate: 100.0, avgLeverage: 1.0, totalTrades: 1, status: 'active', strategy: 'buy_hold', icon: '₿', color: '#F59E0B' }
     ]);
-    setConnected(false);
+    setConnected(true);
     setLoading(false);
   };
 
