@@ -1,0 +1,27 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Model {
+  id             Int      @id @default(autoincrement())
+  name           String   @unique
+  capital        Float    @default(10000)
+  currentBalance Float    @default(10000)
+  roi            Float    @default(0)
+  drawdown       Float    @default(0)
+  winRate        Float    @default(0)
+  avgLeverage    Float    @default(2)
+  totalTrades    Int      @default(0)
+  status         String   @default("active")
+  strategy       String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  
+  @@index([roi])
+}
+
