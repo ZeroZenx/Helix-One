@@ -610,13 +610,13 @@ ${i + 1}. **${pos.asset}**: $${pos.currentPrice.toLocaleString()} (${pos.change 
 
       {/* Main Content */}
       <main className="container mx-auto px-6 py-8">
-        {/* Live Market State */}
-        <div className="mb-8">
+        {/* Live Market State - Show only on LIVE tab */}
+        <div className={`mb-8 ${activeTab !== 'LIVE' ? 'hidden' : ''}`}>
           <LiveMarketState />
         </div>
 
-        {/* Total Account Value Display */}
-        <div className="mb-8">
+        {/* Total Account Value Display - Show only on LEADERBOARD tab */}
+        <div className={`mb-8 ${activeTab !== 'LEADERBOARD' ? 'hidden' : ''}`}>
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-2xl font-bold">Total Account Value</h2>
             <div className="flex items-center gap-4">
@@ -654,7 +654,7 @@ ${i + 1}. **${pos.asset}**: $${pos.currentPrice.toLocaleString()} (${pos.change 
         </div>
 
         {/* Sub Navigation */}
-        <div className="flex gap-6 text-sm mb-8">
+        <div className={`flex gap-6 text-sm mb-8 ${activeTab !== 'LEADERBOARD' ? 'hidden' : ''}`}>
           {['LIVE TRADES >', 'MODEL CHAT >', 'POSITIONS >', 'README.TXT >'].map(tab => (
             <button
               key={tab}
