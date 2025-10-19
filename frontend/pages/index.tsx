@@ -1267,37 +1267,49 @@ ${i + 1}. **${pos.asset}**: $${pos.currentPrice.toLocaleString()} (${pos.change 
             {/* Live Feed */}
             <div className="grid grid-cols-2 gap-6">
               <div className="bg-gray-900 rounded-lg p-4">
-                <h4 className="font-bold mb-3">Recent Trades</h4>
+                <h4 className="font-bold mb-3 flex items-center gap-2">
+                  Recent Activity
+                  <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></div>
+                </h4>
                 <div className="space-y-2 text-sm">
-                  <div className="flex justify-between">
-                    <span>DEEPSEEK CHAT V3.1</span>
-                    <span className="text-green-400">+$245.67</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Claude 4.5 Sonnet</span>
-                    <span className="text-red-400">-$123.45</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>GPT 5</span>
-                    <span className="text-green-400">+$567.89</span>
-                  </div>
+                  {models.slice(0, 3).map((model) => {
+                    const pnl = model.currentBalance - 10000;
+                    return (
+                      <div key={model.id} className="flex justify-between items-center">
+                        <span className="flex items-center gap-1">
+                          {model.icon} {model.name}
+                        </span>
+                        <span className={pnl >= 0 ? 'text-green-400 font-mono' : 'text-red-400 font-mono'}>
+                          {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
               <div className="bg-gray-900 rounded-lg p-4">
-                <h4 className="font-bold mb-3">Open Positions</h4>
+                <h4 className="font-bold mb-3 flex items-center gap-2">
+                  Active Positions
+                  <div className="w-1.5 h-1.5 bg-cyan-500 rounded-full animate-pulse"></div>
+                </h4>
                 <div className="space-y-2 text-sm">
-                  <div className="flex justify-between">
-                    <span>BTC Long</span>
-                    <span className="text-green-400">+2.4%</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>ETH Short</span>
-                    <span className="text-red-400">-1.2%</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>SOL Long</span>
-                    <span className="text-green-400">+5.7%</span>
-                  </div>
+                  {models.slice(0, 3).map((model) => {
+                    const positions = model.activePositions || [];
+                    if (positions.length === 0) return null;
+                    const position = positions[0];
+                    const cryptoData = cryptoPrices.find(c => c.symbol === position);
+                    return (
+                      <div key={model.id} className="flex justify-between items-center">
+                        <span className="font-mono">{position}</span>
+                        <span className={cryptoData && cryptoData.change >= 0 ? 'text-green-400 font-mono' : 'text-red-400 font-mono'}>
+                          {cryptoData ? `${cryptoData.change >= 0 ? '+' : ''}${cryptoData.change.toFixed(2)}%` : '...'}
+                        </span>
+                      </div>
+                    );
+                  }).filter(Boolean)}
+                  {models.every(m => (m.activePositions || []).length === 0) && (
+                    <div className="text-gray-500 text-xs">No active positions</div>
+                  )}
                 </div>
               </div>
             </div>
