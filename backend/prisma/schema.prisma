@@ -8,20 +8,80 @@ datasource db {
 }
 
 model Model {
-  id             Int      @id @default(autoincrement())
-  name           String   @unique
-  capital        Float    @default(10000)
-  currentBalance Float    @default(10000)
-  roi            Float    @default(0)
-  drawdown       Float    @default(0)
-  winRate        Float    @default(0)
-  avgLeverage    Float    @default(2)
-  totalTrades    Int      @default(0)
-  status         String   @default("active")
+  id             Int        @id @default(autoincrement())
+  name           String     @unique
+  icon           String     @default("🤖")
+  color          String     @default("#3B82F6")
+  capital        Float      @default(10000)
+  currentBalance Float      @default(10000)
+  roi            Float      @default(0)
+  drawdown       Float      @default(0)
+  winRate        Float      @default(0)
+  avgLeverage    Float      @default(2)
+  totalTrades    Int        @default(0)
+  status         String     @default("active")
   strategy       String
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  fees           Float      @default(0)
+  biggestWin     Float      @default(0)
+  biggestLoss    Float      @default(0)
+  sharpe         Float      @default(0)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  
+  trades         Trade[]
+  positions      Position[]
   
   @@index([roi])
+}
+
+model Trade {
+  id          Int      @id @default(autoincrement())
+  modelId     Int
+  model       Model    @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  symbol      String
+  side        String   // "LONG" or "SHORT"
+  entryPrice  Float
+  exitPrice   Float?
+  quantity    Float
+  leverage    Float
+  pnl         Float?
+  fees        Float    @default(0)
+  status      String   @default("open") // "open", "closed", "liquidated"
+  openedAt    DateTime @default(now())
+  closedAt    DateTime?
+  createdAt   DateTime @default(now())
+  
+  @@index([modelId])
+  @@index([status])
+  @@index([openedAt])
+}
+
+model Position {
+  id            Int      @id @default(autoincrement())
+  modelId       Int
+  model         Model    @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  symbol        String
+  side          String   // "LONG" or "SHORT"
+  entryPrice    Float
+  currentPrice  Float
+  quantity      Float
+  leverage      Float
+  unrealizedPnl Float    @default(0)
+  status        String   @default("open")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  @@index([modelId])
+  @@index([status])
+}
+
+model PerformanceSnapshot {
+  id             Int      @id @default(autoincrement())
+  modelId        Int?
+  totalValue     Float
+  timestamp      DateTime @default(now())
+  
+  @@index([timestamp])
+  @@index([modelId])
 }
 

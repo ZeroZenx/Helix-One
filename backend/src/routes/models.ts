@@ -8,27 +8,37 @@ const prisma = new PrismaClient();
 router.get('/', async (req, res) => {
   try {
     const models = await prisma.model.findMany({
-      orderBy: { roi: 'desc' }
+      orderBy: { roi: 'desc' },
+      include: {
+        positions: {
+          where: { status: 'open' }
+        },
+        trades: {
+          take: 10,
+          orderBy: { createdAt: 'desc' }
+        }
+      }
     });
+    
     res.json(models);
-  } catch (error) {
-    console.error('Get models error:', error);
-    // Fallback to demo data if database fails
-    res.json([
-      { id: 1, name: 'Helix_Momentum_Alpha', currentBalance: 11240, roi: 12.4, drawdown: -3.2, winRate: 68.5, avgLeverage: 2.1, totalTrades: 127, status: 'active', strategy: 'momentum' },
-      { id: 2, name: 'Helix_Reversion_Beta', currentBalance: 10780, roi: 7.8, drawdown: -2.1, winRate: 72.3, avgLeverage: 1.4, totalTrades: 94, status: 'active', strategy: 'mean_reversion' },
-      { id: 3, name: 'Helix_Hybrid_Gamma', currentBalance: 11580, roi: 15.8, drawdown: -4.5, winRate: 65.2, avgLeverage: 2.8, totalTrades: 156, status: 'active', strategy: 'hybrid' },
-      { id: 4, name: 'Helix_Momentum_Delta', currentBalance: 10450, roi: 4.5, drawdown: -1.8, winRate: 71.0, avgLeverage: 1.8, totalTrades: 82, status: 'active', strategy: 'momentum' },
-      { id: 5, name: 'Helix_Hybrid_Epsilon', currentBalance: 10920, roi: 9.2, drawdown: -2.7, winRate: 69.8, avgLeverage: 2.2, totalTrades: 113, status: 'active', strategy: 'hybrid' }
-    ]);
+  } catch (error: any) {
+    console.error('Error fetching models:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// Get single model
+// Get single model by ID
 router.get('/:id', async (req, res) => {
   try {
+    const { id } = req.params;
     const model = await prisma.model.findUnique({
-      where: { id: parseInt(req.params.id) }
+      where: { id: parseInt(id) },
+      include: {
+        positions: true,
+        trades: {
+          orderBy: { createdAt: 'desc' }
+        }
+      }
     });
     
     if (!model) {
@@ -36,11 +46,139 @@ router.get('/:id', async (req, res) => {
     }
     
     res.json(model);
-  } catch (error) {
-    console.error('Get model error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update model
+router.put('/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+    
+    const model = await prisma.model.update({
+      where: { id: parseInt(id) },
+      data: updateData
+    });
+    
+    res.json(model);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Bulk update models (for real-time updates)
+router.post('/bulk-update', async (req, res) => {
+  try {
+    const { models } = req.body;
+    
+    if (!Array.isArray(models)) {
+      return res.status(400).json({ error: 'Models must be an array' });
+    }
+    
+    // Update each model
+    const updatePromises = models.map((modelData: any) => {
+      const { id, ...data } = modelData;
+      return prisma.model.update({
+        where: { id: parseInt(id) },
+        data: {
+          currentBalance: data.currentBalance,
+          roi: data.roi,
+          drawdown: data.drawdown,
+          winRate: data.winRate,
+          totalTrades: data.totalTrades,
+          fees: data.fees,
+          biggestWin: data.biggestWin,
+          biggestLoss: data.biggestLoss,
+          sharpe: data.sharpe
+        }
+      });
+    });
+    
+    await Promise.all(updatePromises);
+    
+    res.json({ success: true, updated: models.length });
+  } catch (error: any) {
+    console.error('Bulk update error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Initialize models (seed data)
+router.post('/initialize', async (req, res) => {
+  try {
+    const initialModels = [
+      { name: 'DeepSeek Chat V3.1', icon: '🐋', color: '#3B82F6', strategy: 'momentum', currentBalance: 10000, capital: 10000 },
+      { name: 'Grok-4', icon: '⚡', color: '#EF4444', strategy: 'hybrid', currentBalance: 10000, capital: 10000 },
+      { name: 'Claude Sonnet 4.5', icon: '⭐', color: '#F59E0B', strategy: 'mean_reversion', currentBalance: 10000, capital: 10000 },
+      { name: 'GPT 5', icon: '🅖', color: '#8B5CF6', strategy: 'momentum', currentBalance: 10000, capital: 10000 },
+      { name: 'Qwen3 Max', icon: '🟣', color: '#A855F7', strategy: 'momentum', currentBalance: 10000, capital: 10000 },
+      { name: 'Gemini 2.5 Pro', icon: '💎', color: '#10B981', strategy: 'mean_reversion', currentBalance: 10000, capital: 10000 }
+    ];
+    
+    const created = [];
+    for (const modelData of initialModels) {
+      const existing = await prisma.model.findUnique({
+        where: { name: modelData.name }
+      });
+      
+      if (!existing) {
+        const model = await prisma.model.create({
+          data: modelData
+        });
+        created.push(model);
+      }
+    }
+    
+    res.json({ 
+      success: true, 
+      message: `Initialized ${created.length} new models`,
+      created 
+    });
+  } catch (error: any) {
+    console.error('Initialize error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Save performance snapshot
+router.post('/snapshot', async (req, res) => {
+  try {
+    const { modelId, totalValue } = req.body;
+    
+    const snapshot = await prisma.performanceSnapshot.create({
+      data: {
+        modelId: modelId ? parseInt(modelId) : null,
+        totalValue
+      }
+    });
+    
+    res.json(snapshot);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get performance history
+router.get('/performance/history', async (req, res) => {
+  try {
+    const { modelId, hours = 24 } = req.query;
+    
+    const since = new Date(Date.now() - parseInt(hours as string) * 60 * 60 * 1000);
+    
+    const snapshots = await prisma.performanceSnapshot.findMany({
+      where: {
+        modelId: modelId ? parseInt(modelId as string) : undefined,
+        timestamp: { gte: since }
+      },
+      orderBy: { timestamp: 'asc' }
+    });
+    
+    res.json(snapshots);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
   }
 });
 
 export default router;
-

@@ -4,14 +4,35 @@ import LiveMarketState from '../src/components/LiveMarketState';
 import LivePerformanceChart from '../src/components/LivePerformanceChart';
 
 export default function Home() {
-  const [models, setModels] = useState<any[]>([
+  // Initial model data
+  const initialModels = [
     { id: 1, name: 'DeepSeek Chat V3.1', currentBalance: 10907.00, roi: 9.07, drawdown: -1.2, winRate: 0, avgLeverage: 2.1, totalTrades: 3, status: 'active', strategy: 'momentum', icon: '🐋', color: '#3B82F6', fees: 58.51, biggestWin: -4.19, biggestLoss: -348.33, sharpe: 0.030, activePositions: ['XRP', 'DOGE', 'BTC', 'ETH', 'SOL'] },
     { id: 2, name: 'Grok-4', currentBalance: 10283.00, roi: 2.83, drawdown: -2.1, winRate: 0, avgLeverage: 1.4, totalTrades: 0, status: 'active', strategy: 'hybrid', icon: '⚡', color: '#EF4444', fees: 0.00, biggestWin: 0.00, biggestLoss: 0.00, sharpe: 0.014, activePositions: [] },
     { id: 3, name: 'Claude Sonnet 4.5', currentBalance: 10083.00, roi: 0.83, drawdown: -3.5, winRate: 0, avgLeverage: 2.8, totalTrades: 3, status: 'active', strategy: 'mean_reversion', icon: '⭐', color: '#F59E0B', fees: 42.63, biggestWin: -35.23, biggestLoss: -88.38, sharpe: 0.025, activePositions: ['BTC', 'ETH'] },
     { id: 4, name: 'GPT 5', currentBalance: 9460.00, roi: -5.40, drawdown: -1.8, winRate: 0, avgLeverage: 1.8, totalTrades: 2, status: 'active', strategy: 'momentum', icon: '🅖', color: '#8B5CF6', fees: 10.10, biggestWin: -27.57, biggestLoss: -59.04, sharpe: -0.023, activePositions: ['DOGE'] },
     { id: 5, name: 'Qwen3 Max', currentBalance: 9442.00, roi: -5.58, drawdown: -2.7, winRate: 0, avgLeverage: 3.1, totalTrades: 1, status: 'active', strategy: 'momentum', icon: '🟣', color: '#A855F7', fees: 44.62, biggestWin: -517.77, biggestLoss: -517.77, sharpe: -0.006, activePositions: [] },
     { id: 6, name: 'Gemini 2.5 Pro', currentBalance: 9362.00, roi: -6.38, drawdown: -6.2, winRate: 60, avgLeverage: 2.2, totalTrades: 5, status: 'active', strategy: 'mean_reversion', icon: '💎', color: '#10B981', fees: 106.46, biggestWin: 329.35, biggestLoss: -731.43, sharpe: -0.026, activePositions: ['XRP', 'SOL'] }
-  ]);
+  ];
+  
+  // Load models from localStorage or use initial data
+  const loadModelsFromStorage = () => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('helix-models');
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          console.log('📥 Loaded saved model data from localStorage');
+          return parsed;
+        } catch (e) {
+          console.error('Error parsing saved models:', e);
+        }
+      }
+    }
+    console.log('🆕 Using initial model data');
+    return initialModels;
+  };
+  
+  const [models, setModels] = useState<any[]>(loadModelsFromStorage());
   const [loading, setLoading] = useState(true);
   const [connected, setConnected] = useState(true);
   const [cryptoPrices, setCryptoPrices] = useState([
@@ -148,6 +169,14 @@ export default function Home() {
       // Keep existing prices on error
     }
   };
+
+  // Save models to localStorage whenever they change
+  useEffect(() => {
+    if (typeof window !== 'undefined' && models.length > 0) {
+      localStorage.setItem('helix-models', JSON.stringify(models));
+      console.log('💾 Saved model data to localStorage');
+    }
+  }, [models]);
 
   // Update model portfolios with real-time market data
   const updateModelPortfolios = () => {
@@ -1293,23 +1322,38 @@ ${i + 1}. **${pos.asset}**: $${pos.currentPrice.toLocaleString()} (${pos.change 
                   <div className="w-1.5 h-1.5 bg-cyan-500 rounded-full animate-pulse"></div>
                 </h4>
                 <div className="space-y-2 text-sm">
-                  {models.slice(0, 3).map((model) => {
-                    const positions = model.activePositions || [];
-                    if (positions.length === 0) return null;
-                    const position = positions[0];
-                    const cryptoData = cryptoPrices.find(c => c.symbol === position);
-                    return (
-                      <div key={model.id} className="flex justify-between items-center">
-                        <span className="font-mono">{position}</span>
-                        <span className={cryptoData && cryptoData.change >= 0 ? 'text-green-400 font-mono' : 'text-red-400 font-mono'}>
-                          {cryptoData ? `${cryptoData.change >= 0 ? '+' : ''}${cryptoData.change.toFixed(2)}%` : '...'}
-                        </span>
-                      </div>
-                    );
-                  }).filter(Boolean)}
-                  {models.every(m => (m.activePositions || []).length === 0) && (
-                    <div className="text-gray-500 text-xs">No active positions</div>
-                  )}
+                  {(() => {
+                    // Collect all unique positions across all models
+                    const allPositions = new Set<string>();
+                    models.forEach(model => {
+                      (model.activePositions || []).forEach((pos: string) => allPositions.add(pos));
+                    });
+                    
+                    const positionArray = Array.from(allPositions).slice(0, 5);
+                    
+                    if (positionArray.length === 0) {
+                      return <div className="text-gray-500 text-xs">No active positions</div>;
+                    }
+                    
+                    return positionArray.map((position, idx) => {
+                      const cryptoData = cryptoPrices.find(c => c.symbol === position);
+                      const modelsHoldingThis = models.filter(m => 
+                        (m.activePositions || []).includes(position)
+                      ).length;
+                      
+                      return (
+                        <div key={idx} className="flex justify-between items-center">
+                          <span className="font-mono flex items-center gap-2">
+                            {position}
+                            <span className="text-xs text-gray-500">({modelsHoldingThis} AI{modelsHoldingThis > 1 ? 's' : ''})</span>
+                          </span>
+                          <span className={cryptoData && cryptoData.change >= 0 ? 'text-green-400 font-mono' : 'text-red-400 font-mono'}>
+                            {cryptoData ? `${cryptoData.change >= 0 ? '+' : ''}${cryptoData.change.toFixed(2)}%` : '...'}
+                          </span>
+                        </div>
+                      );
+                    });
+                  })()}
                 </div>
               </div>
             </div>
