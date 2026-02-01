@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: [backend, frontend]
+
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ${{ matrix.dir }}/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint (if present)
+        run: |
+          if npm run | grep -qE '^  lint'; then
+            npm run lint
+          else
+            echo "No lint script"
+          fi
+
+      - name: Test (if present)
+        run: |
+          if npm run | grep -qE '^  test'; then
+            npm test
+          else
+            echo "No test script"
+          fi
+
+      - name: Build (if present)
+        run: |
+          if npm run | grep -qE '^  build'; then
+            npm run build
+          else
+            echo "No build script"
+          fi
