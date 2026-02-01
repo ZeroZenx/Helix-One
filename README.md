@@ -407,3 +407,10 @@ Made by [Your Name] • [Twitter](https://twitter.com/yourhandle) • [Website](
 ![GitHub license](https://img.shields.io/github/license/yourusername/helix-one)
 
 **Happy Trading! May the best AI win! 🚀📈**
+
+---
+
+## ✅ CI
+
+A basic GitHub Actions workflow (`CI`) runs on pull requests and pushes to `main`.
+It installs dependencies and runs `lint`/`test`/`build` if those scripts exist in `backend/` and `frontend/`.
