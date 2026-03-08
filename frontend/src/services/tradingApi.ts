@@ -1,4 +1,6 @@
 // Trading API Service for Frontend
+import { getTradingApiBaseUrl } from '../utils/api';
+
 export interface TradeSignal {
   modelId: string;
   symbol: string;
@@ -46,9 +48,7 @@ class TradingApiService {
   private baseUrl: string;
 
   constructor() {
-    this.baseUrl = process.env.NODE_ENV === 'production' 
-      ? 'https://your-api-domain.com/api/trading'
-      : 'http://localhost:3001/api/trading';
+    this.baseUrl = getTradingApiBaseUrl();
   }
 
   // Get trading status
@@ -216,31 +216,9 @@ class TradingApiService {
     };
   }
 
-  // Simulate AI model trading decision
-  simulateModelTrading(modelId: string, currentPrice: number, marketData: any): TradeSignal | null {
-    // This is a simplified simulation - in reality, this would come from your AI models
-    const confidence = Math.random();
-    const shouldTrade = confidence > 0.7; // 30% chance of trading
-
-    if (!shouldTrade) return null;
-
-    const side = Math.random() > 0.5 ? 'BUY' : 'SELL';
-    const symbol = 'BTC'; // This would be determined by your AI model
-    const leverage = Math.floor(Math.random() * 3) + 1; // 1-3x leverage
-
-    return this.generateTradeSignal(
-      modelId,
-      symbol,
-      side,
-      confidence,
-      `AI detected ${side === 'BUY' ? 'bullish' : 'bearish'} momentum`,
-      {
-        type: 'MARKET',
-        leverage,
-        stopLoss: side === 'BUY' ? currentPrice * 0.98 : currentPrice * 1.02,
-        takeProfit: side === 'BUY' ? currentPrice * 1.05 : currentPrice * 0.95
-      }
-    );
+  // Simulation was removed; signals must come from real model inference.
+  simulateModelTrading(_modelId: string, _currentPrice: number, _marketData: any): TradeSignal | null {
+    return null;
   }
 }
 

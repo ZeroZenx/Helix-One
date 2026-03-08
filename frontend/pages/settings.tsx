@@ -1,607 +1,580 @@
-import { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
+import Head from 'next/head';
+import { useEffect, useMemo, useState } from 'react';
+import { fetchWithTimeout, getTradingApiBaseUrl } from '../src/utils/api';
 
-interface BinanceAccount {
-  connected: boolean;
-  apiKey: string;
-  testnet: boolean;
-  balance: number;
-  tradingEnabled: boolean;
-  lastSync: Date | null;
-}
+const API = getTradingApiBaseUrl();
 
-interface ModelAccount {
-  modelId: number;
-  modelName: string;
-  apiKey: string;
-  secretKey: string;
-  balance: number;
-  tradingEnabled: boolean;
-  positionsCount: number;
-}
+type Banner = { type: 'success' | 'error'; text: string } | null;
+
+type UiPrefs = {
+  baseCurrency: 'USDT' | 'USDC' | 'BUSD';
+  slippageTolerancePct: number;
+  tradeConfirmation: boolean;
+  orderTimeoutSec: number;
+  useDeepSeekBrain: boolean;
+};
+
+const defaultUiPrefs: UiPrefs = {
+  baseCurrency: 'USDT',
+  slippageTolerancePct: 0.25,
+  tradeConfirmation: false,
+  orderTimeoutSec: 30,
+  useDeepSeekBrain: true,
+};
+
+type SettingsTab = 'General' | 'Trading' | 'Risk Management' | 'Notifications' | 'Advanced';
 
 export default function Settings() {
-  const [activeTab, setActiveTab] = useState<'connection' | 'models' | 'risk'>('connection');
-  const [showApiKey, setShowApiKey] = useState(false);
-  const [showSecretKey, setShowSecretKey] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState<'idle' | 'success' | 'error'>('idle');
-  
-  // Master Account Settings
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<string>('');
+
+  const [banner, setBanner] = useState<Banner>(null);
+
+  const [adminKey, setAdminKey] = useState('');
   const [masterApiKey, setMasterApiKey] = useState('');
   const [masterSecretKey, setMasterSecretKey] = useState('');
-  const [useTestnet, setUseTestnet] = useState(true);
+  const [deepseekApiKey, setDeepseekApiKey] = useState('');
+  const [testnet, setTestnet] = useState(false);
   const [globalTradingEnabled, setGlobalTradingEnabled] = useState(false);
-  
-  // Model Accounts
-  const [modelAccounts, setModelAccounts] = useState<ModelAccount[]>([
-    { modelId: 1, modelName: 'DeepSeek Chat V3.1', apiKey: '', secretKey: '', balance: 10000, tradingEnabled: false, positionsCount: 0 },
-    { modelId: 2, modelName: 'Grok-4', apiKey: '', secretKey: '', balance: 10000, tradingEnabled: false, positionsCount: 0 },
-    { modelId: 3, modelName: 'Claude Sonnet 4.5', apiKey: '', secretKey: '', balance: 10000, tradingEnabled: false, positionsCount: 0 },
-    { modelId: 4, modelName: 'GPT 5', apiKey: '', secretKey: '', balance: 10000, tradingEnabled: false, positionsCount: 0 },
-    { modelId: 5, modelName: 'Qwen3 Max', apiKey: '', secretKey: '', balance: 10000, tradingEnabled: false, positionsCount: 0 },
-    { modelId: 6, modelName: 'Gemini 2.5 Pro', apiKey: '', secretKey: '', balance: 10000, tradingEnabled: false, positionsCount: 0 },
-  ]);
-  
-  // Risk Management Settings
-  const [maxDailyLoss, setMaxDailyLoss] = useState(3);
-  const [maxPositionSize, setMaxPositionSize] = useState(10);
+  const [portfolioTradingEnabled, setPortfolioTradingEnabled] = useState(false);
+  const [deepseekBalance, setDeepseekBalance] = useState(10000);
+
+  const [maxDailyLossPct, setMaxDailyLossPct] = useState(3);
+  const [maxPositionSizePct, setMaxPositionSizePct] = useState(10);
   const [maxLeverage, setMaxLeverage] = useState(5);
-  const [dailyTargetReturn, setDailyTargetReturn] = useState(20);
+  const [killSwitchDrawdownPct, setKillSwitchDrawdownPct] = useState(5);
+  const [cooldownMinutes, setCooldownMinutes] = useState(30);
+  const [maxTradesPerDay, setMaxTradesPerDay] = useState(5);
+  const [maxConsecutiveLosses, setMaxConsecutiveLosses] = useState(3);
+  const [minConfidence, setMinConfidence] = useState(0.7);
+  const [notificationsPush, setNotificationsPush] = useState(true);
+  const [notificationsEmail, setNotificationsEmail] = useState(false);
+  const [notificationsTelegram, setNotificationsTelegram] = useState(false);
+  const [notificationEmail, setNotificationEmail] = useState('');
+  const [telegramBotToken, setTelegramBotToken] = useState('');
+  const [telegramUserId, setTelegramUserId] = useState('');
+  const [telegramPairingCode, setTelegramPairingCode] = useState('');
+  const [testingTelegram, setTestingTelegram] = useState(false);
+
+  const [status, setStatus] = useState<any>(null);
+  const [briefing, setBriefing] = useState<any>(null);
+  const [uiPrefs, setUiPrefs] = useState<UiPrefs>(defaultUiPrefs);
+  const [activeTab, setActiveTab] = useState<SettingsTab>('General');
+
+  const authHeaders = useMemo(() => (adminKey ? { 'x-admin-key': adminKey } : {}), [adminKey]);
+
+  const riskValidation = useMemo(() => {
+    const errors: string[] = [];
+    if (maxDailyLossPct <= 0 || maxDailyLossPct > 100) errors.push('Max daily loss must be 0-100%.');
+    if (maxPositionSizePct <= 0 || maxPositionSizePct > 100) errors.push('Max position size must be 0-100%.');
+    if (killSwitchDrawdownPct <= 0 || killSwitchDrawdownPct > 100) errors.push('Kill-switch drawdown must be 0-100%.');
+    if (maxLeverage < 1 || maxLeverage > 125) errors.push('Max leverage must be between 1 and 125.');
+    if (cooldownMinutes < 0 || cooldownMinutes > 1440) errors.push('Cooldown must be 0-1440 minutes.');
+    if (maxTradesPerDay < 1 || maxTradesPerDay > 100) errors.push('Max trades/day must be 1-100.');
+    if (maxConsecutiveLosses < 1 || maxConsecutiveLosses > 20) errors.push('Max consecutive losses must be 1-20.');
+    if (minConfidence < 0 || minConfidence > 1) errors.push('Min confidence must be 0.00-1.00.');
+    return errors;
+  }, [maxDailyLossPct, maxPositionSizePct, killSwitchDrawdownPct, maxLeverage, cooldownMinutes, maxTradesPerDay, maxConsecutiveLosses, minConfidence]);
+
+  function applySettings(s: any) {
+    setMasterApiKey(s.masterApiKey || '');
+    setMasterSecretKey(s.masterSecretKey || '');
+    setDeepseekApiKey(s.deepseekApiKey || '');
+    setTestnet(Boolean(s.testnet));
+
+    setGlobalTradingEnabled(Boolean(s.tradingEnabled));
+
+    const account = s.modelAccounts?.[0] || {};
+    setPortfolioTradingEnabled(Boolean(account.tradingEnabled));
+    setDeepseekBalance(Number(account.balance || 10000));
+
+    const r = s.riskSettings || {};
+    setMaxDailyLossPct(Number(r.maxDailyLossPct ?? 3));
+    setMaxPositionSizePct(Number(r.maxPositionSizePct ?? 10));
+    setMaxLeverage(Number(r.maxLeverage ?? 5));
+    setKillSwitchDrawdownPct(Number(r.killSwitchDrawdownPct ?? 5));
+    setCooldownMinutes(Number(r.cooldownMinutes ?? 30));
+    setMaxTradesPerDay(Number(r.maxTradesPerDay ?? 5));
+    setMaxConsecutiveLosses(Number(r.maxConsecutiveLosses ?? 3));
+    setMinConfidence(Number(r.minConfidence ?? 0.7));
+
+    const n = s.notificationSettings || {};
+    setNotificationsPush(Boolean(n.pushEnabled ?? true));
+    setNotificationsEmail(Boolean(n.emailEnabled ?? false));
+    setNotificationsTelegram(Boolean(n.telegramEnabled ?? false));
+    setNotificationEmail(String(n.email || ''));
+    setTelegramBotToken(String(n.telegramBotToken || ''));
+    setTelegramUserId(String(n.telegramUserId || ''));
+    setTelegramPairingCode(String(n.telegramPairingCode || ''));
+  }
+
+  async function load(silent = false) {
+    if (!silent) setLoading(true);
+    setRefreshing(true);
+
+    let loadedCore = false;
+    try {
+      const settingsRes = await fetchWithTimeout(`${API}/settings`, {}, 4000);
+      if (!settingsRes.ok) throw new Error('Unable to load settings');
+      const settingsData = await settingsRes.json();
+      applySettings(settingsData);
+      loadedCore = true;
+      setLastUpdated(new Date().toLocaleTimeString());
+    } catch (error: any) {
+      if (!silent) {
+        const isTimeout = error?.name === 'AbortError';
+        setBanner({
+          type: 'error',
+          text: isTimeout ? 'Settings request timed out. Check API availability.' : 'Failed to refresh trading settings.',
+        });
+      }
+    } finally {
+      if (!silent) setLoading(false);
+    }
+
+    try {
+      const [statusResult, briefingResult] = await Promise.allSettled([
+        fetchWithTimeout(`${API}/status`, {}, 2500),
+        fetchWithTimeout(`${API}/daily-briefing`, {}, 2500),
+      ]);
+
+      if (statusResult.status === 'fulfilled' && statusResult.value.ok) {
+        setStatus(await statusResult.value.json());
+      }
+
+      if (briefingResult.status === 'fulfilled' && briefingResult.value.ok) {
+        setBriefing(await briefingResult.value.json());
+      }
+
+      if (!loadedCore && statusResult.status !== 'fulfilled' && briefingResult.status !== 'fulfilled') {
+        setBanner({ type: 'error', text: 'Unable to load settings data from API.' });
+      }
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   useEffect(() => {
-    loadSettings();
-    checkTradingStatus();
+    load();
+    const id = setInterval(() => load(true), 30000);
+    return () => clearInterval(id);
   }, []);
 
-  const loadSettings = async () => {
+  useEffect(() => {
     try {
-      const response = await fetch('http://localhost:3001/api/trading/settings');
-      if (response.ok) {
-        const data = await response.json();
-        setMasterApiKey(data.masterApiKey || '');
-        setUseTestnet(data.testnet || true);
-        setGlobalTradingEnabled(data.tradingEnabled || false);
-        if (data.modelAccounts) {
-          setModelAccounts(data.modelAccounts);
-        }
+      const raw = localStorage.getItem('helix_ui_prefs_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        setUiPrefs({ ...defaultUiPrefs, ...parsed });
       }
-    } catch (error) {
-      console.error('Error loading settings:', error);
+    } catch {
+      // ignore local preference parse errors
     }
-  };
+  }, []);
 
-  const checkTradingStatus = async () => {
+  useEffect(() => {
     try {
-      const response = await fetch('http://localhost:3001/api/trading/status');
-      if (response.ok) {
-        const data = await response.json();
-        setGlobalTradingEnabled(data.globalTradingEnabled || false);
-        if (data.activePortfolios) {
-          const updatedModels = modelAccounts.map(model => {
-            const portfolio = data.activePortfolios.find((p: any) => p.modelId === model.modelId);
-            if (portfolio) {
-              return {
-                ...model,
-                balance: portfolio.currentBalance,
-                tradingEnabled: portfolio.tradingEnabled,
-                positionsCount: portfolio.positionsCount
-              };
-            }
-            return model;
-          });
-          setModelAccounts(updatedModels);
-        }
-      }
-    } catch (error) {
-      console.error('Error checking trading status:', error);
+      localStorage.setItem('helix_ui_prefs_v1', JSON.stringify(uiPrefs));
+    } catch {
+      // ignore local preference save errors
     }
-  };
+  }, [uiPrefs]);
 
-  const testConnection = async () => {
-    if (!masterApiKey || !masterSecretKey) {
-      setConnectionStatus('error');
+  async function saveSettings() {
+    if (riskValidation.length) {
+      setBanner({ type: 'error', text: riskValidation[0] });
       return;
     }
 
-    setTesting(true);
-    setConnectionStatus('idle');
-
-    try {
-      const response = await fetch('http://localhost:3001/api/trading/test-connection', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          apiKey: masterApiKey,
-          secretKey: masterSecretKey,
-          testnet: useTestnet
-        })
-      });
-
-      if (response.ok) {
-        setConnectionStatus('success');
-      } else {
-        setConnectionStatus('error');
-      }
-    } catch (error) {
-      console.error('Connection test failed:', error);
-      setConnectionStatus('error');
-    } finally {
-      setTesting(false);
-    }
-  };
-
-  const saveSettings = async () => {
     setSaving(true);
-
+    setBanner(null);
     try {
-      const response = await fetch('http://localhost:3001/api/trading/settings', {
+      const res = await fetchWithTimeout(`${API}/settings`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({
           masterApiKey,
           masterSecretKey,
-          testnet: useTestnet,
-          modelAccounts,
+          deepseekApiKey,
+          testnet,
+          tradingEnabled: globalTradingEnabled,
+          modelAccounts: [
+            {
+              modelId: 1,
+              modelName: 'DeepSeek Chat V3.1',
+              tradingEnabled: portfolioTradingEnabled,
+              balance: deepseekBalance,
+            },
+          ],
           riskSettings: {
-            maxDailyLoss,
-            maxPositionSize,
+            maxDailyLossPct,
+            maxPositionSizePct,
             maxLeverage,
-            dailyTargetReturn
-          }
-        })
+            killSwitchDrawdownPct,
+            cooldownMinutes,
+            maxTradesPerDay,
+            maxConsecutiveLosses,
+            minConfidence,
+          },
+          notificationSettings: {
+            pushEnabled: notificationsPush,
+            emailEnabled: notificationsEmail,
+            telegramEnabled: notificationsTelegram,
+            email: notificationEmail,
+            telegramBotToken,
+            telegramUserId,
+            telegramPairingCode,
+          },
+        }),
       });
 
-      if (response.ok) {
-        alert('Settings saved successfully!');
-      } else {
-        alert('Failed to save settings');
-      }
-    } catch (error) {
-      console.error('Error saving settings:', error);
-      alert('Error saving settings');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Save failed');
+      setBanner({ type: 'success', text: 'Settings saved.' });
+      await load(true);
+    } catch (e: any) {
+      setBanner({ type: 'error', text: e?.message || 'Save failed.' });
     } finally {
       setSaving(false);
     }
-  };
+  }
 
-  const toggleGlobalTrading = async () => {
+  async function testConnection() {
+    setTesting(true);
+    setBanner(null);
     try {
-      const newState = !globalTradingEnabled;
-      const response = await fetch('http://localhost:3001/api/trading/toggle', {
+      const res = await fetchWithTimeout(`${API}/test-connection`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enable: newState })
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ apiKey: masterApiKey, secretKey: masterSecretKey, testnet }),
       });
-
-      if (response.ok) {
-        setGlobalTradingEnabled(newState);
-        alert(`Global trading ${newState ? 'ENABLED' : 'DISABLED'}`);
-      }
-    } catch (error) {
-      console.error('Error toggling trading:', error);
-    }
-  };
-
-  const closeAllPositions = async () => {
-    if (!confirm('Are you sure you want to close ALL open positions across all models?')) {
-      return;
-    }
-
-    try {
-      const response = await fetch('http://localhost:3001/api/trading/close-positions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
-      });
-
-      if (response.ok) {
-        alert('All positions closed successfully');
-        checkTradingStatus();
+      const data = await res.json();
+      if (res.ok && data.connected) {
+        setBanner({ type: 'success', text: 'Binance connection successful.' });
       } else {
-        alert('Failed to close positions');
+        const msg = String(data.error || 'Connection failed.');
+        if (msg.includes('Invalid API-key') && testnet) {
+          setBanner({ type: 'error', text: 'Invalid key for testnet. Disable "Use testnet" or use Binance Futures testnet keys.' });
+        } else {
+          setBanner({ type: 'error', text: msg });
+        }
       }
-    } catch (error) {
-      console.error('Error closing positions:', error);
-      alert('Error closing positions');
+    } catch {
+      setBanner({ type: 'error', text: 'Connection test failed.' });
+    } finally {
+      setTesting(false);
     }
-  };
+  }
 
-  const updateModelAccount = (modelId: number, field: string, value: any) => {
-    setModelAccounts(prev => 
-      prev.map(model => 
-        model.modelId === modelId ? { ...model, [field]: value } : model
-      )
-    );
-  };
+  async function testTelegramConnection() {
+    setTestingTelegram(true);
+    setBanner(null);
+    try {
+      const res = await fetchWithTimeout(`${API}/telegram/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({
+          botToken: telegramBotToken,
+          chatId: telegramUserId,
+          pairingCode: telegramPairingCode,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data?.success) {
+        setBanner({ type: 'success', text: 'Telegram linked and test message sent.' });
+      } else {
+        setBanner({ type: 'error', text: String(data?.error || 'Telegram test failed.') });
+      }
+    } catch (e: any) {
+      setBanner({ type: 'error', text: e?.message || 'Telegram test failed.' });
+    } finally {
+      setTestingTelegram(false);
+    }
+  }
+
+  async function toggleTrading() {
+    const next = !globalTradingEnabled;
+    const ok = window.confirm(`${next ? 'Enable' : 'Disable'} global trading?`);
+    if (!ok) return;
+
+    const res = await fetchWithTimeout(`${API}/toggle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders },
+      body: JSON.stringify({ enabled: next }),
+    });
+
+    if (res.ok) {
+      setBanner({ type: 'success', text: `Trading ${next ? 'enabled' : 'disabled'}.` });
+      setGlobalTradingEnabled(next);
+      await load(true);
+    } else {
+      setBanner({ type: 'error', text: 'Failed to toggle trading.' });
+    }
+  }
+
+  async function closeAllPositions() {
+    const ok = window.confirm('Close ALL open positions now? This is immediate.');
+    if (!ok) return;
+
+    const res = await fetchWithTimeout(`${API}/close-positions`, { method: 'POST', headers: { ...authHeaders } });
+    if (res.ok) {
+      setBanner({ type: 'success', text: 'All positions closed.' });
+      await load(true);
+    } else {
+      setBanner({ type: 'error', text: 'Failed to close positions.' });
+    }
+  }
+
+  const account = briefing?.account || {};
+  const market = briefing?.market || {};
 
   return (
-    <div className="min-h-screen bg-black text-white font-mono">
-      {/* Header */}
-      <header className="bg-gradient-to-r from-gray-900 via-black to-gray-900 border-b border-gray-800">
-        <div className="container mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold">⚙️ Trading System Settings</h1>
-              <p className="text-gray-400 mt-1">Configure Binance API and manage trading parameters</p>
-            </div>
-            <div className="flex items-center gap-4">
-              <div className={`px-4 py-2 rounded-full text-sm font-bold ${
-                globalTradingEnabled ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-              }`}>
-                Trading: {globalTradingEnabled ? 'ENABLED' : 'DISABLED'}
-              </div>
-              <a href="/" className="px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm">
-                ← Back to Dashboard
-              </a>
-            </div>
-          </div>
-        </div>
-      </header>
+    <>
+      <Head>
+        <title>HELIX.ONE | Settings</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+      </Head>
 
-      {/* Main Content */}
-      <main className="container mx-auto px-6 py-8">
-        {/* Tabs */}
-        <div className="flex gap-2 mb-6 bg-gray-900 p-2 rounded-lg">
-          <button
-            onClick={() => setActiveTab('connection')}
-            className={`flex-1 px-4 py-3 rounded-lg font-bold transition-all ${
-              activeTab === 'connection' 
-                ? 'bg-cyan-500 text-black' 
-                : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-            }`}
-          >
-            🔌 Binance Connection
-          </button>
-          <button
-            onClick={() => setActiveTab('models')}
-            className={`flex-1 px-4 py-3 rounded-lg font-bold transition-all ${
-              activeTab === 'models' 
-                ? 'bg-cyan-500 text-black' 
-                : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-            }`}
-          >
-            🤖 Model Accounts
-          </button>
-          <button
-            onClick={() => setActiveTab('risk')}
-            className={`flex-1 px-4 py-3 rounded-lg font-bold transition-all ${
-              activeTab === 'risk' 
-                ? 'bg-cyan-500 text-black' 
-                : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-            }`}
-          >
-            🛡️ Risk Management
-          </button>
-        </div>
-
-        {/* Connection Tab */}
-        {activeTab === 'connection' && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="space-y-6"
-          >
-            {/* Warning Banner */}
-            <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4">
-              <div className="flex items-start gap-3">
-                <span className="text-2xl">⚠️</span>
-                <div>
-                  <h3 className="font-bold text-yellow-400 mb-1">Security Warning</h3>
-                  <p className="text-sm text-gray-300">
-                    Never share your API keys with anyone. Enable IP restrictions and trading-only permissions on Binance.
-                    Start with testnet mode to ensure everything works correctly before using real funds.
-                  </p>
+      <div className="min-h-screen text-slate-100" style={{ fontFamily: 'IBM Plex Sans, Space Grotesk, sans-serif', background: 'radial-gradient(1200px 800px at 20% 0%, #1a2438 0%, #0b101a 40%, #05070c 100%)' }}>
+        <div className="mx-auto max-w-[1500px] px-4 md:px-8 py-5">
+          <header className="rounded-2xl border border-white/10 bg-slate-900/60 backdrop-blur-md p-4 md:p-5 shadow-2xl shadow-black/30">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div className="flex items-center gap-4">
+                <div className="text-3xl font-bold tracking-wide" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
+                  <span className="text-emerald-300">HELIX</span>.ONE
                 </div>
+                <span className="text-xl font-semibold">Settings</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <a href="/" className="rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 px-4 py-2 text-sm font-medium">Dashboard</a>
               </div>
             </div>
+          </header>
 
-            {/* Master Account Settings */}
-            <div className="bg-gray-900 rounded-lg p-6">
-              <h2 className="text-xl font-bold mb-4">Master Binance Account</h2>
-              
-              <div className="space-y-4">
-                {/* Testnet Toggle */}
-                <div className="flex items-center justify-between p-4 bg-gray-800 rounded-lg">
-                  <div>
-                    <div className="font-bold">Testnet Mode</div>
-                    <div className="text-sm text-gray-400">Use Binance Futures Testnet (recommended for testing)</div>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={useTestnet}
-                      onChange={(e) => setUseTestnet(e.target.checked)}
-                      className="sr-only peer"
-                    />
-                    <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-cyan-500"></div>
-                  </label>
-                </div>
-
-                {/* API Key */}
-                <div>
-                  <label className="block text-sm font-bold mb-2">API Key</label>
-                  <div className="relative">
-                    <input
-                      type={showApiKey ? 'text' : 'password'}
-                      value={masterApiKey}
-                      onChange={(e) => setMasterApiKey(e.target.value)}
-                      placeholder="Enter your Binance API key"
-                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white font-mono text-sm focus:outline-none focus:border-cyan-500"
-                    />
-                    <button
-                      onClick={() => setShowApiKey(!showApiKey)}
-                      className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-white"
-                    >
-                      {showApiKey ? '🙈' : '👁️'}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Secret Key */}
-                <div>
-                  <label className="block text-sm font-bold mb-2">Secret Key</label>
-                  <div className="relative">
-                    <input
-                      type={showSecretKey ? 'text' : 'password'}
-                      value={masterSecretKey}
-                      onChange={(e) => setMasterSecretKey(e.target.value)}
-                      placeholder="Enter your Binance secret key"
-                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white font-mono text-sm focus:outline-none focus:border-cyan-500"
-                    />
-                    <button
-                      onClick={() => setShowSecretKey(!showSecretKey)}
-                      className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-white"
-                    >
-                      {showSecretKey ? '🙈' : '👁️'}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Connection Status */}
-                {connectionStatus !== 'idle' && (
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    className={`p-4 rounded-lg ${
-                      connectionStatus === 'success' 
-                        ? 'bg-green-500/20 border border-green-500/30 text-green-400' 
-                        : 'bg-red-500/20 border border-red-500/30 text-red-400'
+          <div className="mt-5 grid grid-cols-1 xl:grid-cols-12 gap-4">
+            <aside className="xl:col-span-2 rounded-2xl border border-white/10 bg-slate-900/60 backdrop-blur-md p-3">
+              <div className="space-y-1 text-sm">
+                {(['General', 'Trading', 'Risk Management', 'Notifications', 'Advanced'] as SettingsTab[]).map((item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    onClick={() => setActiveTab(item)}
+                    className={`w-full text-left rounded-lg px-3 py-2 transition ${
+                      activeTab === item
+                        ? 'bg-cyan-400/20 border border-cyan-300/40 text-cyan-100'
+                        : 'text-slate-300 hover:bg-white/5'
                     }`}
                   >
-                    {connectionStatus === 'success' ? (
-                      <div className="flex items-center gap-2">
-                        <span className="text-xl">✅</span>
-                        <span className="font-bold">Connection successful! Your Binance account is connected.</span>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-2">
-                        <span className="text-xl">❌</span>
-                        <span className="font-bold">Connection failed. Please check your API keys and try again.</span>
-                      </div>
-                    )}
-                  </motion.div>
-                )}
-
-                {/* Action Buttons */}
-                <div className="flex gap-3">
-                  <button
-                    onClick={testConnection}
-                    disabled={testing || !masterApiKey || !masterSecretKey}
-                    className="flex-1 px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg font-bold transition-all"
-                  >
-                    {testing ? '🔄 Testing...' : '🔌 Test Connection'}
+                    {item}
                   </button>
-                  <button
-                    onClick={saveSettings}
-                    disabled={saving}
-                    className="flex-1 px-6 py-3 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg font-bold transition-all"
-                  >
-                    {saving ? '💾 Saving...' : '💾 Save Settings'}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* How to Get API Keys */}
-            <div className="bg-gray-900 rounded-lg p-6">
-              <h3 className="text-lg font-bold mb-3">📚 How to Get Binance API Keys</h3>
-              <div className="space-y-2 text-sm text-gray-300">
-                <p><strong>For Testnet (Recommended for Testing):</strong></p>
-                <ol className="list-decimal list-inside space-y-1 ml-4">
-                  <li>Go to <a href="https://testnet.binancefuture.com" target="_blank" className="text-cyan-400 hover:underline">https://testnet.binancefuture.com</a></li>
-                  <li>Register with your email (no verification needed)</li>
-                  <li>Generate API keys from the dashboard</li>
-                  <li>You'll receive 10,000 USDT testnet balance</li>
-                </ol>
-                
-                <p className="mt-4"><strong>For Live Trading (Real Money):</strong></p>
-                <ol className="list-decimal list-inside space-y-1 ml-4">
-                  <li>Log in to <a href="https://www.binance.com" target="_blank" className="text-cyan-400 hover:underline">Binance.com</a></li>
-                  <li>Go to API Management in your account settings</li>
-                  <li>Create a new API key</li>
-                  <li>Enable "Futures" permissions only</li>
-                  <li>Enable IP restrictions for security</li>
-                  <li>⚠️ NEVER enable withdrawal permissions</li>
-                </ol>
-              </div>
-            </div>
-          </motion.div>
-        )}
-
-        {/* Model Accounts Tab */}
-        {activeTab === 'models' && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="space-y-6"
-          >
-            <div className="bg-gray-900 rounded-lg p-6">
-              <div className="flex items-center justify-between mb-6">
-                <div>
-                  <h2 className="text-xl font-bold">AI Model Trading Accounts</h2>
-                  <p className="text-sm text-gray-400 mt-1">Each model can have its own sub-account or share the master account</p>
-                </div>
-                <button
-                  onClick={toggleGlobalTrading}
-                  className={`px-6 py-3 rounded-lg font-bold transition-all ${
-                    globalTradingEnabled 
-                      ? 'bg-red-600 hover:bg-red-700' 
-                      : 'bg-green-600 hover:bg-green-700'
-                  }`}
-                >
-                  {globalTradingEnabled ? '🛑 STOP ALL TRADING' : '▶️ START TRADING'}
-                </button>
-              </div>
-
-              <div className="space-y-4">
-                {modelAccounts.map((model) => (
-                  <div key={model.modelId} className="bg-gray-800 rounded-lg p-4">
-                    <div className="flex items-center justify-between mb-4">
-                      <div>
-                        <h3 className="font-bold text-lg">{model.modelName}</h3>
-                        <div className="text-sm text-gray-400">
-                          Balance: ${model.balance.toLocaleString()} • 
-                          Open Positions: {model.positionsCount}
-                        </div>
-                      </div>
-                      <label className="relative inline-flex items-center cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={model.tradingEnabled}
-                          onChange={(e) => updateModelAccount(model.modelId, 'tradingEnabled', e.target.checked)}
-                          className="sr-only peer"
-                        />
-                        <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-500"></div>
-                      </label>
-                    </div>
-
-                    <div className="text-xs text-gray-500">
-                      Using master account credentials (shared balance)
-                    </div>
-                  </div>
                 ))}
               </div>
+            </aside>
 
-              <div className="mt-6 flex gap-3">
-                <button
-                  onClick={closeAllPositions}
-                  className="px-6 py-3 bg-red-600 hover:bg-red-700 rounded-lg font-bold transition-all"
-                >
-                  🚨 Close All Positions
+            <main className="xl:col-span-10 grid grid-cols-1 lg:grid-cols-12 gap-4">
+              {banner && (
+                <div className={`lg:col-span-12 rounded-lg px-4 py-3 text-sm ${banner.type === 'success' ? 'bg-emerald-900/50 text-emerald-100 border border-emerald-500/40' : 'bg-red-900/50 text-red-100 border border-red-500/40'}`}>
+                  {banner.text}
+                </div>
+              )}
+
+              {loading && <div className="lg:col-span-12 text-sm text-slate-300">Loading settings...</div>}
+
+              {activeTab === 'General' && (
+              <Panel className="lg:col-span-4" title="General">
+                <TextField label="Admin Key" type="password" value={adminKey} onChange={setAdminKey} />
+                <TextField label="Binance API Key" type="password" value={masterApiKey} onChange={setMasterApiKey} />
+                <TextField label="Binance API Secret" type="password" value={masterSecretKey} onChange={setMasterSecretKey} />
+                <TextField label="DeepSeek API Key" type="password" value={deepseekApiKey} onChange={setDeepseekApiKey} />
+
+                <div className="pt-2">
+                  <Toggle label="Trading Mode (Live/Testnet)" checked={!testnet} onChange={(v) => setTestnet(!v)} onLabel="Live" offLabel="Testnet" />
+                </div>
+
+                <div className="mt-3 flex gap-2">
+                  <button className="flex-1 rounded-lg border border-cyan-300/30 bg-cyan-500/20 hover:bg-cyan-500/30 px-3 py-2 text-sm" onClick={testConnection} disabled={testing}>{testing ? 'Testing...' : 'Test Connection'}</button>
+                  <button className="flex-1 rounded-lg border border-emerald-300/30 bg-emerald-500/20 hover:bg-emerald-500/30 px-3 py-2 text-sm" onClick={saveSettings} disabled={saving}>{saving ? 'Saving...' : 'Save Changes'}</button>
+                </div>
+              </Panel>
+              )}
+
+              {activeTab === 'Trading' && (
+              <Panel className="lg:col-span-4" title="Trading">
+                <SelectField
+                  label="Default Base Currency"
+                  value={uiPrefs.baseCurrency}
+                  options={['USDT', 'USDC', 'BUSD']}
+                  onChange={(v) => setUiPrefs((p) => ({ ...p, baseCurrency: v as UiPrefs['baseCurrency'] }))}
+                />
+
+                <NumberField label="Slippage Tolerance (%)" value={uiPrefs.slippageTolerancePct} setValue={(v) => setUiPrefs((p) => ({ ...p, slippageTolerancePct: v }))} step="0.01" />
+                <NumberField label="Timeout for Orders (seconds)" value={uiPrefs.orderTimeoutSec} setValue={(v) => setUiPrefs((p) => ({ ...p, orderTimeoutSec: v }))} />
+
+                <div className="space-y-3 pt-1">
+                  <Toggle label="Trade Confirmation" checked={uiPrefs.tradeConfirmation} onChange={(v) => setUiPrefs((p) => ({ ...p, tradeConfirmation: v }))} onLabel="Enabled" offLabel="Disabled" />
+                  <Toggle label="Use DeepSeek Strategy Brain" checked={uiPrefs.useDeepSeekBrain} onChange={(v) => setUiPrefs((p) => ({ ...p, useDeepSeekBrain: v }))} onLabel="Enabled" offLabel="Disabled" />
+                  <Toggle label="Global Trading" checked={globalTradingEnabled} onChange={() => toggleTrading()} onLabel="Enabled" offLabel="Disabled" />
+                  <Toggle label="DeepSeek Portfolio Trading" checked={portfolioTradingEnabled} onChange={setPortfolioTradingEnabled} onLabel="Enabled" offLabel="Disabled" />
+                  <Toggle label="Use Testnet" checked={testnet} onChange={setTestnet} onLabel="Testnet" offLabel="Mainnet" />
+                </div>
+              </Panel>
+              )}
+
+              {activeTab === 'Risk Management' && (
+              <Panel className="lg:col-span-4" title="Risk Management">
+                <NumberField label="Max Daily Loss (%)" value={maxDailyLossPct} setValue={setMaxDailyLossPct} step="0.1" />
+                <NumberField label="Max Position Size (%)" value={maxPositionSizePct} setValue={setMaxPositionSizePct} />
+                <NumberField label="Max Leverage" value={maxLeverage} setValue={setMaxLeverage} />
+                <NumberField label="Kill-Switch Drawdown (%)" value={killSwitchDrawdownPct} setValue={setKillSwitchDrawdownPct} step="0.1" />
+                <NumberField label="Cooldown Period (minutes)" value={cooldownMinutes} setValue={setCooldownMinutes} />
+                <NumberField label="Max Trades Per Day" value={maxTradesPerDay} setValue={setMaxTradesPerDay} />
+                <NumberField label="Max Consecutive Losses" value={maxConsecutiveLosses} setValue={setMaxConsecutiveLosses} />
+                <NumberField label="Confidence Floor (0-1)" value={minConfidence} setValue={setMinConfidence} step="0.01" />
+                <NumberField label="Allocated Portfolio Balance" value={deepseekBalance} setValue={setDeepseekBalance} step="1" />
+
+                <button className="mt-3 w-full rounded-lg border border-emerald-300/30 bg-emerald-500/20 hover:bg-emerald-500/30 px-3 py-2 text-sm" onClick={saveSettings} disabled={saving}>{saving ? 'Saving...' : 'Save Changes'}</button>
+
+                {riskValidation.length > 0 && <div className="mt-2 text-xs text-amber-300">{riskValidation[0]}</div>}
+              </Panel>
+              )}
+
+              {(activeTab === 'Trading' || activeTab === 'Advanced') && (
+              <Panel className="lg:col-span-8" title="Operations">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <button className="rounded-lg border border-red-400/40 bg-red-900/30 hover:bg-red-900/50 px-3 py-2 text-sm" onClick={closeAllPositions}>Close All Positions</button>
+                  <button className="rounded-lg border border-white/20 bg-white/5 hover:bg-white/10 px-3 py-2 text-sm" onClick={() => load(true)}>{refreshing ? 'Refreshing...' : 'Refresh Data'}</button>
+                  <button className="rounded-lg border border-cyan-300/30 bg-cyan-500/20 hover:bg-cyan-500/30 px-3 py-2 text-sm" onClick={testConnection}>{testing ? 'Testing...' : 'Retest Binance API'}</button>
+                </div>
+
+                <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                  <InfoRow label="Balance" value={typeof account.balance === 'number' ? money(account.balance) : '—'} />
+                  <InfoRow label="Available Margin" value={typeof account.availableMargin === 'number' ? money(account.availableMargin) : '—'} />
+                  <InfoRow label="Consecutive Losses" value={String(account.consecutiveLosses ?? '—')} />
+                  <InfoRow label="Recommended Risk" value={String(briefing?.recommendedRiskLevel || '—').toUpperCase()} />
+                  <InfoRow label="Market Regime" value={String(market.regime || '—').toUpperCase()} />
+                  <InfoRow label="Regime Confidence" value={`${market.regimeConfidence ?? '—'}%`} />
+                </div>
+              </Panel>
+              )}
+
+              {activeTab === 'Notifications' && (
+              <Panel className="lg:col-span-4" title="Notifications">
+                <div className="space-y-3">
+                  <Toggle label="Push Alerts" checked={notificationsPush} onChange={setNotificationsPush} onLabel="On" offLabel="Off" />
+                  <Toggle label="Email Alerts" checked={notificationsEmail} onChange={setNotificationsEmail} onLabel="On" offLabel="Off" />
+                  <Toggle label="Telegram Alerts" checked={notificationsTelegram} onChange={setNotificationsTelegram} onLabel="On" offLabel="Off" />
+                  <TextField label="Email Address" type="text" value={notificationEmail} onChange={setNotificationEmail} />
+                  <TextField label="Telegram Bot Token" type="password" value={telegramBotToken} onChange={setTelegramBotToken} />
+                  <TextField label="Telegram User ID" type="text" value={telegramUserId} onChange={setTelegramUserId} />
+                  <TextField label="Telegram Pairing Code" type="text" value={telegramPairingCode} onChange={setTelegramPairingCode} />
+                  <button className="w-full rounded-lg border border-cyan-300/30 bg-cyan-500/20 hover:bg-cyan-500/30 px-3 py-2 text-sm" onClick={testTelegramConnection} disabled={testingTelegram}>
+                    {testingTelegram ? 'Testing Telegram...' : 'Test Telegram Connection'}
+                  </button>
+                </div>
+              </Panel>
+              )}
+
+              {(activeTab === 'General' || activeTab === 'Advanced') && (
+              <Panel className="lg:col-span-4" title="Active Services">
+                <ServiceRow name="Backend Engine" running={Boolean(status?.engineConnected)} meta={`Last update ${lastUpdated || '—'}`} />
+                <ServiceRow name="Frontend Server" running={true} meta={`Auto-refresh ${refreshing ? 'active' : 'idle'}`} />
+                <button className="mt-4 w-full rounded-lg border border-white/20 bg-white/5 hover:bg-white/10 px-3 py-2 text-sm" onClick={() => load(true)}>
+                  Refresh Service Status
                 </button>
-                <button
-                  onClick={checkTradingStatus}
-                  className="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-bold transition-all"
-                >
-                  🔄 Refresh Status
-                </button>
-              </div>
-            </div>
-          </motion.div>
-        )}
+              </Panel>
+              )}
+            </main>
+          </div>
 
-        {/* Risk Management Tab */}
-        {activeTab === 'risk' && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="space-y-6"
-          >
-            <div className="bg-gray-900 rounded-lg p-6">
-              <h2 className="text-xl font-bold mb-6">Risk Management Parameters</h2>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* Max Daily Loss */}
-                <div className="bg-gray-800 rounded-lg p-4">
-                  <label className="block text-sm font-bold mb-2">Max Daily Loss (%)</label>
-                  <input
-                    type="number"
-                    value={maxDailyLoss}
-                    onChange={(e) => setMaxDailyLoss(Number(e.target.value))}
-                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white font-mono focus:outline-none focus:border-cyan-500"
-                  />
-                  <p className="text-xs text-gray-400 mt-2">Trading stops if loss exceeds this percentage</p>
-                </div>
+          <footer className="mt-8 border-t border-white/10 pt-5 text-center text-sm text-slate-400">
+            <p>© 2024 Helix.One - All rights reserved.</p>
+            <p className="mt-1">Powered by the Helix Engine • Real-time algorithmic trading</p>
+            <p className="mt-1">Built by Darren Headley</p>
+          </footer>
+        </div>
+      </div>
+    </>
+  );
+}
 
-                {/* Max Position Size */}
-                <div className="bg-gray-800 rounded-lg p-4">
-                  <label className="block text-sm font-bold mb-2">Max Position Size (%)</label>
-                  <input
-                    type="number"
-                    value={maxPositionSize}
-                    onChange={(e) => setMaxPositionSize(Number(e.target.value))}
-                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white font-mono focus:outline-none focus:border-cyan-500"
-                  />
-                  <p className="text-xs text-gray-400 mt-2">Maximum capital per single position</p>
-                </div>
+function Panel({ title, className = '', children }: { title: string; className?: string; children: React.ReactNode }) {
+  return (
+    <section className={`rounded-2xl border border-white/10 bg-slate-900/60 backdrop-blur-md p-4 shadow-xl shadow-black/30 ${className}`}>
+      <h2 className="text-2xl font-semibold mb-3" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{title}</h2>
+      {children}
+    </section>
+  );
+}
 
-                {/* Max Leverage */}
-                <div className="bg-gray-800 rounded-lg p-4">
-                  <label className="block text-sm font-bold mb-2">Max Leverage (x)</label>
-                  <input
-                    type="number"
-                    value={maxLeverage}
-                    onChange={(e) => setMaxLeverage(Number(e.target.value))}
-                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white font-mono focus:outline-none focus:border-cyan-500"
-                  />
-                  <p className="text-xs text-gray-400 mt-2">Maximum leverage allowed for positions</p>
-                </div>
+function TextField({ label, value, onChange, type = 'text' }: { label: string; value: string; onChange: (v: string) => void; type?: string }) {
+  return (
+    <label className="block space-y-1 mb-2">
+      <div className="text-sm text-slate-300">{label}</div>
+      <input type={type} autoComplete="off" className="w-full rounded-lg border border-white/15 bg-slate-950/70 px-3 py-2 text-sm text-slate-100" value={value} onChange={(e) => onChange(e.target.value)} />
+    </label>
+  );
+}
 
-                {/* Daily Target Return */}
-                <div className="bg-gray-800 rounded-lg p-4">
-                  <label className="block text-sm font-bold mb-2">Daily Target Return (%)</label>
-                  <input
-                    type="number"
-                    value={dailyTargetReturn}
-                    onChange={(e) => setDailyTargetReturn(Number(e.target.value))}
-                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white font-mono focus:outline-none focus:border-cyan-500"
-                  />
-                  <p className="text-xs text-gray-400 mt-2">Target daily return percentage</p>
-                </div>
-              </div>
+function NumberField({ label, value, setValue, step = '1' }: { label: string; value: number; setValue: (v: number) => void; step?: string }) {
+  return (
+    <label className="block space-y-1 mb-2">
+      <div className="text-sm text-slate-300">{label}</div>
+      <input type="number" step={step} className="w-full rounded-lg border border-white/15 bg-slate-950/70 px-3 py-2 text-sm text-slate-100" value={value} onChange={(e) => setValue(Number(e.target.value))} />
+    </label>
+  );
+}
 
-              <div className="mt-6">
-                <button
-                  onClick={saveSettings}
-                  disabled={saving}
-                  className="px-6 py-3 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg font-bold transition-all"
-                >
-                  {saving ? '💾 Saving...' : '💾 Save Risk Settings'}
-                </button>
-              </div>
-            </div>
+function SelectField({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (v: string) => void }) {
+  return (
+    <label className="block space-y-1 mb-2">
+      <div className="text-sm text-slate-300">{label}</div>
+      <select className="w-full rounded-lg border border-white/15 bg-slate-950/70 px-3 py-2 text-sm text-slate-100" value={value} onChange={(e) => onChange(e.target.value)}>
+        {options.map((o) => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </label>
+  );
+}
 
-            {/* Current Risk Status */}
-            <div className="bg-gray-900 rounded-lg p-6">
-              <h3 className="text-lg font-bold mb-4">Current Risk Status</h3>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="bg-gray-800 rounded-lg p-4">
-                  <div className="text-xs text-gray-400">Daily P&L</div>
-                  <div className="text-xl font-bold text-green-400">+$234.50</div>
-                  <div className="text-xs text-gray-500">+2.35%</div>
-                </div>
-                <div className="bg-gray-800 rounded-lg p-4">
-                  <div className="text-xs text-gray-400">Max Drawdown</div>
-                  <div className="text-xl font-bold text-red-400">-$87.20</div>
-                  <div className="text-xs text-gray-500">-0.87%</div>
-                </div>
-                <div className="bg-gray-800 rounded-lg p-4">
-                  <div className="text-xs text-gray-400">Total Positions</div>
-                  <div className="text-xl font-bold text-white">12</div>
-                  <div className="text-xs text-gray-500">Across 6 models</div>
-                </div>
-                <div className="bg-gray-800 rounded-lg p-4">
-                  <div className="text-xs text-gray-400">Risk Level</div>
-                  <div className="text-xl font-bold text-yellow-400">MEDIUM</div>
-                  <div className="text-xs text-gray-500">Within limits</div>
-                </div>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </main>
+function Toggle({ label, checked, onChange, onLabel, offLabel }: { label: string; checked: boolean; onChange: (v: boolean) => void; onLabel: string; offLabel: string }) {
+  return (
+    <div className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+      <span className="text-sm text-slate-200">{label}</span>
+      <button
+        type="button"
+        onClick={() => onChange(!checked)}
+        className={`relative h-7 w-20 rounded-full border transition ${checked ? 'bg-emerald-500/30 border-emerald-400/60' : 'bg-slate-700/50 border-white/20'}`}
+      >
+        <span className={`absolute left-1 top-1 h-5 w-5 rounded-full bg-white transition ${checked ? 'translate-x-12' : 'translate-x-0'}`} />
+        <span className="absolute inset-0 flex items-center justify-center text-[11px] font-semibold text-slate-100">{checked ? onLabel : offLabel}</span>
+      </button>
     </div>
   );
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+      <div className="text-xs text-slate-400">{label}</div>
+      <div className="text-sm font-semibold text-slate-100">{value}</div>
+    </div>
+  );
+}
+
+function ServiceRow({ name, running, meta }: { name: string; running: boolean; meta: string }) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 mb-2">
+      <div className="flex items-center justify-between">
+        <span className="text-sm text-slate-200">{name}</span>
+        <span className={`text-xs rounded-full px-2 py-0.5 ${running ? 'bg-emerald-500/30 text-emerald-200' : 'bg-red-500/30 text-red-200'}`}>{running ? 'Running' : 'Down'}</span>
+      </div>
+      <div className="text-xs text-slate-400 mt-1">{meta}</div>
+    </div>
+  );
+}
+
+function money(v: number) {
+  return `$${v.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 }

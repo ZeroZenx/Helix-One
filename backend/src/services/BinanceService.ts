@@ -72,23 +72,28 @@ export class BinanceService {
       timeout: 10000,
     });
 
-    // Add request interceptor for authentication
+    // Add request interceptor for signed/private endpoints.
     this.client.interceptors.request.use((config) => {
-      if (config.url?.includes('/api/')) {
+      if (this.requiresAuth(config.url || '')) {
         const timestamp = Date.now();
-        const queryString = config.params ? new URLSearchParams(config.params).toString() : '';
-        const body = config.data ? JSON.stringify(config.data) : '';
-        const signature = this.generateSignature(queryString + body, timestamp);
+        const params = {
+          ...(config.params || {}),
+          timestamp,
+        } as Record<string, string | number | boolean>;
+
+        const queryString = new URLSearchParams(
+          Object.entries(params).map(([key, value]) => [key, String(value)])
+        ).toString();
+        const signature = this.generateSignature(queryString);
         
         config.headers = {
-          ...config.headers,
+          ...(config.headers as any),
           'X-MBX-APIKEY': this.config.apiKey,
           'Content-Type': 'application/json',
-        };
+        } as any;
         
         config.params = {
-          ...config.params,
-          timestamp,
+          ...params,
           signature,
         };
       }
@@ -96,11 +101,17 @@ export class BinanceService {
     });
   }
 
-  private generateSignature(queryString: string, timestamp: number): string {
-    const message = queryString + timestamp;
+  private requiresAuth(url: string): boolean {
+    // Public market endpoints must remain unsigned.
+    const publicPaths = ['/fapi/v1/ping', '/fapi/v1/time', '/fapi/v1/ticker', '/fapi/v1/klines'];
+    if (publicPaths.some((path) => url.startsWith(path))) return false;
+    return url.startsWith('/fapi/');
+  }
+
+  private generateSignature(queryString: string): string {
     return crypto
       .createHmac('sha256', this.config.secretKey)
-      .update(message)
+      .update(queryString)
       .digest('hex');
   }
 
@@ -109,9 +120,10 @@ export class BinanceService {
     try {
       const response = await this.client.get('/fapi/v2/account');
       return response.data;
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error fetching account info:', error);
-      throw new Error('Failed to fetch account information');
+      const detail = error?.response?.data?.msg || error?.message || 'Failed to fetch account information';
+      throw new Error(detail);
     }
   }
 

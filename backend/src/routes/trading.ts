@@ -1,272 +1,337 @@
 import { Router } from 'express';
+import axios from 'axios';
 import { LiveTradingService, TradingConfig, TradeSignal } from '../services/LiveTradingService';
 import { BinanceService } from '../services/BinanceService';
+import { SettingsStore } from '../services/SettingsStore';
+import { RiskIntelService } from '../services/RiskIntelService';
+import { authenticateAdmin } from '../middleware/auth';
+import { StructuredLogger } from '../services/StructuredLogger';
 
 const router = Router();
-
-// Initialize trading service (this would be done in your main app)
+const settingsStore = new SettingsStore();
+const riskIntel = new RiskIntelService();
+const logger = new StructuredLogger('trading');
 let tradingService: LiveTradingService | null = null;
 
-// Trading configuration
-const tradingConfig: TradingConfig = {
-  maxPositionSize: 0.1, // 10% of account per position
-  maxDailyLoss: 0.05, // 5% max daily loss
-  maxLeverage: 5, // 5x max leverage
-  stopLossPercentage: 0.02, // 2% stop loss
-  takeProfitPercentage: 0.05, // 5% take profit
-  minTradeAmount: 10 // $10 minimum trade
-};
+function buildTradingConfigFromSettings(): TradingConfig {
+  const s = settingsStore.get();
+  return {
+    maxPositionSize: s.riskSettings.maxPositionSizePct / 100,
+    maxDailyLoss: s.riskSettings.maxDailyLossPct / 100,
+    maxLeverage: s.riskSettings.maxLeverage,
+    stopLossPercentage: 0.02,
+    takeProfitPercentage: 0.05,
+    minTradeAmount: 10,
+    killSwitchDrawdownPct: s.riskSettings.killSwitchDrawdownPct / 100,
+    cooldownMinutes: s.riskSettings.cooldownMinutes,
+    maxTradesPerDay: s.riskSettings.maxTradesPerDay,
+    maxConsecutiveLosses: s.riskSettings.maxConsecutiveLosses,
+    minConfidence: s.riskSettings.minConfidence,
+  };
+}
 
-// Initialize trading service
-export const initializeTrading = async (binanceConfig: any) => {
+async function ensureTradingService() {
+  if (tradingService) return tradingService;
+
+  const s = settingsStore.get();
+  if (!s.masterApiKey || !s.masterSecretKey) return null;
+
+  tradingService = new LiveTradingService(
+    { apiKey: s.masterApiKey, secretKey: s.masterSecretKey, testnet: s.testnet },
+    buildTradingConfigFromSettings()
+  );
+
+  await tradingService.initialize();
+
+  // DeepSeek-only account
+  const deepseekAccount = s.modelAccounts.find((m) => m.modelId === 1) || {
+    modelId: 1,
+    modelName: 'DeepSeek Chat V3.1',
+    balance: 10000,
+    tradingEnabled: false,
+  };
+
+  tradingService.createModelAccount('1', 'DeepSeek Chat V3.1', deepseekAccount.balance || 10000);
+  tradingService.setTradingEnabled(s.tradingEnabled);
+
+  return tradingService;
+}
+
+router.get('/health', (req, res) => {
+  res.json({ ok: true, ts: new Date().toISOString() });
+});
+
+router.get('/status', async (req, res) => {
   try {
-    tradingService = new LiveTradingService(binanceConfig, tradingConfig);
-    await tradingService.initialize();
-    console.log('✅ Trading service initialized');
-    return tradingService;
-  } catch (error) {
-    console.error('Failed to initialize trading service:', error);
-    throw error;
-  }
-};
+    const svc = await ensureTradingService();
+    if (!svc) {
+      return res.json({
+        connected: false,
+        enabled: false,
+        accounts: 0,
+        activePortfolios: [],
+        engineConnected: false,
+        globalTradingEnabled: false,
+        portfolioTradingEnabled: false,
+        exchangeAuthConnected: false,
+        exchangeAuthError: 'trading_service_not_initialized',
+      });
+    }
+    await svc.updatePositions();
+    const tradingStatus = svc.getTradingStatus();
+    const portfolioEnabled = tradingStatus.activePortfolios.some((p) => p.tradingEnabled);
+    let exchangeAuthConnected = false;
+    let exchangeAuthError: string | null = null;
+    try {
+      await svc.getExchangeAccountInfo();
+      exchangeAuthConnected = true;
+    } catch (error: any) {
+      exchangeAuthError = error?.message || 'exchange_account_fetch_failed';
+    }
 
-// Get trading status
-router.get('/status', (req, res) => {
-  if (!tradingService) {
-    return res.status(400).json({ error: 'Trading service not initialized' });
-  }
-
-  const status = tradingService.getTradingStatus();
-  res.json(status);
-});
-
-// Get all model accounts
-router.get('/accounts', (req, res) => {
-  if (!tradingService) {
-    return res.status(400).json({ error: 'Trading service not initialized' });
-  }
-
-  const accounts = tradingService.getAllModelAccounts();
-  res.json(accounts);
-});
-
-// Get specific model account
-router.get('/accounts/:modelId', (req, res) => {
-  if (!tradingService) {
-    return res.status(400).json({ error: 'Trading service not initialized' });
-  }
-
-  const { modelId } = req.params;
-  const account = tradingService.getModelAccount(modelId);
-  
-  if (!account) {
-    return res.status(404).json({ error: 'Model account not found' });
-  }
-
-  res.json(account);
-});
-
-// Create model account
-router.post('/accounts', (req, res) => {
-  if (!tradingService) {
-    return res.status(400).json({ error: 'Trading service not initialized' });
-  }
-
-  const { modelId, modelName, allocatedBalance } = req.body;
-
-  if (!modelId || !modelName || !allocatedBalance) {
-    return res.status(400).json({ error: 'Missing required fields' });
-  }
-
-  try {
-    const account = tradingService.createModelAccount(modelId, modelName, allocatedBalance);
-    res.json(account);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Process trade signal
-router.post('/signals', async (req, res) => {
-  if (!tradingService) {
-    return res.status(400).json({ error: 'Trading service not initialized' });
-  }
-
-  const signal: TradeSignal = req.body;
-
-  // Validate signal
-  if (!signal.modelId || !signal.symbol || !signal.side || !signal.type) {
-    return res.status(400).json({ error: 'Invalid signal format' });
-  }
-
-  try {
-    const success = await tradingService.processTradeSignal(signal);
-    res.json({ success, signal });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Toggle trading
-router.post('/toggle', (req, res) => {
-  if (!tradingService) {
-    return res.status(400).json({ error: 'Trading service not initialized' });
-  }
-
-  const { enabled } = req.body;
-  tradingService.setTradingEnabled(enabled);
-  
-  res.json({ enabled, message: `Trading ${enabled ? 'enabled' : 'disabled'}` });
-});
-
-// Update positions
-router.post('/update-positions', async (req, res) => {
-  if (!tradingService) {
-    return res.status(400).json({ error: 'Trading service not initialized' });
-  }
-
-  try {
-    await tradingService.updatePositions();
-    res.json({ success: true, message: 'Positions updated' });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Close all positions for a model
-router.post('/close-positions/:modelId', async (req, res) => {
-  if (!tradingService) {
-    return res.status(400).json({ error: 'Trading service not initialized' });
-  }
-
-  const { modelId } = req.params;
-
-  try {
-    await tradingService.closeAllPositions(modelId);
-    res.json({ success: true, message: `All positions closed for model ${modelId}` });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get Binance account info
-router.get('/binance/account', async (req, res) => {
-  if (!tradingService) {
-    return res.status(400).json({ error: 'Trading service not initialized' });
-  }
-
-  try {
-    // This would require access to the Binance service
-    // For now, return a placeholder
-    res.json({ message: 'Binance account info endpoint' });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Test Binance connectivity
-router.get('/binance/test', async (req, res) => {
-  if (!tradingService) {
-    return res.status(400).json({ error: 'Trading service not initialized' });
-  }
-
-  try {
-    // This would test the Binance connection
-    res.json({ connected: true, message: 'Binance connection test' });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Test connection with provided credentials
-router.post('/test-connection', async (req, res) => {
-  const { apiKey, secretKey, testnet } = req.body;
-
-  if (!apiKey || !secretKey) {
-    return res.status(400).json({ error: 'API key and secret key are required' });
-  }
-
-  try {
-    const binanceService = new BinanceService(apiKey, secretKey, testnet);
-    const accountInfo = await binanceService.getAccountInfo();
-    res.json({ success: true, connected: true, accountInfo });
+    res.json({
+      ...tradingStatus,
+      providerMode: 'deepseek_only',
+      engineConnected: tradingStatus.connected,
+      globalTradingEnabled: tradingStatus.enabled,
+      portfolioTradingEnabled: portfolioEnabled,
+      exchangeAuthConnected,
+      exchangeAuthError,
+    });
   } catch (error: any) {
-    res.status(500).json({ success: false, connected: false, error: error.message });
+    logger.error('status_failed', { error: error?.message || 'unknown' });
+    res.status(500).json({ error: error?.message || 'status_failed' });
   }
 });
 
-// Get current settings
 router.get('/settings', (req, res) => {
-  // In production, load from database
-  // For now, return mock data
+  const s = settingsStore.get();
   res.json({
-    masterApiKey: '',
-    testnet: true,
-    tradingEnabled: tradingService?.getTradingStatus().enabled || false,
-    modelAccounts: tradingService?.getAllModelAccounts() || []
+    ...s,
+    providerMode: 'deepseek_only',
+    modelAccounts: [{ modelId: 1, modelName: 'DeepSeek Chat V3.1', tradingEnabled: s.modelAccounts[0]?.tradingEnabled ?? false, balance: s.modelAccounts[0]?.balance ?? 10000 }],
   });
 });
 
-// Save settings
-router.post('/settings', async (req, res) => {
-  const { masterApiKey, masterSecretKey, testnet, modelAccounts, riskSettings } = req.body;
-
+router.post('/settings', authenticateAdmin, async (req, res) => {
   try {
-    // In production, save to database
-    // For now, just reinitialize trading service if keys are provided
-    if (masterApiKey && masterSecretKey) {
-      const binanceConfig = {
-        apiKey: masterApiKey,
-        secretKey: masterSecretKey,
-        testnet
-      };
+    const payload = req.body || {};
+    const current = settingsStore.get();
 
-      // Update trading config if risk settings provided
-      if (riskSettings) {
-        tradingConfig.maxDailyLoss = riskSettings.maxDailyLoss / 100;
-        tradingConfig.maxPositionSize = riskSettings.maxPositionSize / 100;
-        tradingConfig.maxLeverage = riskSettings.maxLeverage;
-      }
+    const next = {
+      ...current,
+      masterApiKey: payload.masterApiKey ?? current.masterApiKey,
+      masterSecretKey: payload.masterSecretKey ?? current.masterSecretKey,
+      deepseekApiKey: payload.deepseekApiKey ?? current.deepseekApiKey,
+      testnet: payload.testnet ?? current.testnet,
+      tradingEnabled: payload.tradingEnabled ?? current.tradingEnabled,
+      modelAccounts: [
+        {
+          modelId: 1,
+          modelName: 'DeepSeek Chat V3.1',
+          tradingEnabled: payload.modelAccounts?.[0]?.tradingEnabled ?? current.modelAccounts?.[0]?.tradingEnabled ?? false,
+          balance: payload.modelAccounts?.[0]?.balance ?? current.modelAccounts?.[0]?.balance ?? 10000,
+        },
+      ],
+      riskSettings: {
+        ...current.riskSettings,
+        ...(payload.riskSettings || {}),
+      },
+      notificationSettings: {
+        ...current.notificationSettings,
+        ...(payload.notificationSettings || {}),
+      },
+    };
 
-      tradingService = new LiveTradingService(binanceConfig, tradingConfig);
-      await tradingService.initialize();
+    settingsStore.set(next);
+    tradingService = null; // force re-init with new settings
+    await ensureTradingService();
 
-      // Initialize model accounts
-      if (modelAccounts) {
-        for (const model of modelAccounts) {
-          tradingService.createModelAccount(model.modelId.toString(), model.modelName, 10000);
-        }
-      }
-    }
+    logger.info('settings_saved', {
+      testnet: next.testnet,
+      tradingEnabled: next.tradingEnabled,
+      deepseekEnabled: next.modelAccounts?.[0]?.tradingEnabled ?? false,
+    });
 
-    res.json({ success: true, message: 'Settings saved successfully' });
+    res.json({ success: true, settings: next, providerMode: 'deepseek_only' });
   } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
+    logger.error('settings_save_failed', { error: error?.message || 'unknown' });
+    res.status(500).json({ success: false, error: error?.message || 'save_failed' });
   }
 });
 
-// Close all positions (across all models)
-router.post('/close-positions', async (req, res) => {
-  if (!tradingService) {
-    return res.status(400).json({ error: 'Trading service not initialized' });
-  }
+router.post('/telegram/test', authenticateAdmin, async (req, res) => {
+  try {
+    const s = settingsStore.get();
+    const botToken = String(req.body?.botToken ?? s.notificationSettings.telegramBotToken ?? '').trim();
+    const chatId = String(req.body?.chatId ?? s.notificationSettings.telegramUserId ?? '').trim();
+    const pairingCode = String(req.body?.pairingCode ?? s.notificationSettings.telegramPairingCode ?? '').trim();
 
-  const { modelId } = req.body;
+    if (!botToken || !chatId) {
+      return res.status(400).json({ success: false, error: 'telegram_bot_token_and_user_id_required' });
+    }
+
+    const message = [
+      'HELIX.ONE Telegram linked successfully.',
+      `Time: ${new Date().toISOString()}`,
+      pairingCode ? `Pairing: ${pairingCode}` : '',
+      'Status: Alerts channel active.'
+    ].filter(Boolean).join('\n');
+
+    const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+    const result = await axios.post(url, {
+      chat_id: chatId,
+      text: message,
+      disable_web_page_preview: true,
+    }, { timeout: 10000 });
+
+    if (!result.data?.ok) {
+      return res.status(500).json({ success: false, error: result.data?.description || 'telegram_send_failed' });
+    }
+
+    logger.info('telegram_test_ok', { chatId });
+    return res.json({ success: true, connected: true });
+  } catch (error: any) {
+    const description = error?.response?.data?.description || error?.message || 'telegram_send_failed';
+    logger.warn('telegram_test_failed', { error: description });
+    return res.status(500).json({ success: false, connected: false, error: description });
+  }
+});
+
+router.post('/test-connection', authenticateAdmin, async (req, res) => {
+  const { apiKey, secretKey, testnet } = req.body || {};
+  if (!apiKey || !secretKey) return res.status(400).json({ success: false, connected: false, error: 'API key and secret key are required' });
 
   try {
-    if (modelId) {
-      await tradingService.closeAllPositions(modelId);
-      res.json({ success: true, message: `All positions closed for model ${modelId}` });
-    } else {
-      // Close for all models
-      const accounts = tradingService.getAllModelAccounts();
-      for (const account of accounts) {
-        await tradingService.closeAllPositions(account.modelId);
-      }
-      res.json({ success: true, message: 'All positions closed for all models' });
-    }
+    const binanceService = new BinanceService({ apiKey, secretKey, testnet });
+    const accountInfo = await binanceService.getAccountInfo();
+    logger.info('connection_test_ok', { testnet: Boolean(testnet) });
+    res.json({ success: true, connected: true, accountInfo });
   } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
+    logger.warn('connection_test_failed', { error: error?.message || 'unknown' });
+    res.status(500).json({ success: false, connected: false, error: error?.message || 'test_failed' });
+  }
+});
+
+router.post('/toggle', authenticateAdmin, async (req, res) => {
+  try {
+    const enabled = Boolean(req.body?.enabled ?? req.body?.enable ?? false);
+    const current = settingsStore.get();
+    settingsStore.set({ ...current, tradingEnabled: enabled });
+
+    const svc = await ensureTradingService();
+    if (svc) svc.setTradingEnabled(enabled);
+
+    logger.info('trading_toggled', { enabled });
+    res.json({ success: true, enabled, message: `Trading ${enabled ? 'enabled' : 'disabled'}` });
+  } catch (error: any) {
+    logger.error('trading_toggle_failed', { error: error?.message || 'unknown' });
+    res.status(500).json({ success: false, error: error?.message || 'toggle_failed' });
+  }
+});
+
+router.post('/signals', authenticateAdmin, async (req, res) => {
+  try {
+    const svc = await ensureTradingService();
+    if (!svc) return res.status(400).json({ error: 'Trading service not initialized. Configure API keys first.' });
+
+    const signal: TradeSignal = req.body;
+    if (!signal.modelId || !signal.symbol || !signal.side || !signal.type) {
+      return res.status(400).json({ error: 'Invalid signal format' });
+    }
+
+    // hard enforce deepseek-only model account
+    signal.modelId = '1';
+
+    const success = await svc.processTradeSignal(signal);
+    logger.info('signal_processed', { success, symbol: signal.symbol, side: signal.side });
+    res.json({ success, signal });
+  } catch (error: any) {
+    logger.error('signal_failed', { error: error?.message || 'unknown' });
+    res.status(500).json({ error: error?.message || 'signal_failed' });
+  }
+});
+
+router.post('/close-positions', authenticateAdmin, async (req, res) => {
+  try {
+    const svc = await ensureTradingService();
+    if (!svc) return res.status(400).json({ error: 'Trading service not initialized' });
+
+    await svc.closeAllPositions('1');
+    logger.warn('positions_closed_all', { modelId: 1 });
+    res.json({ success: true, message: 'All DeepSeek positions closed' });
+  } catch (error: any) {
+    logger.error('close_positions_failed', { error: error?.message || 'unknown' });
+    res.status(500).json({ success: false, error: error?.message || 'close_failed' });
+  }
+});
+
+router.get('/daily-briefing', async (req, res) => {
+  try {
+    const svc = await ensureTradingService();
+    const account = svc?.getModelAccount('1');
+
+    let walletBalance = 0;
+    let availableMargin = 0;
+    let exchangeConnected = false;
+    let exchangeError: string | null = null;
+    if (svc) {
+      try {
+        const exchangeAccount = await svc.getExchangeAccountInfo();
+        walletBalance = Number(exchangeAccount.totalWalletBalance || 0);
+        availableMargin = Number(exchangeAccount.availableBalance || 0);
+        exchangeConnected = true;
+      } catch (error: any) {
+        exchangeError = error?.message || 'exchange_account_fetch_failed';
+      }
+    } else {
+      exchangeError = 'trading_service_not_initialized';
+    }
+
+    const briefing = await riskIntel.getDailyBriefing(
+      walletBalance,
+      availableMargin,
+      account?.dailyPnl ?? 0,
+      account?.consecutiveLosses ?? 0
+    );
+
+    res.json({
+      ...briefing,
+      providerMode: 'deepseek_only',
+      exchangeConnected,
+      exchangeError,
+      accountSource: exchangeConnected ? 'binance' : 'unavailable',
+      maxTradesToday: settingsStore.get().riskSettings.maxTradesPerDay,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || 'briefing_failed' });
+  }
+});
+
+router.get('/risk-context', async (req, res) => {
+  try {
+    const symbols = String(req.query.symbols || 'BTCUSDT,ETHUSDT').split(',').map((s) => s.trim()).filter(Boolean);
+    const snapshot = await riskIntel.getSnapshot(symbols);
+    res.json(snapshot);
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || 'risk_context_failed' });
+  }
+});
+
+router.get('/journal', async (req, res) => {
+  try {
+    const svc = await ensureTradingService();
+    if (!svc) return res.json({ entries: [], review: {} });
+
+    const limit = Number(req.query.limit || 200);
+    const lastN = Number(req.query.reviewWindow || 100);
+
+    res.json({
+      entries: svc.getJournalEntries(limit),
+      review: svc.getJournalReview(lastN),
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || 'journal_failed' });
   }
 });
 

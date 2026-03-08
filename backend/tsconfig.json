@@ -10,7 +10,7 @@
     "resolveJsonModule": true,
     "moduleResolution": "node"
   },
-  "include": ["src/**/*"],
+  "files": ["src/server.ts"],
   "exclude": ["node_modules"]
 }
 

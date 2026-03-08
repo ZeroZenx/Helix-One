@@ -4,7 +4,8 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "start:local": "HOST=127.0.0.1 PORT=3001 node dist/server.js"
   },
   "dependencies": {
     "@prisma/client": "^5.9.0",
@@ -24,4 +25,3 @@
     "prisma": "^5.9.0"
   }
 }
-

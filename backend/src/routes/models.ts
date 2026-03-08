@@ -108,14 +108,10 @@ router.post('/bulk-update', async (req, res) => {
 // Initialize models (seed data)
 router.post('/initialize', async (req, res) => {
   try {
-    const initialModels = [
-      { name: 'DeepSeek Chat V3.1', icon: '🐋', color: '#3B82F6', strategy: 'momentum', currentBalance: 10000, capital: 10000 },
-      { name: 'Grok-4', icon: '⚡', color: '#EF4444', strategy: 'hybrid', currentBalance: 10000, capital: 10000 },
-      { name: 'Claude Sonnet 4.5', icon: '⭐', color: '#F59E0B', strategy: 'mean_reversion', currentBalance: 10000, capital: 10000 },
-      { name: 'GPT 5', icon: '🅖', color: '#8B5CF6', strategy: 'momentum', currentBalance: 10000, capital: 10000 },
-      { name: 'Qwen3 Max', icon: '🟣', color: '#A855F7', strategy: 'momentum', currentBalance: 10000, capital: 10000 },
-      { name: 'Gemini 2.5 Pro', icon: '💎', color: '#10B981', strategy: 'mean_reversion', currentBalance: 10000, capital: 10000 }
-    ];
+    const initialModels = Array.isArray(req.body?.models) ? req.body.models : [];
+    if (initialModels.length === 0) {
+      return res.status(400).json({ error: 'No models provided. Send an explicit models array in request body.' });
+    }
     
     const created = [];
     for (const modelData of initialModels) {

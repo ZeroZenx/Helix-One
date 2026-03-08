@@ -1,9 +1,60 @@
 import { Request, Response } from 'express';
-import { AIService } from '../services/ai.service';
+import { AIProvider, AIService } from '../services/ai.service';
 import { PrismaClient } from '@prisma/client';
+import { BinanceService } from '../services/BinanceService';
+import { RiskIntelService } from '../services/RiskIntelService';
+import { SettingsStore } from '../services/SettingsStore';
 
 const aiService = new AIService();
 const prisma = new PrismaClient();
+const riskIntel = new RiskIntelService();
+const settingsStore = new SettingsStore();
+
+function normalizeSymbol(input: string): string {
+  const s = String(input || '').toUpperCase().trim();
+  if (!s) return '';
+  return s.endsWith('USDT') ? s : `${s}USDT`;
+}
+
+function ema(values: number[], period: number): number {
+  if (values.length === 0) return 0;
+  const k = 2 / (period + 1);
+  let out = values[0];
+  for (let i = 1; i < values.length; i += 1) out = values[i] * k + out * (1 - k);
+  return out;
+}
+
+function rsi(values: number[], period = 14): number {
+  if (values.length <= period) return 50;
+  let gains = 0;
+  let losses = 0;
+  for (let i = values.length - period; i < values.length; i += 1) {
+    const diff = values[i] - values[i - 1];
+    if (diff >= 0) gains += diff;
+    else losses += Math.abs(diff);
+  }
+  if (losses === 0) return 100;
+  const rs = (gains / period) / (losses / period);
+  return 100 - (100 / (1 + rs));
+}
+
+function macd(values: number[]): number {
+  if (values.length < 26) return 0;
+  return ema(values, 12) - ema(values, 26);
+}
+
+function atr(klines: any[], period = 14): number {
+  if (klines.length <= period) return 0;
+  const trs: number[] = [];
+  for (let i = 1; i < klines.length; i += 1) {
+    const high = Number(klines[i][2] || 0);
+    const low = Number(klines[i][3] || 0);
+    const prevClose = Number(klines[i - 1][4] || 0);
+    const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+    trs.push(tr);
+  }
+  return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
+}
 
 /**
  * Chat with a trading model
@@ -11,27 +62,16 @@ const prisma = new PrismaClient();
 export const chatWithModel = async (req: Request, res: Response) => {
   try {
     const { modelId } = req.params;
-    const { message, provider = 'openai' } = req.body;
+    const { message } = req.body;
+    const provider = 'deepseek';
 
     if (!message) {
       return res.status(400).json({ error: 'Message is required' });
     }
 
-    // Get model data (fallback if database not available)
-    let modelData;
-    try {
-      modelData = await prisma.model.findUnique({
-        where: { id: parseInt(modelId) }
-      });
-    } catch (error) {
-      // Fallback to demo data
-      const demoModels = [
-        { id: 1, name: 'Helix_Momentum_Alpha', roi: 12.4, winRate: 68.5, totalTrades: 127, strategy: 'momentum', currentBalance: 11240, avgLeverage: 2.1 },
-        { id: 2, name: 'Helix_Reversion_Beta', roi: 7.8, winRate: 72.3, totalTrades: 94, strategy: 'mean_reversion', currentBalance: 10780, avgLeverage: 1.4 },
-        { id: 3, name: 'Helix_Hybrid_Gamma', roi: 15.8, winRate: 65.2, totalTrades: 156, strategy: 'hybrid', currentBalance: 11580, avgLeverage: 2.8 }
-      ];
-      modelData = demoModels.find(m => m.id === parseInt(modelId));
-    }
+    const modelData = await prisma.model.findUnique({
+      where: { id: parseInt(modelId) }
+    });
 
     if (!modelData) {
       return res.status(404).json({ error: 'Model not found' });
@@ -41,7 +81,7 @@ export const chatWithModel = async (req: Request, res: Response) => {
       modelData.name,
       message,
       modelData,
-      provider as 'openai' | 'deepseek'
+      'deepseek'
     );
 
     res.json({
@@ -52,10 +92,7 @@ export const chatWithModel = async (req: Request, res: Response) => {
 
   } catch (error: any) {
     console.error('Chat error:', error);
-    res.status(500).json({ 
-      error: error.message,
-      fallback: "I'm a trading model on Helix.One. How can I help you understand my performance?"
-    });
+    res.status(500).json({ error: error.message });
   }
 };
 
@@ -64,26 +101,10 @@ export const chatWithModel = async (req: Request, res: Response) => {
  */
 export const getMarketAnalysis = async (req: Request, res: Response) => {
   try {
-    const { provider = 'deepseek' } = req.query;
+    const provider = 'deepseek';
 
-    // Mock market data (in production, fetch from real sources)
-    const marketData = {
-      btc: { price: 95000, change24h: 2.4, volume: '28.5B' },
-      eth: { price: 3500, change24h: 1.8, volume: '12.3B' },
-      sentiment: 'bullish',
-      fearGreedIndex: 72
-    };
-
-    const analysis = await aiService.analyzeMarket(
-      marketData,
-      provider as 'openai' | 'deepseek'
-    );
-
-    res.json({
-      analysis,
-      marketData,
-      provider,
-      timestamp: new Date().toISOString()
+    return res.status(501).json({
+      error: 'Market analysis requires a live market data provider. No mock data is served.'
     });
 
   } catch (error: any) {
@@ -98,40 +119,106 @@ export const getMarketAnalysis = async (req: Request, res: Response) => {
 export const getTradingSignal = async (req: Request, res: Response) => {
   try {
     const { symbol, provider = 'deepseek' } = req.body;
-
-    if (!symbol) {
+    const selectedProvider: AIProvider = provider === 'deepseek' ? 'deepseek' : 'deepseek';
+    const normalizedSymbol = normalizeSymbol(symbol);
+    if (!normalizedSymbol) {
       return res.status(400).json({ error: 'Symbol is required' });
     }
 
-    // Mock price and indicator data
+    const settings = settingsStore.get();
+    const binance = new BinanceService({
+      apiKey: settings.masterApiKey || 'public',
+      secretKey: settings.masterSecretKey || 'public',
+      testnet: settings.testnet,
+    });
+
+    const [ticker, klines, riskSnapshot] = await Promise.all([
+      binance.get24hrTicker(normalizedSymbol),
+      binance.getKlines(normalizedSymbol, '5m', 200),
+      riskIntel.getSnapshot([normalizedSymbol, 'BTCUSDT', 'ETHUSDT']),
+    ]);
+
+    if (!ticker || !Array.isArray(klines) || klines.length < 30) {
+      return res.status(503).json({ error: `Insufficient live market data for ${normalizedSymbol}.` });
+    }
+
+    const closes = klines.map((k) => Number(k[4] || 0)).filter((x) => Number.isFinite(x) && x > 0);
+    const volumes = klines.map((k) => Number(k[5] || 0)).filter((x) => Number.isFinite(x) && x >= 0);
+    if (closes.length < 30 || volumes.length === 0) {
+      return res.status(503).json({ error: `Live candle parsing failed for ${normalizedSymbol}.` });
+    }
+
+    let balance = 0;
+    let availableMargin = 0;
+    try {
+      if (settings.masterApiKey && settings.masterSecretKey) {
+        const account = await binance.getAccountInfo();
+        balance = Number(account.totalWalletBalance || 0);
+        availableMargin = Number(account.availableBalance || 0);
+      }
+    } catch {
+      // Leave account fields as 0; hard gates will prefer NO_TRADE when account context is weak.
+    }
+
     const priceData = {
-      current: 95000,
-      change: 2.4,
-      high24h: 96000,
-      low24h: 93000
+      current: Number(ticker.lastPrice || closes[closes.length - 1]),
+      change: Number(ticker.priceChangePercent || 0),
+      high: Number(ticker.highPrice || 0),
+      low: Number(ticker.lowPrice || 0),
+      quoteVolume: Number(ticker.quoteVolume || 0),
+      bid: Number(ticker.bidPrice || 0),
+      ask: Number(ticker.askPrice || 0),
     };
 
     const indicators = {
-      rsi: 65,
-      macd: 150,
-      ema20: 94500,
-      volume: 28.5
+      rsi: Number(rsi(closes).toFixed(2)),
+      macd: Number(macd(closes).toFixed(6)),
+      ema20: Number(ema(closes.slice(-60), 20).toFixed(6)),
+      volume: volumes[volumes.length - 1],
+      atr14: Number(atr(klines, 14).toFixed(6)),
     };
 
-    const signal = await aiService.getTradingSignal(
-      symbol,
+    const runtimeContext = {
+      generatedAt: new Date().toISOString(),
+      account: {
+        balance,
+        availableMargin,
+        previousDayPnl: 0,
+        consecutiveLosses: 0,
+      },
+      market: {
+        regime: riskSnapshot.marketRegime,
+        regimeConfidence: riskSnapshot.regimeConfidence,
+        liquidityState: riskSnapshot.liquidityState,
+        volatilityState: riskSnapshot.volatilityState,
+      },
+      news: riskSnapshot.newsHeadlines,
+      notes: riskSnapshot.riskFlags,
+      maxTradesToday: settings.riskSettings.maxTradesPerDay,
+      riskSettings: {
+        maxDailyLossPct: settings.riskSettings.maxDailyLossPct,
+        maxLeverage: settings.riskSettings.maxLeverage,
+        maxConsecutiveLosses: settings.riskSettings.maxConsecutiveLosses,
+        minConfidence: settings.riskSettings.minConfidence,
+      },
+    };
+
+    const decision = await aiService.getStructuredTradingDecision(
+      normalizedSymbol,
       priceData,
       indicators,
-      provider as 'openai' | 'deepseek'
+      selectedProvider,
+      runtimeContext
     );
 
     res.json({
-      symbol,
-      signal,
-      priceData,
-      indicators,
-      provider,
-      timestamp: new Date().toISOString()
+      provider: selectedProvider,
+      decision,
+      context: {
+        symbol: normalizedSymbol,
+        marketDataTimestamp: new Date(Number(klines[klines.length - 1][6] || Date.now())).toISOString(),
+        runtimeGeneratedAt: runtimeContext.generatedAt,
+      },
     });
 
   } catch (error: any) {
@@ -146,31 +233,16 @@ export const getTradingSignal = async (req: Request, res: Response) => {
 export const analyzeModelPerformance = async (req: Request, res: Response) => {
   try {
     const { modelId } = req.params;
-    const { provider = 'openai' } = req.query;
+    const provider = 'deepseek';
 
-    // Get model data
-    let modelData, tradeHistory;
-    try {
-      modelData = await prisma.model.findUnique({
-        where: { id: parseInt(modelId) }
-      });
-      tradeHistory = await prisma.trade.findMany({
-        where: { modelId: parseInt(modelId) },
-        orderBy: { timestamp: 'desc' },
-        take: 50
-      });
-    } catch (error) {
-      // Fallback
-      modelData = { 
-        name: 'Helix_Momentum_Alpha', 
-        roi: 12.4, 
-        winRate: 68.5, 
-        totalTrades: 127, 
-        strategy: 'momentum',
-        drawdown: -3.2
-      };
-      tradeHistory = [];
-    }
+    const modelData = await prisma.model.findUnique({
+      where: { id: parseInt(modelId) }
+    });
+    const tradeHistory = await prisma.trade.findMany({
+      where: { modelId: parseInt(modelId) },
+      orderBy: { createdAt: 'desc' },
+      take: 50
+    });
 
     if (!modelData) {
       return res.status(404).json({ error: 'Model not found' });
@@ -179,7 +251,7 @@ export const analyzeModelPerformance = async (req: Request, res: Response) => {
     const analysis = await aiService.analyzePerformance(
       modelData,
       tradeHistory,
-      provider as 'openai' | 'deepseek'
+      'deepseek'
     );
 
     res.json({
@@ -200,17 +272,14 @@ export const analyzeModelPerformance = async (req: Request, res: Response) => {
  */
 export const getAIStatus = async (req: Request, res: Response) => {
   try {
-    const providers = aiService.getAvailableProviders();
+    const deepseek = aiService.isDeepSeekConfigured();
 
     res.json({
-      available: providers,
-      total: providers.length,
+      available: deepseek ? ['deepseek'] : [],
+      total: deepseek ? 1 : 0,
       providers: {
-        openai: aiService.isOpenAIConfigured(),
-        deepseek: aiService.isDeepSeekConfigured(),
-        claude: aiService.isClaudeConfigured(),
-        gemini: aiService.isGeminiConfigured(),
-        grok: aiService.isGrokConfigured()
+        deepseek,
+        mode: 'deepseek_only'
       }
     });
 
@@ -219,4 +288,3 @@ export const getAIStatus = async (req: Request, res: Response) => {
     res.status(500).json({ error: error.message });
   }
 };
-
