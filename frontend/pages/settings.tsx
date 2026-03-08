@@ -57,6 +57,8 @@ export default function Settings() {
   const [telegramBotToken, setTelegramBotToken] = useState('');
   const [telegramUserId, setTelegramUserId] = useState('');
   const [telegramPairingCode, setTelegramPairingCode] = useState('');
+  const [telegramMinSeverity, setTelegramMinSeverity] = useState<'info' | 'warning' | 'critical'>('info');
+  const [telegramRateLimitSec, setTelegramRateLimitSec] = useState(120);
   const [testingTelegram, setTestingTelegram] = useState(false);
 
   const [status, setStatus] = useState<any>(null);
@@ -80,9 +82,10 @@ export default function Settings() {
   }, [maxDailyLossPct, maxPositionSizePct, killSwitchDrawdownPct, maxLeverage, cooldownMinutes, maxTradesPerDay, maxConsecutiveLosses, minConfidence]);
 
   function applySettings(s: any) {
-    setMasterApiKey(s.masterApiKey || '');
-    setMasterSecretKey(s.masterSecretKey || '');
-    setDeepseekApiKey(s.deepseekApiKey || '');
+    const isMasked = (v: string) => /^\*+$/.test(v || '');
+    if (typeof s.masterApiKey === 'string' && s.masterApiKey && !isMasked(s.masterApiKey)) setMasterApiKey(s.masterApiKey);
+    if (typeof s.masterSecretKey === 'string' && s.masterSecretKey) setMasterSecretKey(s.masterSecretKey);
+    if (typeof s.deepseekApiKey === 'string' && s.deepseekApiKey) setDeepseekApiKey(s.deepseekApiKey);
     setTestnet(Boolean(s.testnet));
 
     setGlobalTradingEnabled(Boolean(s.tradingEnabled));
@@ -106,9 +109,11 @@ export default function Settings() {
     setNotificationsEmail(Boolean(n.emailEnabled ?? false));
     setNotificationsTelegram(Boolean(n.telegramEnabled ?? false));
     setNotificationEmail(String(n.email || ''));
-    setTelegramBotToken(String(n.telegramBotToken || ''));
+    if (typeof n.telegramBotToken === 'string' && n.telegramBotToken) setTelegramBotToken(String(n.telegramBotToken));
     setTelegramUserId(String(n.telegramUserId || ''));
     setTelegramPairingCode(String(n.telegramPairingCode || ''));
+    setTelegramMinSeverity((n.telegramMinSeverity || 'info') as 'info' | 'warning' | 'critical');
+    setTelegramRateLimitSec(Number(n.telegramRateLimitSec ?? 120));
   }
 
   async function load(silent = false) {
@@ -227,6 +232,8 @@ export default function Settings() {
             telegramBotToken,
             telegramUserId,
             telegramPairingCode,
+            telegramMinSeverity,
+            telegramRateLimitSec,
           },
         }),
       });
@@ -295,8 +302,7 @@ export default function Settings() {
     }
   }
 
-  async function toggleTrading() {
-    const next = !globalTradingEnabled;
+  async function toggleTrading(next: boolean) {
     const ok = window.confirm(`${next ? 'Enable' : 'Disable'} global trading?`);
     if (!ok) return;
 
@@ -416,9 +422,8 @@ export default function Settings() {
                 <div className="space-y-3 pt-1">
                   <Toggle label="Trade Confirmation" checked={uiPrefs.tradeConfirmation} onChange={(v) => setUiPrefs((p) => ({ ...p, tradeConfirmation: v }))} onLabel="Enabled" offLabel="Disabled" />
                   <Toggle label="Use DeepSeek Strategy Brain" checked={uiPrefs.useDeepSeekBrain} onChange={(v) => setUiPrefs((p) => ({ ...p, useDeepSeekBrain: v }))} onLabel="Enabled" offLabel="Disabled" />
-                  <Toggle label="Global Trading" checked={globalTradingEnabled} onChange={() => toggleTrading()} onLabel="Enabled" offLabel="Disabled" />
+                  <Toggle label="Global Trading" checked={globalTradingEnabled} onChange={toggleTrading} onLabel="Enabled" offLabel="Disabled" />
                   <Toggle label="DeepSeek Portfolio Trading" checked={portfolioTradingEnabled} onChange={setPortfolioTradingEnabled} onLabel="Enabled" offLabel="Disabled" />
-                  <Toggle label="Use Testnet" checked={testnet} onChange={setTestnet} onLabel="Testnet" offLabel="Mainnet" />
                 </div>
               </Panel>
               )}
@@ -470,6 +475,8 @@ export default function Settings() {
                   <TextField label="Telegram Bot Token" type="password" value={telegramBotToken} onChange={setTelegramBotToken} />
                   <TextField label="Telegram User ID" type="text" value={telegramUserId} onChange={setTelegramUserId} />
                   <TextField label="Telegram Pairing Code" type="text" value={telegramPairingCode} onChange={setTelegramPairingCode} />
+                  <SelectField label="Telegram Min Severity" value={telegramMinSeverity} options={['info', 'warning', 'critical']} onChange={(v) => setTelegramMinSeverity(v as 'info' | 'warning' | 'critical')} />
+                  <NumberField label="Telegram Rate Limit (seconds)" value={telegramRateLimitSec} setValue={setTelegramRateLimitSec} />
                   <button className="w-full rounded-lg border border-cyan-300/30 bg-cyan-500/20 hover:bg-cyan-500/30 px-3 py-2 text-sm" onClick={testTelegramConnection} disabled={testingTelegram}>
                     {testingTelegram ? 'Testing Telegram...' : 'Test Telegram Connection'}
                   </button>
@@ -479,8 +486,8 @@ export default function Settings() {
 
               {(activeTab === 'General' || activeTab === 'Advanced') && (
               <Panel className="lg:col-span-4" title="Active Services">
-                <ServiceRow name="Backend Engine" running={Boolean(status?.engineConnected)} meta={`Last update ${lastUpdated || '—'}`} />
-                <ServiceRow name="Frontend Server" running={true} meta={`Auto-refresh ${refreshing ? 'active' : 'idle'}`} />
+                <ServiceRow name="Backend Engine" state={status ? (Boolean(status?.engineConnected) ? 'running' : 'down') : 'unknown'} meta={`Last update ${lastUpdated || '—'}`} />
+                <ServiceRow name="Frontend Server" state={lastUpdated ? 'running' : 'unknown'} meta={`Auto-refresh ${refreshing ? 'active' : 'idle'}`} />
                 <button className="mt-4 w-full rounded-lg border border-white/20 bg-white/5 hover:bg-white/10 px-3 py-2 text-sm" onClick={() => load(true)}>
                   Refresh Service Status
                 </button>
@@ -563,12 +570,18 @@ function InfoRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ServiceRow({ name, running, meta }: { name: string; running: boolean; meta: string }) {
+function ServiceRow({ name, state, meta }: { name: string; state: 'running' | 'down' | 'unknown'; meta: string }) {
+  const badge = state === 'running'
+    ? 'bg-emerald-500/30 text-emerald-200'
+    : state === 'down'
+      ? 'bg-red-500/30 text-red-200'
+      : 'bg-amber-500/30 text-amber-200';
+  const label = state === 'running' ? 'Running' : state === 'down' ? 'Down' : 'Unknown';
   return (
     <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 mb-2">
       <div className="flex items-center justify-between">
         <span className="text-sm text-slate-200">{name}</span>
-        <span className={`text-xs rounded-full px-2 py-0.5 ${running ? 'bg-emerald-500/30 text-emerald-200' : 'bg-red-500/30 text-red-200'}`}>{running ? 'Running' : 'Down'}</span>
+        <span className={`text-xs rounded-full px-2 py-0.5 ${badge}`}>{label}</span>
       </div>
       <div className="text-xs text-slate-400 mt-1">{meta}</div>
     </div>

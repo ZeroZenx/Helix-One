@@ -4,14 +4,42 @@ import { LiveTradingService, TradingConfig, TradeSignal } from '../services/Live
 import { BinanceService } from '../services/BinanceService';
 import { SettingsStore } from '../services/SettingsStore';
 import { RiskIntelService } from '../services/RiskIntelService';
+import { TelegramAlertService, AlertSeverity } from '../services/TelegramAlertService';
 import { authenticateAdmin } from '../middleware/auth';
 import { StructuredLogger } from '../services/StructuredLogger';
 
 const router = Router();
 const settingsStore = new SettingsStore();
 const riskIntel = new RiskIntelService();
+const telegramAlerts = new TelegramAlertService();
 const logger = new StructuredLogger('trading');
 let tradingService: LiveTradingService | null = null;
+let lastExchangeAuthDownAlerted = false;
+
+async function sendTelegramAlert(
+  severity: AlertSeverity,
+  title: string,
+  lines: string[],
+  dedupeKey: string
+) {
+  const s = settingsStore.get();
+  const n = s.notificationSettings;
+  try {
+    await telegramAlerts.send({
+      enabled: Boolean(n.telegramEnabled),
+      botToken: n.telegramBotToken,
+      userId: n.telegramUserId,
+      minSeverity: n.telegramMinSeverity || 'info',
+      rateLimitSec: n.telegramRateLimitSec || 120,
+      severity,
+      title,
+      lines,
+      dedupeKey,
+    });
+  } catch (error: any) {
+    logger.warn('telegram_alert_failed', { error: error?.message || 'unknown', dedupeKey });
+  }
+}
 
 function buildTradingConfigFromSettings(): TradingConfig {
   const s = settingsStore.get();
@@ -54,6 +82,51 @@ async function ensureTradingService() {
   tradingService.createModelAccount('1', 'DeepSeek Chat V3.1', deepseekAccount.balance || 10000);
   tradingService.setTradingEnabled(s.tradingEnabled);
 
+  tradingService.on('trade_open', async (event: any) => {
+    await sendTelegramAlert(
+      'info',
+      'Trade Opened',
+      [
+        `Symbol: ${event.symbol}`,
+        `Side: ${event.side}`,
+        `Entry: ${Number(event.entry || 0).toFixed(6)}`,
+        `Qty: ${Number(event.quantity || 0).toFixed(6)}`,
+        `Leverage: ${event.leverage || 1}x`,
+        `Reason: ${event.reason || 'n/a'}`,
+      ],
+      `trade_open_${event.modelId}_${event.symbol}`
+    );
+  });
+
+  tradingService.on('trade_close', async (event: any) => {
+    await sendTelegramAlert(
+      Number(event.pnl || 0) >= 0 ? 'info' : 'warning',
+      'Trade Closed',
+      [
+        `Symbol: ${event.symbol}`,
+        `PnL: ${Number(event.pnl || 0) >= 0 ? '+' : ''}${Number(event.pnl || 0).toFixed(2)} USD`,
+        `Reason: ${event.reason || 'n/a'}`,
+        `Consecutive Losses: ${event.consecutiveLosses ?? 0}`,
+      ],
+      `trade_close_${event.modelId}_${event.symbol}`
+    );
+  });
+
+  tradingService.on('risk_event', async (event: any) => {
+    if (event?.type === 'kill_switch_triggered') {
+      await sendTelegramAlert(
+        'critical',
+        'Kill Switch Triggered',
+        [
+          `Model: ${event.modelId}`,
+          `Drawdown: ${(Number(event.drawdownPct || 0) * 100).toFixed(2)}%`,
+          'Trading disabled for this model.',
+        ],
+        `kill_switch_${event.modelId}`
+      );
+    }
+  });
+
   return tradingService;
 }
 
@@ -85,8 +158,26 @@ router.get('/status', async (req, res) => {
     try {
       await svc.getExchangeAccountInfo();
       exchangeAuthConnected = true;
+      if (lastExchangeAuthDownAlerted) {
+        await sendTelegramAlert(
+          'info',
+          'Exchange Connection Restored',
+          ['Binance account authentication recovered.'],
+          'exchange_auth_recovered'
+        );
+      }
+      lastExchangeAuthDownAlerted = false;
     } catch (error: any) {
       exchangeAuthError = error?.message || 'exchange_account_fetch_failed';
+      if (!lastExchangeAuthDownAlerted) {
+        await sendTelegramAlert(
+          'warning',
+          'Exchange Connection Issue',
+          [`Error: ${exchangeAuthError}`],
+          'exchange_auth_down'
+        );
+        lastExchangeAuthDownAlerted = true;
+      }
     }
 
     res.json({
@@ -106,8 +197,20 @@ router.get('/status', async (req, res) => {
 
 router.get('/settings', (req, res) => {
   const s = settingsStore.get();
+  const masked = (v: string) => (v ? '********' : '');
   res.json({
     ...s,
+    masterApiKey: masked(s.masterApiKey),
+    masterSecretKey: '',
+    deepseekApiKey: '',
+    notificationSettings: {
+      ...s.notificationSettings,
+      telegramBotToken: '',
+    },
+    hasMasterApiKey: Boolean(s.masterApiKey),
+    hasMasterSecretKey: Boolean(s.masterSecretKey),
+    hasDeepseekApiKey: Boolean(s.deepseekApiKey),
+    hasTelegramBotToken: Boolean(s.notificationSettings.telegramBotToken),
     providerMode: 'deepseek_only',
     modelAccounts: [{ modelId: 1, modelName: 'DeepSeek Chat V3.1', tradingEnabled: s.modelAccounts[0]?.tradingEnabled ?? false, balance: s.modelAccounts[0]?.balance ?? 10000 }],
   });

@@ -34,6 +34,8 @@ export interface RuntimeSettings {
     telegramBotToken: string;
     telegramUserId: string;
     telegramPairingCode: string;
+    telegramMinSeverity: 'info' | 'warning' | 'critical';
+    telegramRateLimitSec: number;
   };
 }
 
@@ -70,6 +72,8 @@ const defaultSettings: RuntimeSettings = {
     telegramBotToken: '',
     telegramUserId: '',
     telegramPairingCode: '',
+    telegramMinSeverity: 'info',
+    telegramRateLimitSec: 120,
   }
 };
 

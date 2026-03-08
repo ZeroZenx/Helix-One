@@ -112,6 +112,7 @@ export class LiveTradingService extends EventEmitter {
 
     const gate = this.validateSignal(signal, modelAccount);
     if (!gate.ok) {
+      this.emit('signal_rejected', { signal, reason: gate.reason });
       this.journal.append({
         ts: new Date().toISOString(),
         type: 'signal_rejected',
@@ -146,6 +147,16 @@ export class LiveTradingService extends EventEmitter {
         maxLeverage: this.config.maxLeverage,
       },
     });
+    this.emit('trade_open', {
+      modelId: signal.modelId,
+      symbol: signal.symbol,
+      side: signal.side,
+      entry: Number(orderResult.price),
+      quantity: Number(orderResult.quantity),
+      confidence: signal.confidence,
+      reason: signal.reason,
+      leverage: signal.leverage || 1,
+    });
 
     return true;
   }
@@ -179,6 +190,7 @@ export class LiveTradingService extends EventEmitter {
     if (drawdownPct >= killSwitchPct) {
       account.killSwitchTriggered = true;
       account.isActive = false;
+      this.emit('risk_event', { type: 'kill_switch_triggered', modelId: account.modelId, drawdownPct });
       return { ok: false, reason: 'kill_switch_triggered' };
     }
 
@@ -276,6 +288,7 @@ export class LiveTradingService extends EventEmitter {
       if (drawdownPct >= (this.config.killSwitchDrawdownPct ?? 0.05)) {
         account.killSwitchTriggered = true;
         account.isActive = false;
+        this.emit('risk_event', { type: 'kill_switch_triggered', modelId: account.modelId, drawdownPct });
       }
     }
   }
@@ -312,6 +325,14 @@ export class LiveTradingService extends EventEmitter {
     this.journal.append({
       ts: new Date().toISOString(),
       type: 'trade_close',
+      modelId,
+      symbol,
+      pnl,
+      reason,
+      consecutiveLosses: account.consecutiveLosses,
+      cooldownUntil: account.cooldownUntil || null,
+    });
+    this.emit('trade_close', {
       modelId,
       symbol,
       pnl,
