@@ -1,5 +1,5 @@
 import Head from 'next/head';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { fetchWithTimeout, getTradingApiBaseUrl } from '../src/utils/api';
 
 type TradingStatus = {
@@ -41,6 +41,7 @@ type SettingsPayload = {
 
 type BriefingPayload = {
   generatedAt?: string;
+  deepseekDecision?: DeepSeekDecision;
   account?: {
     balance?: number;
     availableMargin?: number;
@@ -84,6 +85,26 @@ type Coin = {
   change: number;
 };
 
+type DecisionState = 'SCANNING' | 'WAITING_FOR_TRIGGER' | 'TRIGGER_ARMED' | 'EXECUTION_WINDOW_OPEN' | 'LOCKED_RISK';
+
+type DeepSeekDecision = {
+  decision?: 'TRADE' | 'NO_TRADE' | 'COOLDOWN';
+  state?: DecisionState;
+  now_action?: string;
+  trigger_conditions?: string[];
+  invalidators?: string[];
+  entry_plan?: {
+    zone?: string;
+    stop?: string;
+    tp1?: string;
+    tp2?: string;
+    rr?: string;
+  };
+  confidence?: number;
+  reasoning_summary?: string;
+  changes_since_last?: string[];
+};
+
 const API = getTradingApiBaseUrl();
 
 const TRACKED_SYMBOLS = [
@@ -104,6 +125,8 @@ export default function Home() {
   const [riskContext, setRiskContext] = useState<RiskContext | null>(null);
   const [journal, setJournal] = useState<JournalEntry[]>([]);
   const [coins, setCoins] = useState<Coin[]>([]);
+  const [cycleChanges, setCycleChanges] = useState<string[]>([]);
+  const previousCycleRef = useRef<{ regimeConfidence: number; volatility: string; fundingRatePct: number } | null>(null);
 
   const liveConnected = Boolean(status?.engineConnected);
   const account = briefing?.account || {};
@@ -132,14 +155,152 @@ export default function Home() {
       risks.length > 0,
     ].filter(Boolean).length;
 
-    return {
-      label: failedChecks > 0 ? 'NO_TRADE' : 'TRADE',
-      quality: failedChecks > 0 ? 'LOW CONFIDENCE' : 'VALID SETUP',
-      checks: `${Math.max(0, 6 - failedChecks)} / 6 Checks`,
-      next: failedChecks > 0 ? 'Monitoring & Review' : 'Prepare Entry Plan',
-      failedChecks,
+    const now = Date.now();
+    const cooldownUntilTs = portfolio?.cooldownUntil ? Date.parse(portfolio.cooldownUntil) : NaN;
+    const cooldownActive = Number.isFinite(cooldownUntilTs) && cooldownUntilTs > now;
+    const killSwitchActive = Boolean(portfolio?.killSwitchTriggered);
+
+    const ruleMode: 'TRADE' | 'NO_TRADE' | 'COOLDOWN' = killSwitchActive || cooldownActive
+      ? 'COOLDOWN'
+      : failedChecks > 0
+        ? 'NO_TRADE'
+        : 'TRADE';
+
+    const deepseek = briefing?.deepseekDecision || null;
+    const mode = deepseek?.decision || ruleMode;
+    const regime = String(market.regime || 'unclear').toUpperCase();
+    const volatility = String(market.volatilityState || 'unknown').toUpperCase();
+    const liquidity = String(market.liquidityState || 'unknown').toUpperCase();
+
+    const btc = coins.find((c) => c.symbol === 'BTC')?.price || 0;
+    const zoneLow = btc > 0 ? (btc * 0.998).toFixed(0) : '—';
+    const zoneHigh = btc > 0 ? (btc * 1.002).toFixed(0) : '—';
+    const stop = btc > 0 ? (btc * 0.993).toFixed(0) : '—';
+    const tp1 = btc > 0 ? (btc * 1.006).toFixed(0) : '—';
+    const tp2 = btc > 0 ? (btc * 1.012).toFixed(0) : '—';
+
+    const defaultState: DecisionState = mode === 'COOLDOWN'
+      ? 'LOCKED_RISK'
+      : mode === 'NO_TRADE'
+        ? 'SCANNING'
+        : (market.regimeConfidence || 0) >= 70
+          ? 'TRIGGER_ARMED'
+          : 'WAITING_FOR_TRIGGER';
+
+    const state = deepseek?.state || defaultState;
+
+    const nowAction = deepseek?.now_action || (
+      mode === 'COOLDOWN'
+        ? 'Pause all entries. Risk lock is active.'
+        : mode === 'NO_TRADE'
+          ? 'Stand by. Continue scanning for a clean trigger.'
+          : `Wait for confirmation candle and execute with ${Number(riskSettings.maxLeverage ?? 5)}x max leverage.`
+    );
+
+    const triggerConditions = deepseek?.trigger_conditions || (
+      mode === 'TRADE'
+        ? [
+            `15m close confirms ${regime} continuation`,
+            `Entry zone holds (${zoneLow} - ${zoneHigh})`,
+            'Momentum and volume expand into breakout',
+          ]
+        : [
+            'Regime confidence >= 60%',
+            'Liquidity is not POOR',
+            'Volatility is not HIGH',
+          ]
+    );
+
+    const invalidators = deepseek?.invalidators || (
+      mode === 'COOLDOWN'
+        ? ['Risk lock remains active until cooldown clears']
+        : [
+            `Price loses ${zoneLow} support`,
+            `Volatility flips to HIGH (currently ${volatility})`,
+            'Any new risk flag appears',
+          ]
+    );
+
+    const entryPlan = {
+      zone: deepseek?.entry_plan?.zone || `${zoneLow} - ${zoneHigh}`,
+      stop: deepseek?.entry_plan?.stop || stop,
+      tp1: deepseek?.entry_plan?.tp1 || tp1,
+      tp2: deepseek?.entry_plan?.tp2 || tp2,
+      rr: deepseek?.entry_plan?.rr || '>= 1.5',
     };
-  }, [liveConnected, market.regime, market.regimeConfidence, market.liquidityState, market.volatilityState, risks.length]);
+
+    return {
+      label: mode,
+      quality: mode === 'TRADE' ? 'VALID SETUP' : mode === 'COOLDOWN' ? 'LOCKED' : 'LOW CONFIDENCE',
+      checks: `${Math.max(0, 6 - failedChecks)} / 6 Checks`,
+      failedChecks,
+      state,
+      confidence: Number(deepseek?.confidence ?? market.regimeConfidence ?? 0),
+      nowAction,
+      triggerConditions,
+      invalidators,
+      entryPlan,
+      reasoningSummary:
+        deepseek?.reasoning_summary ||
+        `Rules-first gate active. Regime ${regime}, liquidity ${liquidity}, volatility ${volatility}.`,
+      changesSinceLast: deepseek?.changes_since_last?.length ? deepseek.changes_since_last : cycleChanges,
+    };
+  }, [
+    liveConnected,
+    market.regime,
+    market.regimeConfidence,
+    market.liquidityState,
+    market.volatilityState,
+    risks.length,
+    portfolio?.cooldownUntil,
+    portfolio?.killSwitchTriggered,
+    riskSettings.maxLeverage,
+    briefing?.deepseekDecision,
+    coins,
+    cycleChanges,
+  ]);
+
+  const triggerDiagnostics = useMemo(() => {
+    const diagnostics = [
+      {
+        key: 'regime_confidence',
+        label: `Regime confidence >= 60% (now ${Number(market.regimeConfidence || 0)}%)`,
+        passed: Number(market.regimeConfidence || 0) >= 60,
+      },
+      {
+        key: 'liquidity',
+        label: `Liquidity not POOR (now ${String(market.liquidityState || 'unknown').toUpperCase()})`,
+        passed: String(market.liquidityState || '').toLowerCase() !== 'poor',
+      },
+      {
+        key: 'volatility',
+        label: `Volatility not HIGH (now ${String(market.volatilityState || 'unknown').toUpperCase()})`,
+        passed: String(market.volatilityState || '').toLowerCase() !== 'high',
+      },
+      {
+        key: 'risk_flags',
+        label: `No active risk flags (${risks.length})`,
+        passed: risks.length === 0,
+      },
+      {
+        key: 'mode',
+        label: `Decision mode allows entry (${decision.label})`,
+        passed: decision.label === 'TRADE',
+      },
+      {
+        key: 'state',
+        label: `Execution state armed/open (${decision.state.replaceAll('_', ' ')})`,
+        passed: decision.state === 'TRIGGER_ARMED' || decision.state === 'EXECUTION_WINDOW_OPEN',
+      },
+    ];
+
+    const blocked = diagnostics.filter((d) => !d.passed).map((d) => d.label);
+    return {
+      items: diagnostics,
+      blocked,
+      blockerNow: blocked[0] || 'No blocker. Waiting for trigger candle confirmation.',
+    };
+  }, [decision.label, decision.state, market.regimeConfidence, market.liquidityState, market.volatilityState, risks.length]);
 
   async function loadDashboard() {
     try {
@@ -160,7 +321,34 @@ export default function Home() {
       }
 
       if (briefingRes.status === 'fulfilled' && briefingRes.value.ok) {
-        setBriefing((await briefingRes.value.json()) as BriefingPayload);
+        const nextBriefing = (await briefingRes.value.json()) as BriefingPayload;
+
+        const nextConfidence = Number(nextBriefing.market?.regimeConfidence || 0);
+        const nextVolatility = String(nextBriefing.market?.volatilityState || 'unknown').toUpperCase();
+        const nextFundingPct = Number(nextBriefing.market?.funding?.[0]?.fundingRate || 0) * 100;
+
+        const prev = previousCycleRef.current;
+        if (prev) {
+          const changes: string[] = [];
+          if (prev.regimeConfidence !== nextConfidence) {
+            changes.push(`Regime confidence: ${prev.regimeConfidence}% → ${nextConfidence}%`);
+          }
+          if (prev.volatility !== nextVolatility) {
+            changes.push(`Volatility: ${prev.volatility} → ${nextVolatility}`);
+          }
+          if (Math.abs(prev.fundingRatePct - nextFundingPct) >= 0.01) {
+            changes.push(`Funding: ${prev.fundingRatePct.toFixed(2)}% → ${nextFundingPct.toFixed(2)}%`);
+          }
+          setCycleChanges(changes);
+        }
+
+        previousCycleRef.current = {
+          regimeConfidence: nextConfidence,
+          volatility: nextVolatility,
+          fundingRatePct: nextFundingPct,
+        };
+
+        setBriefing(nextBriefing);
       }
 
       if (riskRes.status === 'fulfilled' && riskRes.value.ok) {
@@ -277,16 +465,80 @@ export default function Home() {
               </Panel>
 
               <Panel className="xl:col-span-6" title="DeepSeek Decision Brain">
-                <div className={`rounded-xl border px-4 py-3 ${decision.label === 'NO_TRADE' ? 'border-red-500/70 bg-red-950/30' : 'border-emerald-500/70 bg-emerald-950/20'}`}>
+                <div
+                  className={`rounded-xl border px-4 py-3 ${
+                    decision.label === 'TRADE'
+                      ? 'border-emerald-500/70 bg-emerald-950/20'
+                      : decision.label === 'COOLDOWN'
+                        ? 'border-amber-500/70 bg-amber-950/20'
+                        : 'border-red-500/70 bg-red-950/30'
+                  }`}
+                >
                   <div className="text-center text-sm tracking-wide text-slate-300">CURRENT DECISION:</div>
-                  <div className={`text-center text-4xl font-bold mt-1 tracking-wide ${decision.label === 'NO_TRADE' ? 'text-red-300' : 'text-emerald-300'}`} style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{decision.label}</div>
+                  <div
+                    className={`text-center text-4xl font-bold mt-1 tracking-wide ${
+                      decision.label === 'TRADE'
+                        ? 'text-emerald-300'
+                        : decision.label === 'COOLDOWN'
+                          ? 'text-amber-300'
+                          : 'text-red-300'
+                    }`}
+                    style={{ fontFamily: 'Space Grotesk, sans-serif' }}
+                  >
+                    {decision.label}
+                  </div>
+                </div>
+
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                  <StateChip state={decision.state} />
+                  <span className="rounded-full border border-white/20 bg-white/5 px-2 py-1 text-slate-200">Confidence: {decision.confidence}%</span>
                 </div>
 
                 <div className="mt-4 divide-y divide-white/10 text-sm">
-                  <DetailRow label="Setup Quality" value={decision.quality} highlight={decision.label === 'NO_TRADE' ? 'text-red-300' : 'text-emerald-300'} />
+                  <DetailRow
+                    label="Setup Quality"
+                    value={decision.quality}
+                    highlight={decision.label === 'TRADE' ? 'text-emerald-300' : decision.label === 'COOLDOWN' ? 'text-amber-300' : 'text-red-300'}
+                  />
                   <DetailRow label="Risk Flags" value={risks.length ? risks.join(', ') : 'None'} highlight={risks.length ? 'text-amber-300' : 'text-emerald-300'} />
                   <DetailRow label="Pre-Checks" value={`${decision.checks} ${decision.failedChecks > 0 ? '(some failed)' : ''}`} highlight={decision.failedChecks > 0 ? 'text-amber-300' : 'text-emerald-300'} />
-                  <DetailRow label="Next Steps" value={decision.next} />
+                </div>
+
+                <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                  <LiveBlock title="NOW" tone="emerald" items={[decision.nowAction, `Entry Zone: ${decision.entryPlan.zone}`, `Plan: SL ${decision.entryPlan.stop} • TP1 ${decision.entryPlan.tp1} • TP2 ${decision.entryPlan.tp2} • R:R ${decision.entryPlan.rr}`]} />
+                  <LiveBlock title="TRIGGERS" tone="blue" items={decision.triggerConditions} />
+                  <LiveBlock title="RISK GUARDRAILS" tone="amber" items={decision.invalidators} />
+                </div>
+
+                <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs text-slate-200">
+                  <div className="uppercase tracking-wide text-slate-400 mb-2">Trigger Diagnostics</div>
+                  <div className="mb-2 text-slate-300">Blocking condition now: <span className="text-amber-200">{triggerDiagnostics.blockerNow}</span></div>
+                  <div className="space-y-1">
+                    {triggerDiagnostics.items.map((item) => (
+                      <div key={item.key} className="flex items-center gap-2">
+                        <span>{item.passed ? '✅' : (decision.label === 'TRADE' ? '⏳' : '❌')}</span>
+                        <span className={item.passed ? 'text-emerald-200' : (decision.label === 'TRADE' ? 'text-amber-200' : 'text-red-200')}>{item.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs text-slate-200">
+                  <div className="uppercase tracking-wide text-slate-400 mb-1">Why now</div>
+                  <div>{decision.reasoningSummary}</div>
+                </div>
+
+                <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs text-slate-200">
+                  <div className="uppercase tracking-wide text-slate-400 mb-1">What changed</div>
+                  {decision.changesSinceLast.length ? (
+                    <ul className="list-disc ml-4 space-y-1">
+                      {decision.changesSinceLast.slice(0, 4).map((c, i) => (
+                        <li key={`${c}-${i}`}>{c}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div>No material change since last cycle.</div>
+                  )}
                 </div>
               </Panel>
 
@@ -372,6 +624,38 @@ export default function Home() {
         </div>
       </div>
     </>
+  );
+}
+
+function StateChip({ state }: { state: DecisionState }) {
+  const tone =
+    state === 'EXECUTION_WINDOW_OPEN'
+      ? 'border-emerald-500/40 bg-emerald-500/20 text-emerald-200'
+      : state === 'TRIGGER_ARMED'
+        ? 'border-blue-500/40 bg-blue-500/20 text-blue-200'
+        : state === 'LOCKED_RISK'
+          ? 'border-amber-500/40 bg-amber-500/20 text-amber-200'
+          : 'border-white/20 bg-white/5 text-slate-200';
+
+  return <span className={`rounded-full border px-2 py-1 font-medium tracking-wide ${tone}`}>{state.replaceAll('_', ' ')}</span>;
+}
+
+function LiveBlock({ title, items, tone }: { title: string; items: string[]; tone: 'emerald' | 'blue' | 'amber' }) {
+  const toneMap = {
+    emerald: 'border-emerald-500/30 bg-emerald-500/10',
+    blue: 'border-blue-500/30 bg-blue-500/10',
+    amber: 'border-amber-500/30 bg-amber-500/10',
+  } as const;
+
+  return (
+    <div className={`rounded-xl border p-3 ${toneMap[tone]}`}>
+      <div className="uppercase tracking-wide text-slate-300 mb-2">{title}</div>
+      <ul className="list-disc ml-4 space-y-1 text-slate-100">
+        {items.slice(0, 4).map((item, i) => (
+          <li key={`${title}-${i}`}>{item}</li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

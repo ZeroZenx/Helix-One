@@ -7,14 +7,81 @@ import { RiskIntelService } from '../services/RiskIntelService';
 import { TelegramAlertService, AlertSeverity } from '../services/TelegramAlertService';
 import { authenticateAdmin } from '../middleware/auth';
 import { StructuredLogger } from '../services/StructuredLogger';
+import { HelixEvolutionService } from '../services/HelixEvolutionService';
+import { WalkForwardService } from '../services/WalkForwardService';
+import { PromotionAuditService } from '../services/PromotionAuditService';
+import { ExperimentGovernanceService } from '../services/ExperimentGovernanceService';
+import { JournalService } from '../services/JournalService';
 
 const router = Router();
 const settingsStore = new SettingsStore();
 const riskIntel = new RiskIntelService();
 const telegramAlerts = new TelegramAlertService();
 const logger = new StructuredLogger('trading');
+const helixEvolution = new HelixEvolutionService();
+const walkForward = new WalkForwardService();
+const promotionAudit = new PromotionAuditService();
+const experimentGovernance = new ExperimentGovernanceService();
+const journalService = new JournalService();
 let tradingService: LiveTradingService | null = null;
 let lastExchangeAuthDownAlerted = false;
+
+function keepOrUpdateSecret(currentValue: string, nextValue: unknown): string {
+  if (typeof nextValue !== 'string') return currentValue;
+  const candidate = nextValue.replace(/[\u0000-\u001F\u007F]/g, '').trim();
+  if (!candidate) return currentValue;
+  if (/^\*+$/.test(candidate)) return currentValue;
+  return candidate;
+}
+
+function toNumber(v: any, fallback = 0): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function calcMaxDrawdownFromPnL(pnls: number[]): number {
+  let peak = 0;
+  let equity = 0;
+  let maxDd = 0;
+  for (const p of pnls) {
+    equity += p;
+    if (equity > peak) peak = equity;
+    const dd = peak - equity;
+    if (dd > maxDd) maxDd = dd;
+  }
+  return maxDd;
+}
+
+function buildMetricsFromJournal(entries: any[], allocatedBalance = 10000) {
+  const closes = entries.filter((e) => e?.type === 'trade_close');
+  const opens = entries.filter((e) => e?.type === 'trade_open');
+
+  const pnls = closes.map((e) => toNumber(e.pnl, 0));
+  const sampleSize = pnls.length;
+  const avgPnl = sampleSize > 0 ? pnls.reduce((a, b) => a + b, 0) / sampleSize : 0;
+  const maxDdUsd = calcMaxDrawdownFromPnL(pnls);
+  const maxDrawdownPct = allocatedBalance > 0 ? (maxDdUsd / allocatedBalance) * 100 : 0;
+
+  // In absence of full per-trade R and exact costs in journal, we use normalized pnl proxies.
+  const expectancyR = allocatedBalance > 0 ? avgPnl / allocatedBalance : 0;
+  const slippageAdjustedExpectancyR = expectancyR * 0.95;
+  const variance = sampleSize > 1
+    ? pnls.reduce((acc, x) => acc + (x - avgPnl) ** 2, 0) / (sampleSize - 1)
+    : 0;
+  const sharpe = variance > 0 ? avgPnl / Math.sqrt(variance) : 0;
+
+  const expectedNetEdgeBps = expectancyR * 10000;
+
+  return {
+    sampleSize,
+    maxDrawdownPct,
+    turnover: opens.length,
+    expectancyR,
+    slippageAdjustedExpectancyR,
+    sharpe,
+    expectedNetEdgeBps,
+  };
+}
 
 async function sendTelegramAlert(
   severity: AlertSeverity,
@@ -223,9 +290,9 @@ router.post('/settings', authenticateAdmin, async (req, res) => {
 
     const next = {
       ...current,
-      masterApiKey: payload.masterApiKey ?? current.masterApiKey,
-      masterSecretKey: payload.masterSecretKey ?? current.masterSecretKey,
-      deepseekApiKey: payload.deepseekApiKey ?? current.deepseekApiKey,
+      masterApiKey: keepOrUpdateSecret(current.masterApiKey, payload.masterApiKey),
+      masterSecretKey: keepOrUpdateSecret(current.masterSecretKey, payload.masterSecretKey),
+      deepseekApiKey: keepOrUpdateSecret(current.deepseekApiKey, payload.deepseekApiKey),
       testnet: payload.testnet ?? current.testnet,
       tradingEnabled: payload.tradingEnabled ?? current.tradingEnabled,
       modelAccounts: [
@@ -243,6 +310,10 @@ router.post('/settings', authenticateAdmin, async (req, res) => {
       notificationSettings: {
         ...current.notificationSettings,
         ...(payload.notificationSettings || {}),
+        telegramBotToken: keepOrUpdateSecret(
+          current.notificationSettings.telegramBotToken,
+          payload.notificationSettings?.telegramBotToken
+        ),
       },
     };
 
@@ -435,6 +506,233 @@ router.get('/journal', async (req, res) => {
     });
   } catch (error: any) {
     res.status(500).json({ error: error?.message || 'journal_failed' });
+  }
+});
+
+router.post('/helix/evaluate', authenticateAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const plan = helixEvolution.evaluateTrade(body.snapshot, body.candidate, body.constraints);
+    res.json({ success: true, plan });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || 'helix_evaluate_failed' });
+  }
+});
+
+router.post('/helix/darwin/update', authenticateAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const updated = helixEvolution.updateDarwinianWeights(
+      body.performanceByAgent || {},
+      Number(body.floor ?? 0.3),
+      Number(body.ceiling ?? 2.5)
+    );
+    res.json({ success: true, weights: updated });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || 'darwin_update_failed' });
+  }
+});
+
+router.post('/helix/prompt-experiments/start', authenticateAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const experiment = helixEvolution.startPromptExperiment({
+      promptFile: String(body.promptFile || ''),
+      objectiveMetric: body.objectiveMetric || 'expectancy',
+      lookbackDays: Number(body.lookbackDays || 5),
+      baselineValue: Number(body.baselineValue || 0),
+      summary: String(body.summary || 'targeted prompt adjustment'),
+    });
+    res.json({ success: true, experiment });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || 'experiment_start_failed' });
+  }
+});
+
+router.post('/helix/prompt-experiments/complete', authenticateAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const experiment = helixEvolution.completePromptExperiment(String(body.id || ''), Number(body.candidateValue));
+    if (!experiment) return res.status(404).json({ success: false, error: 'experiment_not_found' });
+    res.json({ success: true, experiment });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || 'experiment_complete_failed' });
+  }
+});
+
+router.get('/helix/prompt-experiments', authenticateAdmin, async (req, res) => {
+  try {
+    const limit = Number(req.query.limit || 20);
+    res.json({ success: true, experiments: helixEvolution.listPromptExperiments(limit) });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || 'experiment_list_failed' });
+  }
+});
+
+router.post('/helix/walk-forward', authenticateAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const trades = Array.isArray(body.trades) ? body.trades : [];
+    const windows = Array.isArray(body.windows) ? body.windows : [];
+    const result = walkForward.runWalkForward(trades, windows);
+    res.json({ success: true, result });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || 'walk_forward_failed' });
+  }
+});
+
+router.post('/helix/experiment-contract/validate', authenticateAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const result = experimentGovernance.validateContract(body.contract || body);
+    res.json({ success: true, ...result });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || 'contract_validate_failed' });
+  }
+});
+
+router.post('/helix/experiment-contract/evaluate-promotion', authenticateAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const contract = body.contract || {};
+    const check = experimentGovernance.validateContract(contract);
+    if (!check.valid) {
+      return res.status(400).json({ success: false, error: 'invalid_contract', details: check.errors });
+    }
+
+    const baselineMetrics = body.baselineMetrics || {};
+    const candidateMetrics = body.candidateMetrics || {};
+    const regimeSlices = Array.isArray(body.regimeSlices) ? body.regimeSlices : [];
+
+    const record = experimentGovernance.recordRun({
+      contract,
+      baselineMetrics,
+      candidateMetrics,
+      regimeSlices,
+    });
+
+    res.json({ success: true, record });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || 'promotion_evaluate_failed' });
+  }
+});
+
+router.get('/helix/experiment-contract/leaderboard', authenticateAdmin, async (req, res) => {
+  try {
+    const limit = Number(req.query.limit || 20);
+    res.json({ success: true, leaderboard: experimentGovernance.leaderboard(limit) });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || 'leaderboard_failed' });
+  }
+});
+
+router.get('/helix/experiment-contract/runs', authenticateAdmin, async (req, res) => {
+  try {
+    const limit = Number(req.query.limit || 50);
+    res.json({ success: true, runs: experimentGovernance.listRuns(limit) });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || 'runs_list_failed' });
+  }
+});
+
+router.post('/helix/experiment-contract/live-evaluate', authenticateAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const allocatedBalance = Number(body.allocatedBalance || settingsStore.get().modelAccounts?.[0]?.balance || 10000);
+    const minSamples = Number(body.minSamples || 30);
+
+    const entries = journalService.list(500);
+    const closes = entries.filter((e: any) => e?.type === 'trade_close');
+    const mid = Math.max(1, Math.floor(closes.length / 2));
+
+    const baselineEntries = entries.filter((e: any) => e?.type !== 'trade_close' || closes.slice(0, mid).includes(e));
+    const candidateEntries = entries.filter((e: any) => e?.type !== 'trade_close' || closes.slice(mid).includes(e));
+
+    const baselineMetrics = buildMetricsFromJournal(baselineEntries, allocatedBalance);
+    const candidateMetrics = buildMetricsFromJournal(candidateEntries, allocatedBalance);
+
+    const snapshot = await riskIntel.getSnapshot(['BTCUSDT', 'ETHUSDT']);
+    const regime = (snapshot.marketRegime === 'trend' || snapshot.marketRegime === 'range' || snapshot.marketRegime === 'event_driven')
+      ? snapshot.marketRegime
+      : 'unknown';
+
+    const regimeSlices = [
+      {
+        regime,
+        sampleSize: candidateMetrics.sampleSize,
+        slippageAdjustedExpectancyR: candidateMetrics.slippageAdjustedExpectancyR,
+        maxDrawdownPct: candidateMetrics.maxDrawdownPct,
+        turnover: candidateMetrics.turnover,
+      },
+    ];
+
+    const contract = {
+      objective: body.contract?.objective || 'slippageAdjustedExpectancyR',
+      window: body.contract?.window || {
+        trainStart: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString(),
+        trainEnd: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+        testStart: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+        testEnd: new Date().toISOString(),
+      },
+      minSamples,
+      hardRiskGates: {
+        maxDrawdownPct: Number(body.contract?.hardRiskGates?.maxDrawdownPct || 8),
+        maxTurnover: Number(body.contract?.hardRiskGates?.maxTurnover || 120),
+        requirePositiveEdge: true,
+        minExpectedNetEdgeBps: Number(body.contract?.hardRiskGates?.minExpectedNetEdgeBps || 0),
+      },
+      rollbackTarget: body.contract?.rollbackTarget || 'prompts/system_trading_brain.md@main',
+      atomicChange: body.contract?.atomicChange || { type: 'prompt', changedKeys: ['live.auto_feed'] },
+      improvementDelta: Number(body.contract?.improvementDelta || 0),
+      regimeSpecialized: Boolean(body.contract?.regimeSpecialized || false),
+    };
+
+    const check = experimentGovernance.validateContract(contract as any);
+    if (!check.valid) return res.status(400).json({ success: false, error: 'invalid_live_contract', details: check.errors });
+
+    const record = experimentGovernance.recordRun({
+      contract: contract as any,
+      baselineMetrics: baselineMetrics as any,
+      candidateMetrics: candidateMetrics as any,
+      regimeSlices: regimeSlices as any,
+    });
+
+    res.json({
+      success: true,
+      mode: 'live_auto_feed',
+      inputs: {
+        baselineMetrics,
+        candidateMetrics,
+        regimeSlices,
+        contract,
+      },
+      record,
+    });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || 'live_evaluate_failed' });
+  }
+});
+
+router.get('/helix/promotion-audit', authenticateAdmin, async (req, res) => {
+  try {
+    const limit = Number(req.query.limit || 30);
+    res.json({ success: true, entries: promotionAudit.list(limit) });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || 'promotion_audit_list_failed' });
+  }
+});
+
+router.post('/helix/promotion-audit', authenticateAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const entry = promotionAudit.append({
+      ts: typeof body.ts === 'string' ? body.ts : new Date().toISOString(),
+      type: String(body.type || 'unknown'),
+      ...body,
+    });
+    res.json({ success: true, entry });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || 'promotion_audit_append_failed' });
   }
 });
 

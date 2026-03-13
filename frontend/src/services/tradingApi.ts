@@ -51,140 +51,139 @@ class TradingApiService {
     this.baseUrl = getTradingApiBaseUrl();
   }
 
-  // Get trading status
+  private async request(path: string, init?: RequestInit): Promise<any> {
+    const response = await fetch(`${this.baseUrl}${path}`, init);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data?.error || `Request failed: ${path}`);
+    }
+    return data;
+  }
+
   async getTradingStatus(): Promise<TradingStatus> {
-    try {
-      const response = await fetch(`${this.baseUrl}/status`);
-      if (!response.ok) throw new Error('Failed to fetch trading status');
-      return await response.json();
-    } catch (error) {
-      console.error('Error fetching trading status:', error);
-      throw error;
-    }
+    return this.request('/status');
   }
 
-  // Get all model accounts
   async getModelAccounts(): Promise<ModelAccount[]> {
-    try {
-      const response = await fetch(`${this.baseUrl}/accounts`);
-      if (!response.ok) throw new Error('Failed to fetch model accounts');
-      return await response.json();
-    } catch (error) {
-      console.error('Error fetching model accounts:', error);
-      throw error;
-    }
+    return this.request('/accounts');
   }
 
-  // Get specific model account
   async getModelAccount(modelId: string): Promise<ModelAccount> {
-    try {
-      const response = await fetch(`${this.baseUrl}/accounts/${modelId}`);
-      if (!response.ok) throw new Error('Failed to fetch model account');
-      return await response.json();
-    } catch (error) {
-      console.error('Error fetching model account:', error);
-      throw error;
-    }
+    return this.request(`/accounts/${modelId}`);
   }
 
-  // Create model account
   async createModelAccount(modelId: string, modelName: string, allocatedBalance: number): Promise<ModelAccount> {
-    try {
-      const response = await fetch(`${this.baseUrl}/accounts`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          modelId,
-          modelName,
-          allocatedBalance
-        })
-      });
-
-      if (!response.ok) throw new Error('Failed to create model account');
-      return await response.json();
-    } catch (error) {
-      console.error('Error creating model account:', error);
-      throw error;
-    }
+    return this.request('/accounts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelId, modelName, allocatedBalance }),
+    });
   }
 
-  // Send trade signal
   async sendTradeSignal(signal: TradeSignal): Promise<{ success: boolean; signal: TradeSignal }> {
-    try {
-      const response = await fetch(`${this.baseUrl}/signals`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(signal)
-      });
-
-      if (!response.ok) throw new Error('Failed to send trade signal');
-      return await response.json();
-    } catch (error) {
-      console.error('Error sending trade signal:', error);
-      throw error;
-    }
+    return this.request('/signals', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(signal),
+    });
   }
 
-  // Toggle trading
   async toggleTrading(enabled: boolean): Promise<{ enabled: boolean; message: string }> {
-    try {
-      const response = await fetch(`${this.baseUrl}/toggle`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ enabled })
-      });
-
-      if (!response.ok) throw new Error('Failed to toggle trading');
-      return await response.json();
-    } catch (error) {
-      console.error('Error toggling trading:', error);
-      throw error;
-    }
+    return this.request('/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
   }
 
-  // Update positions
   async updatePositions(): Promise<{ success: boolean; message: string }> {
-    try {
-      const response = await fetch(`${this.baseUrl}/update-positions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        }
-      });
-
-      if (!response.ok) throw new Error('Failed to update positions');
-      return await response.json();
-    } catch (error) {
-      console.error('Error updating positions:', error);
-      throw error;
-    }
+    return this.request('/update-positions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
 
-  // Close all positions for a model
   async closeAllPositions(modelId: string): Promise<{ success: boolean; message: string }> {
-    try {
-      const response = await fetch(`${this.baseUrl}/close-positions/${modelId}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        }
-      });
-
-      if (!response.ok) throw new Error('Failed to close positions');
-      return await response.json();
-    } catch (error) {
-      console.error('Error closing positions:', error);
-      throw error;
-    }
+    return this.request(`/close-positions/${modelId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
 
-  // Generate trade signal from AI model decision
+  async helixEvaluate(payload: any, adminKey: string) {
+    return this.request('/helix/evaluate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-admin-key': adminKey },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateDarwinWeights(payload: { performanceByAgent: Record<string, number>; floor?: number; ceiling?: number }, adminKey: string) {
+    return this.request('/helix/darwin/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-admin-key': adminKey },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async startPromptExperiment(payload: { promptFile: string; objectiveMetric: 'expectancy' | 'sharpe' | 'max_drawdown'; lookbackDays: number; baselineValue: number; summary: string }, adminKey: string) {
+    return this.request('/helix/prompt-experiments/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-admin-key': adminKey },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async completePromptExperiment(payload: { id: string; candidateValue: number }, adminKey: string) {
+    return this.request('/helix/prompt-experiments/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-admin-key': adminKey },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async listPromptExperiments(adminKey: string, limit = 20) {
+    return this.request(`/helix/prompt-experiments?limit=${limit}`, {
+      headers: { 'x-admin-key': adminKey },
+    });
+  }
+
+  async runWalkForward(payload: { trades: any[]; windows: any[] }, adminKey: string) {
+    return this.request('/helix/walk-forward', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-admin-key': adminKey },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async validateExperimentContract(payload: any, adminKey: string) {
+    return this.request('/helix/experiment-contract/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-admin-key': adminKey },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async evaluatePromotionContract(payload: any, adminKey: string) {
+    return this.request('/helix/experiment-contract/evaluate-promotion', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-admin-key': adminKey },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async getExperimentLeaderboard(adminKey: string, limit = 20) {
+    return this.request(`/helix/experiment-contract/leaderboard?limit=${limit}`, {
+      headers: { 'x-admin-key': adminKey },
+    });
+  }
+
+  async getExperimentRuns(adminKey: string, limit = 50) {
+    return this.request(`/helix/experiment-contract/runs?limit=${limit}`, {
+      headers: { 'x-admin-key': adminKey },
+    });
+  }
+
   generateTradeSignal(
     modelId: string,
     symbol: string,
@@ -212,16 +211,14 @@ class TradingApiService {
       leverage: options.leverage,
       confidence,
       reason,
-      timestamp: new Date()
+      timestamp: new Date(),
     };
   }
 
-  // Simulation was removed; signals must come from real model inference.
   simulateModelTrading(_modelId: string, _currentPrice: number, _marketData: any): TradeSignal | null {
     return null;
   }
 }
 
-// Export singleton instance
 export const tradingApi = new TradingApiService();
 export default tradingApi;
