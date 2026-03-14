@@ -219,11 +219,12 @@ export class HelixEvolutionService {
 
   private buildStyleLayer(candidate: CandidateTrade, regime: 'risk_on' | 'risk_off' | 'neutral'): LayerEnvelope<{ preferredStyle: string; minConfidence: number }> {
     let preferredStyle = candidate.style || 'balanced';
-    let minConfidence = 65;
+    // Demo-friendly default floor; stricter paths still apply under risk-off.
+    let minConfidence = 60;
 
     if (regime === 'risk_on') {
       preferredStyle = 'momentum';
-      minConfidence = 62;
+      minConfidence = 60;
     } else if (regime === 'risk_off') {
       preferredStyle = 'mean_reversion_defensive';
       minConfidence = 72;

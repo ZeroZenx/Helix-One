@@ -85,6 +85,7 @@ export default function Settings() {
   const [promotionDryRun, setPromotionDryRun] = useState(true);
   const [promotionConfirmText, setPromotionConfirmText] = useState('');
   const [executionAudit, setExecutionAudit] = useState<any[]>([]);
+  const [workerStatus, setWorkerStatus] = useState<any>(null);
 
   const authHeaders = useMemo(() => (adminKey ? { 'x-admin-key': adminKey } : {}), [adminKey]);
 
@@ -186,9 +187,10 @@ export default function Settings() {
     }
 
     try {
-      const [statusResult, briefingResult] = await Promise.allSettled([
+      const [statusResult, briefingResult, workerResult] = await Promise.allSettled([
         fetchWithTimeout(`${API}/status`, {}, 2500),
         fetchWithTimeout(`${API}/daily-briefing`, {}, 2500),
+        fetchWithTimeout(`${API}/worker-status`, {}, 2500),
       ]);
 
       if (statusResult.status === 'fulfilled' && statusResult.value.ok) {
@@ -197,6 +199,10 @@ export default function Settings() {
 
       if (briefingResult.status === 'fulfilled' && briefingResult.value.ok) {
         setBriefing(await briefingResult.value.json());
+      }
+
+      if (workerResult.status === 'fulfilled' && workerResult.value.ok) {
+        setWorkerStatus(await workerResult.value.json());
       }
 
       if (adminKey) {
@@ -935,14 +941,26 @@ export default function Settings() {
   const evidenceCount = Number(liveGovernanceOutput?.inputs?.candidateMetrics?.sampleSize || 0);
   const evidenceTarget = Number(liveGovernanceOutput?.inputs?.contract?.minSamples || 30);
 
+  const fallbackAction = workerStatus?.lastAction === 'trade_opened'
+    ? 'TRADE OPENED'
+    : Number(market.regimeConfidence || 0) >= 60
+      ? 'TRADE CANDIDATE'
+      : 'WAIT / NO TRADE';
+
   const traderSummary = {
-    actionNow: livePlan?.decision === 'TRADE' ? 'TRADE CANDIDATE' : 'WAIT / NO TRADE',
-    confidencePct: Number(helixEvalOutput?.payload?.candidate?.confidence || 0),
+    actionNow: livePlan?.decision === 'TRADE' ? 'TRADE CANDIDATE' : fallbackAction,
+    confidencePct: Number(helixEvalOutput?.payload?.candidate?.confidence || market.regimeConfidence || 0),
     riskUsd: Number(livePlan?.riskUsd || 0),
     positionUsd: Number(livePlan?.positionSizeUsd || 0),
     expectedEdgeBps: Number(livePlan?.expectedNetEdgeBps || 0),
     rMultiple: Number(livePlan?.expectedRMultiple || 0),
-    rationale: Array.isArray(livePlan?.reasons) ? livePlan.reasons : [],
+    rationale: Array.isArray(livePlan?.reasons) && livePlan.reasons.length
+      ? livePlan.reasons
+      : [
+          `worker=${String(workerStatus?.lastAction || 'unknown')}`,
+          `reason=${String(workerStatus?.lastReason || 'n/a')}`,
+          `regime=${String(market.regime || 'unknown')}`,
+        ],
     promotionDecision: governanceResult?.decision || 'n/a',
     promotionReasons: Array.isArray(governanceResult?.reasons) ? governanceResult.reasons : [],
   };

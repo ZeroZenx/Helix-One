@@ -47,6 +47,7 @@ export interface ModelTradingAccount {
     stopLoss?: number;
     takeProfit?: number;
     openedAt: string;
+    source?: 'local' | 'exchange';
   }>;
   totalPnL: number;
   winRate: number;
@@ -66,6 +67,7 @@ export class LiveTradingService extends EventEmitter {
   private isConnected = false;
   private tradingEnabled = false;
   private journal = new JournalService();
+  private lastSignalRejectReason: string | null = null;
 
   constructor(binanceConfig: any, tradingConfig: TradingConfig) {
     super();
@@ -105,13 +107,21 @@ export class LiveTradingService extends EventEmitter {
   }
 
   async processTradeSignal(signal: TradeSignal): Promise<boolean> {
-    if (!this.tradingEnabled) return false;
+    this.lastSignalRejectReason = null;
+    if (!this.tradingEnabled) {
+      this.lastSignalRejectReason = 'trading_disabled';
+      return false;
+    }
 
     const modelAccount = this.modelAccounts.get(signal.modelId);
-    if (!modelAccount || !modelAccount.isActive) return false;
+    if (!modelAccount || !modelAccount.isActive) {
+      this.lastSignalRejectReason = 'model_account_inactive';
+      return false;
+    }
 
     const gate = this.validateSignal(signal, modelAccount);
     if (!gate.ok) {
+      this.lastSignalRejectReason = gate.reason || 'gate_rejected';
       this.emit('signal_rejected', { signal, reason: gate.reason });
       this.journal.append({
         ts: new Date().toISOString(),
@@ -124,10 +134,16 @@ export class LiveTradingService extends EventEmitter {
     }
 
     const positionSizeUsd = this.calculatePositionSizeUsd(signal, modelAccount);
-    if (positionSizeUsd < this.config.minTradeAmount) return false;
+    if (positionSizeUsd < this.config.minTradeAmount) {
+      this.lastSignalRejectReason = 'min_trade_amount';
+      return false;
+    }
 
     const orderResult = await this.executeTrade(signal, positionSizeUsd);
-    if (!orderResult.success) return false;
+    if (!orderResult.success) {
+      this.lastSignalRejectReason = orderResult?.error || 'order_failed';
+      return false;
+    }
 
     this.updateModelAccountOnOpen(signal, orderResult, modelAccount);
 
@@ -209,7 +225,14 @@ export class LiveTradingService extends EventEmitter {
       const currentPrice = await this.binance.getCurrentPrice(symbol);
       const quantity = (signal.quantity && signal.quantity > 0) ? signal.quantity : positionSizeUsd / currentPrice;
 
-      if (signal.leverage) await this.binance.setLeverage(symbol, signal.leverage);
+      if (signal.leverage && signal.leverage > 1) {
+        try {
+          await this.binance.setLeverage(symbol, signal.leverage);
+        } catch {
+          // Fallback: continue with order placement even if leverage update fails.
+          // Some testnet account/symbol configurations reject leverage changes.
+        }
+      }
 
       const orderParams: OrderParams = {
         symbol,
@@ -225,13 +248,22 @@ export class LiveTradingService extends EventEmitter {
       }
 
       const orderResult = await this.binance.placeOrder(orderParams);
+
+      const execQty = Number(orderResult.executedQty || 0);
+      const origQty = Number(orderResult.origQty || 0);
+      const resolvedQty = execQty > 0 ? execQty : (origQty > 0 ? origQty : Number(quantity));
+
+      const avgPrice = Number(orderResult.avgPrice || 0);
+      const orderPrice = Number(orderResult.price || 0);
+      const resolvedPrice = avgPrice > 0 ? avgPrice : (orderPrice > 0 ? orderPrice : Number(currentPrice));
+
       return {
         success: true,
         orderId: orderResult.orderId,
         symbol: orderResult.symbol,
         side: orderResult.side,
-        quantity: orderResult.executedQty || quantity,
-        price: orderResult.avgPrice || orderResult.price || currentPrice,
+        quantity: resolvedQty,
+        price: resolvedPrice,
         status: orderResult.status,
       };
     } catch (error: any) {
@@ -278,6 +310,39 @@ export class LiveTradingService extends EventEmitter {
         } catch {
           // ignore one position fetch failure
         }
+      }
+
+      // Reconcile with exchange positions for accurate display/state.
+      try {
+        const exchangePositions = await this.binance.getPositions();
+        const live = exchangePositions
+          .map((p: any) => {
+            const amt = Number(p.positionAmt || 0);
+            const entry = Number(p.entryPrice || 0);
+            const mark = Number(p.markPrice || 0);
+            const leverage = Number(p.leverage || 1);
+            const upnl = Number(p.unRealizedProfit || p.unrealizedPnl || 0);
+            if (!Number.isFinite(amt) || Math.abs(amt) <= 0 || entry <= 0) return null;
+            const side: 'LONG' | 'SHORT' = amt > 0 ? 'LONG' : 'SHORT';
+            return {
+              symbol: String(p.symbol || ''),
+              side,
+              size: Math.abs(amt),
+              entryPrice: entry,
+              currentPrice: mark > 0 ? mark : entry,
+              pnl: upnl,
+              leverage: Number.isFinite(leverage) && leverage > 0 ? leverage : 1,
+              openedAt: new Date().toISOString(),
+              source: 'exchange' as const,
+            };
+          })
+          .filter(Boolean) as any[];
+
+        if (live.length > 0) {
+          account.positions = live;
+        }
+      } catch {
+        // keep local positions on exchange fetch failures
       }
 
       account.totalPnL = account.positions.reduce((sum, pos) => sum + pos.pnl, 0);
@@ -391,5 +456,9 @@ export class LiveTradingService extends EventEmitter {
 
   getJournalEntries(limit = 200) {
     return this.journal.list(limit);
+  }
+
+  getLastSignalRejectReason() {
+    return this.lastSignalRejectReason;
   }
 }

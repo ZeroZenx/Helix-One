@@ -12,6 +12,7 @@ import { WalkForwardService } from '../services/WalkForwardService';
 import { PromotionAuditService } from '../services/PromotionAuditService';
 import { ExperimentGovernanceService } from '../services/ExperimentGovernanceService';
 import { JournalService } from '../services/JournalService';
+import { AIService } from '../services/ai.service';
 
 const router = Router();
 const settingsStore = new SettingsStore();
@@ -23,8 +24,15 @@ const walkForward = new WalkForwardService();
 const promotionAudit = new PromotionAuditService();
 const experimentGovernance = new ExperimentGovernanceService();
 const journalService = new JournalService();
+const aiService = new AIService();
 let tradingService: LiveTradingService | null = null;
 let lastExchangeAuthDownAlerted = false;
+let executionWorkerStarted = false;
+let lastAutoSignalKey = '';
+let lastAutoSignalAt = 0;
+let lastWorkerRunAt: string | null = null;
+let lastWorkerAction: string = 'idle';
+let lastWorkerReason: string = 'not_started';
 
 function keepOrUpdateSecret(currentValue: string, nextValue: unknown): string {
   if (typeof nextValue !== 'string') return currentValue;
@@ -125,6 +133,172 @@ function buildTradingConfigFromSettings(): TradingConfig {
   };
 }
 
+function startExecutionWorker() {
+  if (executionWorkerStarted) return;
+  executionWorkerStarted = true;
+
+  const runCycle = async () => {
+    lastWorkerRunAt = new Date().toISOString();
+    try {
+      const svc = await ensureTradingService();
+      if (!svc) {
+        lastWorkerAction = 'skip';
+        lastWorkerReason = 'service_unavailable';
+        return;
+      }
+
+      const s = settingsStore.get();
+      const portfolioEnabled = Boolean(s.modelAccounts?.[0]?.tradingEnabled);
+      if (!s.tradingEnabled || !portfolioEnabled) {
+        lastWorkerAction = 'skip';
+        lastWorkerReason = 'trading_or_portfolio_disabled';
+        return;
+      }
+
+      if (!aiService.isDeepSeekConfigured()) {
+        lastWorkerAction = 'skip';
+        lastWorkerReason = 'deepseek_not_configured';
+        return;
+      }
+
+      const exchangeAccount = await svc.getExchangeAccountInfo();
+      const balance = Number(exchangeAccount?.totalWalletBalance || 0);
+      const availableMargin = Number(exchangeAccount?.availableBalance || 0);
+      const portfolio = svc.getModelAccount('1');
+
+      const snapshot = await riskIntel.getSnapshot(['BTCUSDT', 'ETHUSDT']);
+      const btcFunding = snapshot.funding.find((x) => x.symbol === 'BTCUSDT') || snapshot.funding[0];
+      const currentPrice = Number(btcFunding?.markPrice || 0);
+      if (currentPrice <= 0) {
+        lastWorkerAction = 'skip';
+        lastWorkerReason = 'missing_price';
+        return;
+      }
+
+      const runtimeContext = {
+        generatedAt: snapshot.generatedAt,
+        account: {
+          balance,
+          availableMargin,
+          previousDayPnl: Number(portfolio?.dailyPnl || 0),
+          consecutiveLosses: Number(portfolio?.consecutiveLosses || 0),
+        },
+        market: {
+          regime: snapshot.marketRegime,
+          regimeConfidence: snapshot.regimeConfidence,
+          liquidityState: snapshot.liquidityState,
+          volatilityState: snapshot.volatilityState,
+        },
+        news: snapshot.newsHeadlines,
+        notes: snapshot.riskFlags,
+        maxTradesToday: s.riskSettings.maxTradesPerDay,
+        riskSettings: {
+          maxDailyLossPct: s.riskSettings.maxDailyLossPct,
+          maxLeverage: s.riskSettings.maxLeverage,
+          maxConsecutiveLosses: s.riskSettings.maxConsecutiveLosses,
+          minConfidence: s.riskSettings.minConfidence,
+        },
+      };
+
+      // Unified execution gating with dashboard-style Helix plan.
+      const change24hPct = 0;
+      const trendStrength = Math.max(35, Math.min(95, Number(snapshot.regimeConfidence || 50)));
+      const volatilityPct = snapshot.volatilityState === 'high' ? 2.6 : snapshot.volatilityState === 'low' ? 1.0 : 1.8;
+      const spreadBps = snapshot.liquidityState === 'poor' ? 15 : snapshot.liquidityState === 'acceptable' ? 8 : 4;
+      const volumeScore = snapshot.liquidityState === 'good' ? 75 : snapshot.liquidityState === 'acceptable' ? 55 : 30;
+
+      const stopDistance = currentPrice * 0.005;
+      const candidate = {
+        symbol: 'BTCUSDT',
+        side: 'BUY' as const,
+        entry: currentPrice,
+        stopLoss: currentPrice - stopDistance,
+        takeProfit: currentPrice + stopDistance * 2,
+        confidence: trendStrength,
+        thesis: `unified_worker regime=${snapshot.marketRegime} confidence=${snapshot.regimeConfidence}`,
+        style: snapshot.marketRegime === 'range' ? 'mean_reversion' : 'momentum',
+      };
+
+      const constraints = {
+        equityUsd: Math.max(0, balance),
+        availableMarginUsd: Math.max(0, availableMargin),
+        currentDrawdownPct: portfolio && portfolio.allocatedBalance > 0
+          ? Math.max(0, ((portfolio.allocatedBalance - portfolio.currentBalance) / portfolio.allocatedBalance) * 100)
+          : 0,
+        maxDrawdownPct: Number(s.riskSettings.killSwitchDrawdownPct || 5),
+        perTradeRiskPct: Math.min(1.5, Math.max(0.25, Number(s.riskSettings.maxPositionSizePct || 5) / 20)),
+        maxOpenPositions: Math.max(1, Number(s.riskSettings.maxTradesPerDay || 3)),
+        openPositions: Number(portfolio?.positions?.length || 0),
+        slippageBps: 8,
+        feesBps: s.testnet ? 2 : 6,
+      };
+
+      const plan = helixEvolution.evaluateTrade(
+        {
+          symbol: 'BTCUSDT',
+          price: currentPrice,
+          change24hPct,
+          trendStrength,
+          volatilityPct,
+          spreadBps,
+          volumeScore,
+          sector: 'technology',
+        },
+        candidate,
+        constraints
+      );
+
+      if (plan.decision !== 'TRADE' || !plan.side || !plan.entry || !plan.stopLoss || !plan.takeProfit) {
+        lastWorkerAction = 'skip';
+        lastWorkerReason = `plan_blocked:${(plan.reasons || []).join('|') || 'no_reason'}`;
+        return;
+      }
+
+      const now = Date.now();
+      const signalKey = `${plan.symbol}:${plan.side}:${Math.round(plan.entry)}`;
+      if (signalKey === lastAutoSignalKey && now - lastAutoSignalAt < 15 * 60 * 1000) {
+        lastWorkerAction = 'skip';
+        lastWorkerReason = 'duplicate_cooldown';
+        return;
+      }
+
+      const signal: TradeSignal = {
+        modelId: '1',
+        symbol: plan.symbol,
+        side: plan.side,
+        type: 'MARKET',
+        confidence: Math.max(0, Math.min(1, Number(candidate.confidence || 0) / 100)),
+        reason: `auto_worker_unified regime=${snapshot.marketRegime} rr=${Number(plan.expectedRMultiple || 0).toFixed(2)} edge=${Number(plan.expectedNetEdgeBps || 0).toFixed(1)}bps`,
+        stopLoss: plan.stopLoss,
+        takeProfit: plan.takeProfit,
+        leverage: Math.min(s.riskSettings.maxLeverage || 2, 2),
+        timestamp: new Date(),
+      };
+
+      const ok = await svc.processTradeSignal(signal);
+      if (ok) {
+        lastAutoSignalKey = signalKey;
+        lastAutoSignalAt = now;
+        lastWorkerAction = 'trade_opened';
+        lastWorkerReason = `${signal.symbol}:${signal.side}`;
+        logger.info('auto_execution_trade_opened', { symbol: signal.symbol, side: signal.side, confidence: signal.confidence });
+      } else {
+        lastWorkerAction = 'skip';
+        const reject = svc.getLastSignalRejectReason();
+        lastWorkerReason = reject ? `signal_rejected:${reject}` : 'signal_rejected_by_risk_gate';
+      }
+    } catch (error: any) {
+      lastWorkerAction = 'error';
+      lastWorkerReason = error?.message || 'unknown';
+      logger.warn('auto_execution_worker_cycle_failed', { error: error?.message || 'unknown' });
+    }
+  };
+
+  // Run immediately at startup, then continue every 60s.
+  runCycle();
+  setInterval(runCycle, 60_000);
+}
+
 async function ensureTradingService() {
   if (tradingService) return tradingService;
 
@@ -194,6 +368,7 @@ async function ensureTradingService() {
     }
   });
 
+  startExecutionWorker();
   return tradingService;
 }
 
@@ -260,6 +435,19 @@ router.get('/status', async (req, res) => {
     logger.error('status_failed', { error: error?.message || 'unknown' });
     res.status(500).json({ error: error?.message || 'status_failed' });
   }
+});
+
+router.get('/worker-status', (req, res) => {
+  res.json({
+    success: true,
+    running: executionWorkerStarted,
+    intervalSec: 60,
+    lastRunAt: lastWorkerRunAt,
+    lastAction: lastWorkerAction,
+    lastReason: lastWorkerReason,
+    lastAutoSignalAt: lastAutoSignalAt ? new Date(lastAutoSignalAt).toISOString() : null,
+    lastAutoSignalKey: lastAutoSignalKey || null,
+  });
 });
 
 router.get('/settings', (req, res) => {

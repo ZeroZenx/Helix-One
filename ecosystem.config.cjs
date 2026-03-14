@@ -15,7 +15,7 @@ module.exports = {
       name: 'helix-one-frontend',
       cwd: '/Users/darrenheadley/.openclaw/workspace/Helix-One/frontend',
       script: 'npm',
-      args: 'start -- -H 127.0.0.1 -p 3010',
+      args: 'start',
       env: {
         NODE_ENV: 'production',
         PORT: '3010'

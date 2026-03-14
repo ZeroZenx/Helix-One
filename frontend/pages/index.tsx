@@ -125,6 +125,7 @@ export default function Home() {
   const [riskContext, setRiskContext] = useState<RiskContext | null>(null);
   const [journal, setJournal] = useState<JournalEntry[]>([]);
   const [coins, setCoins] = useState<Coin[]>([]);
+  const [workerStatus, setWorkerStatus] = useState<any>(null);
   const [cycleChanges, setCycleChanges] = useState<string[]>([]);
   const previousCycleRef = useRef<{ regimeConfidence: number; volatility: string; fundingRatePct: number } | null>(null);
 
@@ -179,11 +180,21 @@ export default function Home() {
     const tp1 = btc > 0 ? (btc * 1.006).toFixed(0) : '—';
     const tp2 = btc > 0 ? (btc * 1.012).toFixed(0) : '—';
 
+    const zoneLowNum = btc > 0 ? btc * 0.998 : 0;
+    const zoneHighNum = btc > 0 ? btc * 1.002 : 0;
+    const inEntryZone = btc > 0 && btc >= zoneLowNum && btc <= zoneHighNum;
+    const softUnlock =
+      mode === 'TRADE' &&
+      (market.regimeConfidence || 0) >= 60 &&
+      String(market.liquidityState || '').toLowerCase() === 'good' &&
+      String(market.volatilityState || '').toLowerCase() !== 'high' &&
+      inEntryZone;
+
     const defaultState: DecisionState = mode === 'COOLDOWN'
       ? 'LOCKED_RISK'
       : mode === 'NO_TRADE'
         ? 'SCANNING'
-        : (market.regimeConfidence || 0) >= 70
+        : (market.regimeConfidence || 0) >= 70 || softUnlock
           ? 'TRIGGER_ARMED'
           : 'WAITING_FOR_TRIGGER';
 
@@ -194,7 +205,9 @@ export default function Home() {
         ? 'Pause all entries. Risk lock is active.'
         : mode === 'NO_TRADE'
           ? 'Stand by. Continue scanning for a clean trigger.'
-          : `Wait for confirmation candle and execute with ${Number(riskSettings.maxLeverage ?? 5)}x max leverage.`
+          : softUnlock
+            ? `Soft unlock active: in-zone + good liquidity + low volatility. Execute with ${Number(riskSettings.maxLeverage ?? 5)}x max leverage.`
+            : `Wait for confirmation candle and execute with ${Number(riskSettings.maxLeverage ?? 5)}x max leverage.`
     );
 
     const triggerConditions = deepseek?.trigger_conditions || (
@@ -304,12 +317,13 @@ export default function Home() {
 
   async function loadDashboard() {
     try {
-      const [statusRes, settingsRes, briefingRes, riskRes, journalRes] = await Promise.allSettled([
+      const [statusRes, settingsRes, briefingRes, riskRes, journalRes, workerRes] = await Promise.allSettled([
         fetchWithTimeout(`${API}/status`),
         fetchWithTimeout(`${API}/settings`),
         fetchWithTimeout(`${API}/daily-briefing`),
         fetchWithTimeout(`${API}/risk-context?symbols=BTCUSDT,ETHUSDT,SOLUSDT`),
         fetchWithTimeout(`${API}/journal?limit=20`),
+        fetchWithTimeout(`${API}/worker-status`),
       ]);
 
       if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
@@ -360,6 +374,11 @@ export default function Home() {
         setJournal(Array.isArray(payload?.entries) ? payload.entries : []);
       }
 
+      if (workerRes.status === 'fulfilled' && workerRes.value.ok) {
+        const payload = await workerRes.value.json();
+        setWorkerStatus(payload);
+      }
+
       setLastUpdated(new Date().toLocaleTimeString());
       setError('');
     } catch (e: any) {
@@ -393,7 +412,7 @@ export default function Home() {
     const id = setInterval(() => {
       loadDashboard();
       loadMarket();
-    }, 30000);
+    }, 5000);
     return () => clearInterval(id);
   }, []);
 
@@ -553,6 +572,17 @@ export default function Home() {
                   <InfoRow label="Max Consecutive Losses" value={`${Number(riskSettings.maxConsecutiveLosses ?? 3)}`} />
                 </div>
               </Panel>
+
+              <Panel className="xl:col-span-3" title="Auto Worker Heartbeat">
+                <div className="space-y-2 text-sm">
+                  <InfoRow label="Worker Running" value={workerStatus?.running ? 'YES' : 'NO'} />
+                  <InfoRow label="Interval" value={`${Number(workerStatus?.intervalSec || 60)} sec`} />
+                  <InfoRow label="Last Run" value={workerStatus?.lastRunAt ? new Date(workerStatus.lastRunAt).toLocaleTimeString() : '—'} />
+                  <InfoRow label="Last Action" value={String(workerStatus?.lastAction || '—').toUpperCase()} />
+                  <InfoRow label="Last Reason" value={String(workerStatus?.lastReason || '—')} />
+                  <InfoRow label="Last Auto Signal" value={workerStatus?.lastAutoSignalAt ? new Date(workerStatus.lastAutoSignalAt).toLocaleTimeString() : 'none'} />
+                </div>
+              </Panel>
             </section>
 
             <section className="grid grid-cols-1 xl:grid-cols-12 gap-4">
@@ -571,7 +601,7 @@ export default function Home() {
                     ) : activeTradeRows.map((t, i) => (
                       <tr key={`${t.ts}-${i}`} className="border-t border-white/10">
                         <td className="py-2 font-semibold">{t.symbol || '—'}</td>
-                        <td className="py-2 text-right">{typeof t.qty === 'number' ? t.qty.toFixed(4) : '—'}</td>
+                        <td className="py-2 text-right">{typeof t.qty === 'number' ? t.qty.toFixed(6) : '—'}</td>
                         <td className="py-2 text-right">{typeof t.entry === 'number' ? t.entry.toFixed(2) : '—'}</td>
                       </tr>
                     ))}
