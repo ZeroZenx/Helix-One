@@ -338,9 +338,8 @@ export class LiveTradingService extends EventEmitter {
           })
           .filter(Boolean) as any[];
 
-        if (live.length > 0) {
-          account.positions = live;
-        }
+        // Exchange fetch succeeded: make exchange state canonical (including zero positions).
+        account.positions = live;
       } catch {
         // keep local positions on exchange fetch failures
       }
@@ -443,6 +442,16 @@ export class LiveTradingService extends EventEmitter {
         modelName: a.modelName,
         currentBalance: a.currentBalance,
         positionsCount: a.positions.length,
+        positions: a.positions.map((p) => ({
+          symbol: p.symbol,
+          side: p.side,
+          size: p.size,
+          entryPrice: p.entryPrice,
+          currentPrice: p.currentPrice,
+          pnl: p.pnl,
+          leverage: p.leverage,
+          openedAt: p.openedAt,
+        })),
         tradingEnabled: a.isActive,
         killSwitchTriggered: a.killSwitchTriggered,
         cooldownUntil: a.cooldownUntil || null,

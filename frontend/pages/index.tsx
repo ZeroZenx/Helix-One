@@ -14,6 +14,16 @@ type TradingStatus = {
     modelName: string;
     currentBalance: number;
     positionsCount: number;
+    positions?: Array<{
+      symbol: string;
+      side: 'LONG' | 'SHORT';
+      size: number;
+      entryPrice: number;
+      currentPrice: number;
+      pnl: number;
+      leverage: number;
+      openedAt: string;
+    }>;
     tradingEnabled: boolean;
     killSwitchTriggered?: boolean;
     cooldownUntil?: string | null;
@@ -127,6 +137,7 @@ export default function Home() {
   const [coins, setCoins] = useState<Coin[]>([]);
   const [workerStatus, setWorkerStatus] = useState<any>(null);
   const [cycleChanges, setCycleChanges] = useState<string[]>([]);
+  const [uiBuildId, setUiBuildId] = useState('unknown');
   const previousCycleRef = useRef<{ regimeConfidence: number; volatility: string; fundingRatePct: number } | null>(null);
 
   const liveConnected = Boolean(status?.engineConnected);
@@ -138,7 +149,8 @@ export default function Home() {
 
   const walletBalance = Number(account.balance || 0);
   const availableMargin = Number(account.availableMargin || 0);
-  const openPositions = Number(portfolio?.positionsCount || 0);
+  const livePositions = portfolio?.positions || [];
+  const openPositions = livePositions.length;
 
   const riskPosture = useMemo(() => {
     if (!liveConnected) return { label: 'DISCONNECTED', tone: 'bg-red-500/20 text-red-300 border-red-500/40' };
@@ -409,6 +421,9 @@ export default function Home() {
   useEffect(() => {
     loadDashboard();
     loadMarket();
+    if (typeof window !== 'undefined') {
+      setUiBuildId((window as any)?.__NEXT_DATA__?.buildId || 'unknown');
+    }
     const id = setInterval(() => {
       loadDashboard();
       loadMarket();
@@ -416,7 +431,12 @@ export default function Home() {
     return () => clearInterval(id);
   }, []);
 
-  const activeTradeRows = journal.filter((j) => j.type === 'trade_open').slice(0, 4);
+  const activeTradeRows = livePositions.slice(0, 4).map((p) => ({
+    ts: p.openedAt,
+    symbol: p.symbol,
+    qty: p.size,
+    entry: p.entryPrice,
+  }));
   const recentTradeRows = journal.filter((j) => j.type === 'trade_close').slice(0, 6);
 
   return (
@@ -650,6 +670,7 @@ export default function Home() {
             <p>© 2024 Helix.One - All rights reserved.</p>
             <p className="mt-1">Powered by the Helix Engine • Real-time algorithmic trading</p>
             <p className="mt-1">Built by Darren Headley</p>
+            <p className="mt-1 text-[11px] text-slate-500">UI Build: {uiBuildId}</p>
           </footer>
         </div>
       </div>

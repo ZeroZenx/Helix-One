@@ -1,409 +1,195 @@
-# 🚀 HELIX.ONE - AI Crypto Trading Arena
+# HELIX.ONE
 
-<div align="center">
+![Status](https://img.shields.io/badge/status-active-22c55e)
+![Model](https://img.shields.io/badge/model-DeepSeek--only-3b82f6)
+![Runtime](https://img.shields.io/badge/runtime-Next.js%2014%20%2B%20Node.js-111827)
+![Exchange](https://img.shields.io/badge/exchange-Binance%20Futures-f59e0b)
+![Risk](https://img.shields.io/badge/risk-controls%20enforced-ef4444)
 
-![HELIX.ONE Banner](https://img.shields.io/badge/HELIX-ONE-00D9FF?style=for-the-badge&logo=react&logoColor=white)
+AI-assisted crypto futures command center with live Binance integration, risk gating, and a DeepSeek-driven decision pipeline.
 
-**The Ultimate AI Trading Competition Platform**
-
-[![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Next.js](https://img.shields.io/badge/Next.js-000000?style=flat-square&logo=next.js&logoColor=white)](https://nextjs.org/)
-[![Node.js](https://img.shields.io/badge/Node.js-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/)
-[![Binance](https://img.shields.io/badge/Binance-FCD535?style=flat-square&logo=binance&logoColor=black)](https://www.binance.com/)
-
-[Features](#-features) • [Demo](#-demo) • [Setup](#-quick-start) • [Documentation](#-documentation) • [Contributing](#-contributing)
-
-</div>
+> **Current architecture:** single-model execution path (DeepSeek-only), not a 6-model arena.
 
 ---
 
-## 📖 Overview
+## Overview
 
-**HELIX.ONE** is an advanced AI-powered cryptocurrency trading arena where 6 cutting-edge language models compete head-to-head in live futures trading. Watch as DeepSeek, GPT-5, Claude, Grok, Gemini, and Qwen battle for trading supremacy with real-time performance tracking, comprehensive analytics, and live Binance integration.
+HELIX.ONE is a real-time trading system built for disciplined execution:
 
-Each AI model starts with **$10,000** and trades independently, hunting for that elusive **20% daily return** while managing risk in the volatile crypto markets.
+- **Live dashboard** for account state, market context, and execution readiness
+- **DeepSeek decision brain** for structured trade/no-trade guidance
+- **Risk-first execution worker** with hard guardrails
+- **Binance Futures integration** (testnet or live)
+- **Operational controls** for settings, toggles, and emergency close
 
-### 🎯 Core Concept
-
-- **6 AI Models** compete simultaneously in live trading
-- **Real-time leaderboard** tracks performance, P&L, and win rates
-- **Live market data** with technical indicators (RSI, MACD, Moving Averages)
-- **Binance Futures integration** for actual trading (testnet & live)
-- **Interactive chat** with each AI trader to understand their strategy
-- **Risk management** controls to protect your capital
+The system is designed to prioritize consistency and risk controls over hype.
 
 ---
 
-## ✨ Features
+## What It Does Today
 
-### 🏆 Trading Arena
-- **Live Leaderboard**: Real-time ranking by ROI, balance, and performance
-- **Model Performance**: Individual stats for each AI including:
-  - Current balance & ROI
-  - Win rate & total trades
-  - Drawdown & leverage
-  - Biggest wins/losses
-  - Sharpe ratio
-  - Active positions
+### Dashboard (Frontend)
+- Connection state (`LIVE/OFFLINE`, `CONNECTED/DISCONNECTED`)
+- Wallet balance, available margin, daily P&L
+- Open positions and recent trade activity
+- Market snapshot (BTC/ETH/SOL/XRP/DOGE/BNB)
+- Regime + liquidity + volatility context
+- DeepSeek decision panel:
+  - Decision mode (`TRADE`, `NO_TRADE`, `COOLDOWN`)
+  - Trigger state (`SCANNING`, `TRIGGER_ARMED`, etc.)
+  - Entry zone, invalidators, trigger diagnostics
+- Worker heartbeat (last run, last action, reason)
 
-### 📊 Market Intelligence
-- **Real-time crypto prices** (BTC, ETH, SOL, XRP, DOGE, BNB)
-- **Technical indicators**:
-  - RSI (14) with overbought/oversold zones
-  - MACD signals (BUY/SELL/HOLD)
-  - 50-day & 200-day moving averages
-  - Support & resistance levels
-- **Market sentiment analysis** (Bullish/Bearish/Neutral)
-- **Live ticker tape** with price updates every 10 seconds
+### Backend / Trading Engine
+- Loads and manages trading settings
+- Pulls exchange account + positions
+- Applies risk constraints before signal execution
+- Tracks journal entries (`trade_open`, `trade_close`, signal rejections)
+- Exposes API endpoints for UI + operations
 
-### 🤖 AI Model Chat
-- **Interactive conversations** with each trading model
-- **Real-time position updates** with current P&L
-- **Market analysis** from each model's perspective
-- **Trade reasoning** and strategy explanations
-- **Whale intelligence** and liquidation cluster reports
-
-### ⚙️ Binance Integration
-- **Settings dashboard** for easy API key configuration
-- **Testnet mode** for risk-free testing
-- **Live trading** with real Binance Futures accounts
-- **Per-model trading controls** (enable/disable individually)
-- **Emergency stop** and close all positions
-- **Risk management** parameters:
-  - Max daily loss percentage
-  - Max position size
-  - Max leverage
-  - Daily target returns
-
-### 🛡️ Risk Management
-- **Stop-loss** automation
-- **Position sizing** based on account balance
-- **Daily loss limits** with automatic trading halt
-- **Leverage controls**
-- **Real-time P&L** tracking
+### Risk Controls
+- Max daily loss
+- Max position size
+- Max leverage
+- Kill-switch drawdown
+- Cooldown handling
+- Max trades per day
+- Max consecutive losses
 
 ---
 
-## 🎬 Demo
+## Tech Stack
 
-### Dashboard View
-- Real-time leaderboard with model rankings
-- Live crypto prices with technical indicators
-- Winning model showcase
-- Account value visualization
+**Frontend**
+- Next.js 14
+- React + TypeScript
+- Tailwind CSS
 
-### Model Chat Interface
-- Chat with AI traders
-- View live positions
-- Get market analysis
-- Understand trading decisions
-
-### Settings Panel
-- Binance API configuration
-- Model account management
-- Risk parameter controls
-- Connection testing
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- **Node.js** 18+ and npm
-- **Binance account** (or testnet account)
-- **API keys** from Binance with Futures permissions
-
-### Installation
-
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/yourusername/helix-one.git
-   cd helix-one
-   ```
-
-2. **Install dependencies**
-   ```bash
-   npm install
-   ```
-
-3. **Install frontend dependencies**
-   ```bash
-   cd frontend
-   npm install
-   cd ..
-   ```
-
-4. **Install backend dependencies**
-   ```bash
-   cd backend
-   npm install
-   cd ..
-   ```
-
-5. **Configure environment variables**
-   ```bash
-   cd backend
-   cp .env.example .env
-   nano .env
-   ```
-
-   Add your Binance credentials:
-   ```env
-   BINANCE_API_KEY=your_api_key_here
-   BINANCE_SECRET_KEY=your_secret_key_here
-   BINANCE_TESTNET=true  # Start with testnet!
-   PORT=3001
-   ```
-
-6. **Start the development servers**
-
-   **Terminal 1 - Backend:**
-   ```bash
-   cd backend
-   npm run dev
-   ```
-
-   **Terminal 2 - Frontend:**
-   ```bash
-   cd frontend
-   npm run dev
-   ```
-
-7. **Open your browser**
-   ```
-   http://localhost:3000
-   ```
-
-8. **Configure Binance in Settings**
-   - Click "⚙️ Settings" in the top right
-   - Enter your API credentials
-   - Test connection
-   - Enable model trading
-   - Start trading!
-
----
-
-## 📚 Documentation
-
-### Essential Guides
-
-- **[Binance Setup Guide](./BINANCE_SETUP_GUIDE.md)** - Complete guide to connecting Binance
-- **[What's New](./WHATS_NEW.md)** - Latest features and updates
-- **[Trading Setup](./TRADING_SETUP.md)** - Advanced trading configuration
-
-### API Documentation
-
-#### Backend API Endpoints
-
-**Trading Routes** (`/api/trading/`)
-- `GET /status` - Get trading system status
-- `GET /settings` - Get current configuration
-- `POST /settings` - Save Binance and risk settings
-- `POST /test-connection` - Test Binance credentials
-- `POST /toggle` - Enable/disable trading
-- `POST /close-positions` - Close all positions
-- `GET /accounts` - Get all model accounts
-- `POST /signals` - Process trade signals
-
-**Models Supported**
-1. 🐋 **DeepSeek Chat V3.1** - Momentum strategy
-2. ⚡ **Grok-4** - Hybrid strategy
-3. ⭐ **Claude Sonnet 4.5** - Mean reversion
-4. 🅖 **GPT-5** - Momentum strategy
-5. 🟣 **Qwen3 Max** - Momentum strategy
-6. 💎 **Gemini 2.5 Pro** - Mean reversion
-
----
-
-## 🏗️ Architecture
-
-### Tech Stack
-
-**Frontend:**
-- Next.js 14 (React framework)
-- TypeScript
-- Framer Motion (animations)
-- Tailwind CSS (styling)
-- CoinGecko API (market data)
-
-**Backend:**
+**Backend**
 - Node.js + Express
 - TypeScript
-- Binance API (trading)
-- WebSocket (real-time updates)
+- Binance Futures API integration
 
-**Trading:**
-- Binance Futures API
-- Risk management engine
-- Position tracking
-- P&L calculation
+**Data / Runtime**
+- Local JSON/JSONL state + journal artifacts
+- LaunchAgent scripts for persistent local service operation (macOS)
 
-### Project Structure
+---
 
-```
-helix-one/
-├── frontend/           # Next.js frontend
-│   ├── pages/         # Page components
-│   │   ├── index.tsx  # Main dashboard
-│   │   └── settings.tsx  # Settings page
+## Project Structure
+
+```text
+Helix-One/
+├── frontend/
+│   ├── pages/
+│   │   ├── index.tsx
+│   │   └── settings.tsx
+│   └── src/
+├── backend/
 │   ├── src/
-│   │   ├── components/  # React components
-│   │   └── services/    # API services
-│   └── package.json
-├── backend/           # Node.js backend
-│   ├── src/
-│   │   ├── routes/    # API routes
-│   │   ├── services/  # Business logic
-│   │   │   ├── BinanceService.ts
-│   │   │   └── LiveTradingService.ts
-│   │   └── index.ts
-│   └── package.json
-└── docs/             # Documentation
+│   │   ├── routes/
+│   │   └── services/
+│   └── data/
+├── launchd/
+├── logs/
+└── README.md
 ```
 
 ---
 
-## 🔒 Security Best Practices
+## Quick Start
 
-### API Key Safety
-✅ **DO:**
-- Use API keys with **Futures permissions only**
-- Enable **IP restrictions** on Binance
-- Start with **testnet** for testing
-- Keep secret keys in **.env** (never commit!)
-- Use unique API keys per bot
+### Prerequisites
+- Node.js 18+
+- npm
+- Binance Futures API credentials (use testnet first)
 
-❌ **DON'T:**
-- Enable **withdrawal permissions**
-- Share API keys with anyone
-- Commit credentials to git
-- Use same keys across multiple bots
+### 1) Install dependencies
 
-### Trading Safety
-- Start with **small amounts**
-- Test thoroughly on **testnet**
-- Set **strict risk limits**
-- Monitor **daily losses**
-- Use **stop losses**
+```bash
+cd backend && npm install
+cd ../frontend && npm install
+```
 
----
+### 2) Configure backend env
 
-## ⚠️ Risk Disclaimer
+```bash
+cd ../backend
+cp .env.example .env
+```
 
-**CRYPTOCURRENCY TRADING IS HIGHLY RISKY**
+Set at minimum:
 
-- You can **lose all your capital**
-- Past performance ≠ future results
-- AI models are **experimental**
-- Use only **risk capital**
-- This is **NOT financial advice**
-- **You are responsible** for your trading decisions
+```env
+BINANCE_API_KEY=your_key
+BINANCE_SECRET_KEY=your_secret
+BINANCE_TESTNET=true
+PORT=3001
+```
 
-**Start with testnet. Trade at your own risk.**
+### 3) Run locally
 
----
+Backend:
+```bash
+cd backend
+npm run dev
+```
 
-## 🤝 Contributing
+Frontend:
+```bash
+cd frontend
+npm run dev
+```
 
-Contributions are welcome! Here's how you can help:
-
-1. **Fork the repository**
-2. **Create a feature branch** (`git checkout -b feature/amazing-feature`)
-3. **Commit your changes** (`git commit -m 'Add amazing feature'`)
-4. **Push to the branch** (`git push origin feature/amazing-feature`)
-5. **Open a Pull Request**
-
-### Development Guidelines
-
-- Write TypeScript for type safety
-- Follow existing code style
-- Add comments for complex logic
-- Test on testnet before submitting
-- Update documentation as needed
+Open:
+- Frontend: `http://127.0.0.1:3010` (project default)
+- Backend API: `http://127.0.0.1:3001`
 
 ---
 
-## 📝 License
+## Core API Endpoints
 
-This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
+Base: `/api/trading`
 
----
+- `GET /health`
+- `GET /status`
+- `GET /settings`
+- `POST /settings`
+- `POST /test-connection`
+- `POST /toggle`
+- `POST /close-positions`
+- `GET /daily-briefing`
+- `GET /risk-context`
+- `GET /journal`
+- `GET /worker-status`
 
-## 🙏 Acknowledgments
-
-- **Binance** for the Futures API
-- **CoinGecko** for free crypto market data
-- **OpenAI, Anthropic, Google, xAI, DeepSeek** for the AI models
-- **Next.js & React** teams for the amazing frameworks
-
----
-
-## 📞 Support
-
-### Resources
-- 📖 [Documentation](./BINANCE_SETUP_GUIDE.md)
-- 🐛 [Report Issues](https://github.com/yourusername/helix-one/issues)
-- 💬 [Discussions](https://github.com/yourusername/helix-one/discussions)
-
-### Community
-- Star ⭐ this repo if you find it useful!
-- Follow for updates
-- Share your results (testnet only!)
+(Additional internal/admin routes exist for experimentation and operations.)
 
 ---
 
-## 🗺️ Roadmap
+## Security & Safety
 
-### Current Version (v1.0)
-- ✅ 6 AI model trading system
-- ✅ Real-time leaderboard
-- ✅ Binance Futures integration
-- ✅ Live market data & technical indicators
-- ✅ Risk management controls
-- ✅ Model chat interface
-
-### Planned Features
-- [ ] Backtesting engine
-- [ ] Strategy customization
-- [ ] Multi-exchange support (FTX, Bybit, etc.)
-- [ ] Mobile app (React Native)
-- [ ] Advanced analytics dashboard
-- [ ] Paper trading mode
-- [ ] Trading tournament mode
-- [ ] Social features (copy trading)
-- [ ] Performance alerts & notifications
-- [ ] Historical trade analysis
+- Never commit real API keys/secrets
+- Use Binance keys with **no withdrawal permission**
+- Prefer **testnet** while validating configuration
+- Enforce conservative risk limits before live mode
+- Monitor worker heartbeat and rejection reasons continuously
 
 ---
 
-## 💖 Show Your Support
+## Risk Disclaimer
 
-If you find this project useful:
+Crypto futures trading is high risk.
 
-- ⭐ **Star this repository**
-- 🔄 **Share with other traders**
-- 🐛 **Report bugs** you find
-- 💡 **Suggest features**
-- 🤝 **Contribute code**
+- Losses can exceed expectations quickly
+- No model output is guaranteed
+- This system is tooling, **not financial advice**
+- You are responsible for all execution decisions
 
----
-
-<div align="center">
-
-**Built with ❤️ for the crypto trading community**
-
-Made by [Your Name] • [Twitter](https://twitter.com/yourhandle) • [Website](https://yourwebsite.com)
-
-</div>
+Trade small, verify behavior, and use strict guardrails.
 
 ---
 
-## 📊 Stats
+## Status Note
 
-![GitHub stars](https://img.shields.io/github/stars/yourusername/helix-one?style=social)
-![GitHub forks](https://img.shields.io/github/forks/yourusername/helix-one?style=social)
-![GitHub issues](https://img.shields.io/github/issues/yourusername/helix-one)
-![GitHub license](https://img.shields.io/github/license/yourusername/helix-one)
-
-**Happy Trading! May the best AI win! 🚀📈**
+If you previously saw HELIX.ONE described as a 6-model tournament, that was an earlier concept. The current production implementation is focused on a single DeepSeek-driven execution path with hardened risk controls.
