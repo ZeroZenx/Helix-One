@@ -83,10 +83,16 @@ type JournalEntry = {
   ts: string;
   type: string;
   symbol?: string;
-  side?: 'BUY' | 'SELL';
+  side?: 'BUY' | 'SELL' | 'LONG' | 'SHORT' | null;
   entry?: number;
   qty?: number;
   pnl?: number;
+  decision?: string;
+  confidence?: number;
+  reasons?: string[];
+  riskFlags?: string[];
+  gateResult?: string;
+  provider?: string;
 };
 
 type Coin = {
@@ -485,6 +491,16 @@ export default function Home() {
     entry: p.entryPrice,
   }));
   const recentTradeRows = journal.filter((j) => j.type === 'trade_close').slice(0, 6);
+  const aiDecisionRows = journal
+    .filter((j) => j.type === 'ai_decision')
+    .slice(0, 6)
+    .map((j) => ({
+      ts: j.ts,
+      symbol: j.symbol || '—',
+      decision: String(j.decision || '—').toUpperCase(),
+      confidence: Number(j.confidence || 0),
+      reason: Array.isArray(j.reasons) && j.reasons.length ? j.reasons[0] : (j.gateResult || 'n/a'),
+    }));
 
   return (
     <>
@@ -655,12 +671,12 @@ export default function Home() {
                   <div className="text-slate-400 mt-1">Last Action</div>
                   <div className="text-slate-100">{String(workerStatus?.lastAction || '—').toUpperCase()}</div>
                   <div className="text-slate-400 mt-1">Reason</div>
-                  <div className="text-slate-200 break-words">{String(workerStatus?.lastReason || '—')}</div>
+                  <div className="text-slate-200 break-all whitespace-normal leading-tight">{String(workerStatus?.lastReason || '—')}</div>
                 </div>
                 <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.03] p-2">
                   <div className="text-[10px] uppercase tracking-wide text-slate-400 mb-1">Live Feed</div>
-                  <div className="space-y-1 text-xs text-slate-200">
-                    {liveFeed.length ? liveFeed.slice(0, 4).map((evt, i) => <div key={`${evt}-${i}`}>• {evt}</div>) : <div className="text-slate-400">No live events yet.</div>}
+                  <div className="space-y-1 text-xs text-slate-200 max-h-28 overflow-auto pr-1">
+                    {liveFeed.length ? liveFeed.slice(0, 6).map((evt, i) => <div key={`${evt}-${i}`} className="break-all whitespace-normal leading-tight">• {evt}</div>) : <div className="text-slate-400">No live events yet.</div>}
                   </div>
                 </div>
               </Panel>
@@ -713,9 +729,27 @@ export default function Home() {
                 </table>
               </Panel>
 
-              <Panel className="xl:col-span-2" title="News & Macro Risk">
-                <div className="space-y-2 text-xs">
-                  {(briefing?.news || []).slice(0, 5).map((n, i) => (
+              <Panel className="xl:col-span-2" title="AI Trace + News">
+                <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2">
+                  <div className="text-[10px] uppercase tracking-wide text-slate-400 mb-1">DeepSeek AI Decision Trace</div>
+                  <div className="space-y-1 text-xs">
+                    {aiDecisionRows.length === 0 ? (
+                      <div className="text-slate-400">No AI decision logs yet.</div>
+                    ) : aiDecisionRows.map((r, i) => (
+                      <div key={`${r.ts}-${i}`} className="border-b border-white/10 pb-1 last:border-b-0">
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-slate-200">{r.symbol}</span>
+                          <span className={`${r.decision === 'TRADE' ? 'text-emerald-300' : r.decision === 'NO_TRADE' ? 'text-amber-300' : 'text-red-300'}`}>{r.decision}</span>
+                        </div>
+                        <div className="text-slate-400">conf {r.confidence}% • {new Date(r.ts).toLocaleTimeString()}</div>
+                        <div className="text-slate-300 line-clamp-2">{r.reason}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="mt-3 space-y-2 text-xs">
+                  {(briefing?.news || []).slice(0, 3).map((n, i) => (
                     <div key={`${n.source}-${i}`} className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-2">
                       <div className="text-[10px] text-slate-400">{n.source}</div>
                       <div className="text-slate-200 line-clamp-3">{n.title}</div>
