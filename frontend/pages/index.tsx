@@ -22,6 +22,8 @@ type TradingStatus = {
       currentPrice: number;
       pnl: number;
       leverage: number;
+      stopLoss?: number;
+      takeProfit?: number;
       openedAt: string;
     }>;
     tradingEnabled: boolean;
@@ -471,6 +473,32 @@ export default function Home() {
     }
   }
 
+  async function secureBreakEven(symbol: string) {
+    try {
+      await fetchWithTimeout(`${API}/positions/secure-break-even`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbols: [symbol], bufferPct: 0.001 }),
+      });
+      await loadDashboard();
+    } catch {
+      // noop
+    }
+  }
+
+  async function takePartial(symbol: string, percent = 5) {
+    try {
+      await fetchWithTimeout(`${API}/positions/partial-close`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbols: [symbol], percent }),
+      });
+      await loadDashboard();
+    } catch {
+      // noop
+    }
+  }
+
   useEffect(() => {
     loadDashboard();
     loadMarket();
@@ -484,12 +512,33 @@ export default function Home() {
     return () => clearInterval(id);
   }, []);
 
-  const activeTradeRows = livePositions.slice(0, 4).map((p) => ({
-    ts: p.openedAt,
-    symbol: p.symbol,
-    qty: p.size,
-    entry: p.entryPrice,
-  }));
+  const activeTradeRows = livePositions.slice(0, 6).map((p) => {
+    const stop = Number((p as any).stopLoss || 0);
+    const entry = Number(p.entryPrice || 0);
+    const size = Number(p.size || 0);
+    const side = String((p as any).side || 'LONG');
+    const secured = stop > 0
+      ? side === 'LONG'
+        ? (stop - entry) * size
+        : (entry - stop) * size
+      : 0;
+    const slStatus = stop <= 0
+      ? 'N/A'
+      : secured > 0
+        ? 'Locked Profit'
+        : Math.abs(stop - entry) / Math.max(1, entry) < 0.002
+          ? 'Break-even'
+          : 'Initial';
+    return {
+      ts: p.openedAt,
+      symbol: p.symbol,
+      qty: p.size,
+      entry: p.entryPrice,
+      stop,
+      slStatus,
+      secured,
+    };
+  });
   const recentTradeRows = journal.filter((j) => j.type === 'trade_close').slice(0, 6);
   const aiDecisionRows = journal
     .filter((j) => j.type === 'ai_decision')
@@ -690,16 +739,29 @@ export default function Home() {
                       <th className="text-left py-2">Pair</th>
                       <th className="text-right py-2">Size</th>
                       <th className="text-right py-2">Entry</th>
+                      <th className="text-right py-2">Stop</th>
+                      <th className="text-left py-2">SL Status</th>
+                      <th className="text-right py-2">Secured (est)</th>
+                      <th className="text-right py-2">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {activeTradeRows.length === 0 ? (
-                      <tr><td colSpan={3} className="py-3 text-slate-400">No active positions</td></tr>
+                      <tr><td colSpan={7} className="py-3 text-slate-400">No active positions</td></tr>
                     ) : activeTradeRows.map((t, i) => (
                       <tr key={`${t.ts}-${i}`} className="border-t border-white/10">
                         <td className="py-2 font-semibold">{t.symbol || '—'}</td>
                         <td className="py-2 text-right">{typeof t.qty === 'number' ? t.qty.toFixed(6) : '—'}</td>
                         <td className="py-2 text-right">{typeof t.entry === 'number' ? t.entry.toFixed(2) : '—'}</td>
+                        <td className="py-2 text-right">{t.stop > 0 ? t.stop.toFixed(2) : '—'}</td>
+                        <td className={`py-2 ${t.slStatus === 'Locked Profit' ? 'text-emerald-300' : t.slStatus === 'Break-even' ? 'text-cyan-300' : 'text-slate-300'}`}>{t.slStatus}</td>
+                        <td className={`py-2 text-right font-semibold ${Number(t.secured || 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>{signedMoney(Number(t.secured || 0))}</td>
+                        <td className="py-2 text-right space-x-1">
+                          <button onClick={() => secureBreakEven(String(t.symbol || ''))} className="rounded border border-cyan-400/40 px-2 py-1 text-[10px] text-cyan-200 hover:bg-cyan-500/10">BE+0.1%</button>
+                          <button onClick={() => takePartial(String(t.symbol || ''), 5)} className="rounded border border-emerald-400/40 px-2 py-1 text-[10px] text-emerald-200 hover:bg-emerald-500/10">TP 5%</button>
+                          <button onClick={() => takePartial(String(t.symbol || ''), 10)} className="rounded border border-emerald-400/40 px-2 py-1 text-[10px] text-emerald-200 hover:bg-emerald-500/10">TP 10%</button>
+                          <button onClick={() => takePartial(String(t.symbol || ''), 30)} className="rounded border border-emerald-400/40 px-2 py-1 text-[10px] text-emerald-200 hover:bg-emerald-500/10">TP 30%</button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
