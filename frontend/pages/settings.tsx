@@ -51,6 +51,7 @@ export default function Settings() {
   const [maxTradesPerDay, setMaxTradesPerDay] = useState(5);
   const [maxConsecutiveLosses, setMaxConsecutiveLosses] = useState(3);
   const [minConfidence, setMinConfidence] = useState(0.7);
+  const [deepseekDecisionEnabled, setDeepseekDecisionEnabled] = useState(true);
   const [notificationsPush, setNotificationsPush] = useState(true);
   const [notificationsEmail, setNotificationsEmail] = useState(false);
   const [notificationsTelegram, setNotificationsTelegram] = useState(false);
@@ -145,6 +146,7 @@ export default function Settings() {
     setMaxTradesPerDay(Number(r.maxTradesPerDay ?? 5));
     setMaxConsecutiveLosses(Number(r.maxConsecutiveLosses ?? 3));
     setMinConfidence(Number(r.minConfidence ?? 0.7));
+    setDeepseekDecisionEnabled(r.deepseekDecisionEnabled !== false);
 
     const n = s.notificationSettings || {};
     setNotificationsPush(Boolean(n.pushEnabled ?? true));
@@ -297,6 +299,7 @@ export default function Settings() {
           maxTradesPerDay,
           maxConsecutiveLosses,
           minConfidence,
+          deepseekDecisionEnabled,
         },
         notificationSettings: {
           pushEnabled: notificationsPush,
@@ -965,6 +968,10 @@ export default function Settings() {
     promotionReasons: Array.isArray(governanceResult?.reasons) ? governanceResult.reasons : [],
   };
 
+  const labRecommendation = evidenceCount < evidenceTarget
+    ? 'No action needed now. Let auto-trading continue and collect more closed trades.'
+    : 'Weekly checks ready: run Governance LIVE Auto-Feed and Walk-Forward, then review.';
+
   return (
     <>
       <Head>
@@ -1070,6 +1077,15 @@ export default function Settings() {
                 <NumberField label="Max Trades Per Day" value={maxTradesPerDay} setValue={setMaxTradesPerDay} />
                 <NumberField label="Max Consecutive Losses" value={maxConsecutiveLosses} setValue={setMaxConsecutiveLosses} />
                 <NumberField label="Confidence Floor (0-1)" value={minConfidence} setValue={setMinConfidence} step="0.01" />
+                <div className="pt-1">
+                  <Toggle
+                    label="DeepSeek AI Decision Gate"
+                    checked={deepseekDecisionEnabled}
+                    onChange={setDeepseekDecisionEnabled}
+                    onLabel="Enabled"
+                    offLabel="Disabled"
+                  />
+                </div>
                 <NumberField label="Allocated Portfolio Balance" value={deepseekBalance} setValue={setDeepseekBalance} step="1" />
 
                 <button className="mt-3 w-full rounded-lg border border-emerald-300/30 bg-emerald-500/20 hover:bg-emerald-500/30 px-3 py-2 text-sm" onClick={saveSettings} disabled={saving}>{saving ? 'Saving...' : 'Save Changes'}</button>
@@ -1146,6 +1162,14 @@ export default function Settings() {
                 </div>
 
                 <div className="mt-4 text-xs text-slate-400">These buttons call the new backend endpoints you requested and dump latest JSON below.</div>
+
+                <div className="mt-3 rounded-xl border border-cyan-300/30 bg-cyan-500/10 p-3 text-xs">
+                  <div className="text-cyan-100 font-semibold">Operator Playbook (Built-in)</div>
+                  <div className="mt-2 text-slate-200"><span className="text-slate-400">Default:</span> ignore this lab during normal auto-trading.</div>
+                  <div className="mt-1 text-slate-200"><span className="text-slate-400">Touch lab when:</span> performance drifts, regime shifts hard, or you are testing strategy changes.</div>
+                  <div className="mt-1 text-slate-200"><span className="text-slate-400">Weekly only:</span> Run <b>Experiment Governance LIVE Auto-Feed</b> + <b>Walk-Forward</b>.</div>
+                  <div className="mt-2 rounded-md border border-white/10 bg-white/5 p-2 text-emerald-200">Now: {labRecommendation}</div>
+                </div>
 
                 <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
                   <TraderSummaryCard summary={traderSummary} />

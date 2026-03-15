@@ -126,6 +126,8 @@ const TRACKED_SYMBOLS = [
   { id: 'binancecoin', symbol: 'BNB' },
 ];
 
+const EXEC_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
+
 export default function Home() {
   const [error, setError] = useState('');
   const [lastUpdated, setLastUpdated] = useState('');
@@ -327,6 +329,51 @@ export default function Home() {
     };
   }, [decision.label, decision.state, market.regimeConfidence, market.liquidityState, market.volatilityState, risks.length]);
 
+  const symbolBrains = useMemo(() => {
+    const lastReason = String(workerStatus?.lastReason || '');
+    const rejectionMatch = lastReason.match(/^signal_rejected:([^:]+):(.+)$/);
+    const rejectedSymbol = rejectionMatch?.[1] || '';
+    const rejectedReason = rejectionMatch?.[2] || '';
+
+    return EXEC_SYMBOLS.map((symbol) => {
+      const base = symbol.replace('USDT', '');
+      const coin = coins.find((c) => c.symbol === base);
+      const hasPosition = livePositions.some((p) => p.symbol === symbol);
+      const confidence = Number(market.regimeConfidence || 0);
+      const blockedByConfidence = symbol === rejectedSymbol && rejectedReason.includes('low_confidence');
+      const blockedReason = symbol === rejectedSymbol ? rejectedReason : '';
+      const state = hasPosition ? 'OPEN' : (blockedReason ? 'BLOCKED' : (confidence >= 60 ? 'ARMED' : 'SCANNING'));
+      const action = hasPosition
+        ? `Position open @ ${livePositions.find((p) => p.symbol === symbol)?.entryPrice?.toFixed(2) || '—'}`
+        : blockedReason
+          ? `Blocked: ${blockedReason}`
+          : confidence >= 60
+            ? 'Ready when trigger confirms'
+            : 'Watching for confidence lift';
+
+      return {
+        symbol,
+        price: coin?.price || 0,
+        change: coin?.change || 0,
+        confidence: blockedByConfidence ? Math.max(0, confidence - 2) : confidence,
+        state,
+        action,
+      };
+    });
+  }, [workerStatus?.lastReason, coins, livePositions, market.regimeConfidence]);
+
+  const liveFeed = useMemo(() => {
+    const events: string[] = [];
+    if (workerStatus?.lastRunAt) events.push(`Worker cycle: ${new Date(workerStatus.lastRunAt).toLocaleTimeString()}`);
+    if (workerStatus?.lastAction) events.push(`Action: ${String(workerStatus.lastAction).toUpperCase()} (${workerStatus?.lastReason || 'n/a'})`);
+    for (const c of cycleChanges.slice(0, 3)) events.push(c);
+    for (const j of journal.slice(0, 3)) {
+      if (j.type === 'trade_close') events.push(`Closed ${j.symbol || 'pair'} • PnL ${signedMoney(Number(j.pnl || 0))}`);
+      if (j.type === 'trade_open') events.push(`Opened ${j.symbol || 'pair'} • qty ${Number(j.qty || 0).toFixed(6)}`);
+    }
+    return events.slice(0, 6);
+  }, [workerStatus?.lastRunAt, workerStatus?.lastAction, workerStatus?.lastReason, cycleChanges, journal]);
+
   async function loadDashboard() {
     try {
       const [statusRes, settingsRes, briefingRes, riskRes, journalRes, workerRes] = await Promise.allSettled([
@@ -482,7 +529,7 @@ export default function Home() {
             </section>
 
             <section className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-              <Panel className="xl:col-span-3" title="Market & Risk Overview">
+              <Panel className="xl:col-span-4" title="Market & Risk Overview">
                 <div className="space-y-1">
                   {coins.map((c) => (
                     <div key={c.symbol} className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
@@ -501,9 +548,21 @@ export default function Home() {
                   <InfoRow label="Volatility" value={String(market.volatilityState || 'unknown').toUpperCase()} />
                   <InfoRow label="Funding / OI" value={formatFunding(market.funding, market.openInterest)} />
                 </div>
+
+                <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                  <div className="text-xs uppercase tracking-wide text-slate-400 mb-2">Multi-Symbol Radar</div>
+                  <div className="space-y-2">
+                    {symbolBrains.map((s) => (
+                      <div key={s.symbol} className="flex items-center justify-between text-xs border-b border-white/10 pb-1 last:border-b-0">
+                        <div className="font-semibold">{s.symbol}</div>
+                        <div className={`${s.state === 'OPEN' || s.state === 'ARMED' ? 'text-emerald-300' : s.state === 'BLOCKED' ? 'text-red-300' : 'text-amber-300'}`}>{s.state}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </Panel>
 
-              <Panel className="xl:col-span-6" title="DeepSeek Decision Brain">
+              <Panel className="xl:col-span-5" title="DeepSeek Decision Brain">
                 <div
                   className={`rounded-xl border px-4 py-3 ${
                     decision.label === 'TRADE'
@@ -549,9 +608,9 @@ export default function Home() {
                   <LiveBlock title="RISK GUARDRAILS" tone="amber" items={decision.invalidators} />
                 </div>
 
-                <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs text-slate-200">
-                  <div className="uppercase tracking-wide text-slate-400 mb-2">Trigger Diagnostics</div>
-                  <div className="mb-2 text-slate-300">Blocking condition now: <span className="text-amber-200">{triggerDiagnostics.blockerNow}</span></div>
+                <details className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs text-slate-200">
+                  <summary className="uppercase tracking-wide text-slate-400 cursor-pointer">Trigger Diagnostics</summary>
+                  <div className="mt-2 mb-2 text-slate-300">Blocking condition now: <span className="text-amber-200">{triggerDiagnostics.blockerNow}</span></div>
                   <div className="space-y-1">
                     {triggerDiagnostics.items.map((item) => (
                       <div key={item.key} className="flex items-center gap-2">
@@ -560,7 +619,7 @@ export default function Home() {
                       </div>
                     ))}
                   </div>
-                </div>
+                </details>
 
                 <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs text-slate-200">
                   <div className="uppercase tracking-wide text-slate-400 mb-1">Why now</div>
@@ -581,32 +640,34 @@ export default function Home() {
                 </div>
               </Panel>
 
-              <Panel className="xl:col-span-3" title="Risk Controls">
-                <div className="space-y-2 text-sm">
-                  <InfoRow label="Max Daily Loss" value={`${Number(riskSettings.maxDailyLossPct ?? 3).toFixed(1)}%`} />
-                  <InfoRow label="Max Position Size" value={`${Number(riskSettings.maxPositionSizePct ?? 10).toFixed(0)}%`} />
-                  <InfoRow label="Max Leverage" value={`${Number(riskSettings.maxLeverage ?? 5)}x`} />
-                  <InfoRow label="Kill Switch Drawdown" value={`-${Number(riskSettings.killSwitchDrawdownPct ?? 5).toFixed(1)}%`} />
-                  <InfoRow label="Cooldown Period" value={`${Number(riskSettings.cooldownMinutes ?? 30)} Min`} />
-                  <InfoRow label="Max Trades Per Day" value={`${Number(riskSettings.maxTradesPerDay ?? 5)}`} />
-                  <InfoRow label="Max Consecutive Losses" value={`${Number(riskSettings.maxConsecutiveLosses ?? 3)}`} />
+              <Panel className="xl:col-span-3" title="Ops & Risk">
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <MiniMetric label="Daily Loss" value={`${Number(riskSettings.maxDailyLossPct ?? 3).toFixed(1)}%`} />
+                  <MiniMetric label="Position Size" value={`${Number(riskSettings.maxPositionSizePct ?? 10).toFixed(0)}%`} />
+                  <MiniMetric label="Leverage" value={`${Number(riskSettings.maxLeverage ?? 5)}x`} />
+                  <MiniMetric label="Trades/Day" value={`${Number(riskSettings.maxTradesPerDay ?? 5)}`} />
+                  <MiniMetric label="Worker" value={workerStatus?.running ? 'ON' : 'OFF'} />
+                  <MiniMetric label="Interval" value={`${Number(workerStatus?.intervalSec || 60)}s`} />
                 </div>
-              </Panel>
-
-              <Panel className="xl:col-span-3" title="Auto Worker Heartbeat">
-                <div className="space-y-2 text-sm">
-                  <InfoRow label="Worker Running" value={workerStatus?.running ? 'YES' : 'NO'} />
-                  <InfoRow label="Interval" value={`${Number(workerStatus?.intervalSec || 60)} sec`} />
-                  <InfoRow label="Last Run" value={workerStatus?.lastRunAt ? new Date(workerStatus.lastRunAt).toLocaleTimeString() : '—'} />
-                  <InfoRow label="Last Action" value={String(workerStatus?.lastAction || '—').toUpperCase()} />
-                  <InfoRow label="Last Reason" value={String(workerStatus?.lastReason || '—')} />
-                  <InfoRow label="Last Auto Signal" value={workerStatus?.lastAutoSignalAt ? new Date(workerStatus.lastAutoSignalAt).toLocaleTimeString() : 'none'} />
+                <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.03] p-2 text-xs">
+                  <div className="text-slate-400">Last Run</div>
+                  <div className="text-slate-100">{workerStatus?.lastRunAt ? new Date(workerStatus.lastRunAt).toLocaleTimeString() : '—'}</div>
+                  <div className="text-slate-400 mt-1">Last Action</div>
+                  <div className="text-slate-100">{String(workerStatus?.lastAction || '—').toUpperCase()}</div>
+                  <div className="text-slate-400 mt-1">Reason</div>
+                  <div className="text-slate-200 break-words">{String(workerStatus?.lastReason || '—')}</div>
+                </div>
+                <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.03] p-2">
+                  <div className="text-[10px] uppercase tracking-wide text-slate-400 mb-1">Live Feed</div>
+                  <div className="space-y-1 text-xs text-slate-200">
+                    {liveFeed.length ? liveFeed.slice(0, 4).map((evt, i) => <div key={`${evt}-${i}`}>• {evt}</div>) : <div className="text-slate-400">No live events yet.</div>}
+                  </div>
                 </div>
               </Panel>
             </section>
 
             <section className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-              <Panel className="xl:col-span-5" title="Active Positions">
+              <Panel className="xl:col-span-7" title="Active Positions">
                 <table className="w-full text-sm">
                   <thead className="text-slate-400">
                     <tr>
@@ -629,7 +690,7 @@ export default function Home() {
                 </table>
               </Panel>
 
-              <Panel className="xl:col-span-4" title="Recent Trades">
+              <Panel className="xl:col-span-3" title="Recent Trades">
                 <table className="w-full text-sm">
                   <thead className="text-slate-400">
                     <tr>
@@ -652,12 +713,12 @@ export default function Home() {
                 </table>
               </Panel>
 
-              <Panel className="xl:col-span-3" title="News & Macro Risk">
-                <div className="space-y-2 text-sm">
-                  {(briefing?.news || []).slice(0, 6).map((n, i) => (
-                    <div key={`${n.source}-${i}`} className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
-                      <div className="text-xs text-slate-400">{n.source}</div>
-                      <div className="text-slate-200">{n.title}</div>
+              <Panel className="xl:col-span-2" title="News & Macro Risk">
+                <div className="space-y-2 text-xs">
+                  {(briefing?.news || []).slice(0, 5).map((n, i) => (
+                    <div key={`${n.source}-${i}`} className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-2">
+                      <div className="text-[10px] text-slate-400">{n.source}</div>
+                      <div className="text-slate-200 line-clamp-3">{n.title}</div>
                     </div>
                   ))}
                   {(!briefing?.news || briefing.news.length === 0) && <div className="text-slate-400">No headlines right now.</div>}
@@ -725,6 +786,15 @@ function TopMetric({ label, value, tone = 'default' }: { label: string; value: s
     <div className="rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-md px-4 py-3">
       <div className="text-xs uppercase tracking-wider text-slate-400">{label}</div>
       <div className={`text-3xl font-semibold mt-1 ${toneClass}`} style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{value}</div>
+    </div>
+  );
+}
+
+function MiniMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1">
+      <div className="text-[10px] text-slate-400 uppercase tracking-wide">{label}</div>
+      <div className="text-slate-100 font-semibold">{value}</div>
     </div>
   );
 }
