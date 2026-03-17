@@ -338,18 +338,17 @@ export default function Home() {
   }, [decision.label, decision.state, market.regimeConfidence, market.liquidityState, market.volatilityState, risks.length]);
 
   const symbolBrains = useMemo(() => {
-    const lastReason = String(workerStatus?.lastReason || '');
-    const rejectionMatch = lastReason.match(/^signal_rejected:([^:]+):(.+)$/);
-    const rejectedSymbol = rejectionMatch?.[1] || '';
-    const rejectedReason = rejectionMatch?.[2] || '';
+    const rejectMap = new Map<string, string>();
+    for (const r of (workerStatus?.symbolRejects || [])) {
+      if (r?.symbol) rejectMap.set(String(r.symbol), String(r.reason || 'blocked'));
+    }
 
     return EXEC_SYMBOLS.map((symbol) => {
       const base = symbol.replace('USDT', '');
       const coin = coins.find((c) => c.symbol === base);
       const hasPosition = livePositions.some((p) => p.symbol === symbol);
       const confidence = Number(market.regimeConfidence || 0);
-      const blockedByConfidence = symbol === rejectedSymbol && rejectedReason.includes('low_confidence');
-      const blockedReason = symbol === rejectedSymbol ? rejectedReason : '';
+      const blockedReason = rejectMap.get(symbol) || '';
       const state = hasPosition ? 'OPEN' : (blockedReason ? 'BLOCKED' : (confidence >= 60 ? 'ARMED' : 'SCANNING'));
       const action = hasPosition
         ? `Position open @ ${livePositions.find((p) => p.symbol === symbol)?.entryPrice?.toFixed(2) || '—'}`
@@ -363,17 +362,17 @@ export default function Home() {
         symbol,
         price: coin?.price || 0,
         change: coin?.change || 0,
-        confidence: blockedByConfidence ? Math.max(0, confidence - 2) : confidence,
+        confidence,
         state,
         action,
       };
     });
-  }, [workerStatus?.lastReason, coins, livePositions, market.regimeConfidence]);
+  }, [workerStatus?.symbolRejects, coins, livePositions, market.regimeConfidence]);
 
   const liveFeed = useMemo(() => {
     const events: string[] = [];
     if (workerStatus?.lastRunAt) events.push(`Worker cycle: ${new Date(workerStatus.lastRunAt).toLocaleTimeString()}`);
-    if (workerStatus?.lastAction) events.push(`Action: ${String(workerStatus.lastAction).toUpperCase()} (${workerStatus?.lastReason || 'n/a'})`);
+    if (workerStatus?.lastAction) events.push(`Action: ${String(workerStatus.lastAction).toUpperCase()} — ${workerStatus?.lastReasonHuman || workerStatus?.lastReason || 'n/a'}`);
     for (const c of cycleChanges.slice(0, 3)) events.push(c);
     for (const j of journal.slice(0, 3)) {
       if (j.type === 'trade_close') events.push(`Closed ${j.symbol || 'pair'} • PnL ${signedMoney(Number(j.pnl || 0))}`);
@@ -389,7 +388,7 @@ export default function Home() {
         fetchWithTimeout(`${API}/settings`),
         fetchWithTimeout(`${API}/daily-briefing`),
         fetchWithTimeout(`${API}/risk-context?symbols=BTCUSDT,ETHUSDT,SOLUSDT`),
-        fetchWithTimeout(`${API}/journal?limit=20`),
+        fetchWithTimeout(`${API}/journal?limit=300`),
         fetchWithTimeout(`${API}/worker-status`),
       ]);
 
@@ -532,6 +531,7 @@ export default function Home() {
     return {
       ts: p.openedAt,
       symbol: p.symbol,
+      side,
       qty: p.size,
       entry: p.entryPrice,
       stop,
@@ -539,17 +539,38 @@ export default function Home() {
       secured,
     };
   });
-  const recentTradeRows = journal.filter((j) => j.type === 'trade_close').slice(0, 6);
-  const aiDecisionRows = journal
-    .filter((j) => j.type === 'ai_decision')
-    .slice(0, 6)
-    .map((j) => ({
-      ts: j.ts,
-      symbol: j.symbol || '—',
-      decision: String(j.decision || '—').toUpperCase(),
-      confidence: Number(j.confidence || 0),
-      reason: Array.isArray(j.reasons) && j.reasons.length ? j.reasons[0] : (j.gateResult || 'n/a'),
-    }));
+  const recentTradeRows = journal
+    .filter((j) => j.type === 'trade_close')
+    .sort((a, b) => new Date(String(b.ts || 0)).getTime() - new Date(String(a.ts || 0)).getTime())
+    .slice(0, 12);
+  const aiDecisionRows = Array.from(
+    new Map(
+      journal
+        .filter((j) => j.type === 'ai_decision')
+        .sort((a, b) => new Date(String(b.ts || 0)).getTime() - new Date(String(a.ts || 0)).getTime())
+        .map((j) => {
+          const row = {
+            ts: j.ts,
+            symbol: j.symbol || '—',
+            decision: String(j.decision || '—').toUpperCase(),
+            confidence: Number(j.confidence || 0),
+            reason: (() => {
+              const base = Array.isArray(j.reasons) && j.reasons.length ? j.reasons[0] : (j.gateResult || 'n/a');
+              if (String(base).toLowerCase().includes('unable to generate signal')) {
+                return 'No clean setup this cycle; DeepSeek confidence too weak to issue a trade.';
+              }
+              return String(base).replace(/_/g, ' ');
+            })(),
+          };
+          const key = `${row.ts}|${row.symbol}|${row.decision}|${row.reason}`;
+          return [key, row] as const;
+        })
+    ).values()
+  ).slice(0, 8);
+
+  const aiPositionFeedbackRows = Array.isArray(workerStatus?.positionFeedback)
+    ? workerStatus.positionFeedback.slice(0, 4)
+    : [];
 
   return (
     <>
@@ -562,7 +583,7 @@ export default function Home() {
       </Head>
 
       <div className="min-h-screen text-slate-100" style={{ fontFamily: 'IBM Plex Sans, Space Grotesk, sans-serif', background: 'radial-gradient(1200px 800px at 20% 0%, #1a2438 0%, #0b101a 40%, #05070c 100%)' }}>
-        <div className="mx-auto max-w-[1440px] px-4 md:px-8 py-5">
+        <div className="mx-auto max-w-[1240px] px-4 md:px-6 py-5">
           <header className="rounded-2xl border border-white/10 bg-slate-900/60 backdrop-blur-md p-4 md:p-5 shadow-2xl shadow-black/30">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div className="flex flex-wrap items-center gap-4">
@@ -582,7 +603,7 @@ export default function Home() {
           <main className="mt-5 space-y-5">
             {error && <div className="rounded-xl border border-red-500/40 bg-red-900/30 px-4 py-3 text-red-100 text-sm">{error}</div>}
 
-            <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+            <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-2">
               <TopMetric label="Binance Wallet Balance" value={walletBalance > 0 ? money(walletBalance) : '—'} />
               <TopMetric label="Available Margin" value={availableMargin > 0 ? money(availableMargin) : '—'} tone="green" />
               <TopMetric label="Daily P&L" value={typeof account.previousDayPnl === 'number' ? signedMoney(account.previousDayPnl) : '—'} tone={Number(account.previousDayPnl || 0) >= 0 ? 'green' : 'red'} />
@@ -627,7 +648,7 @@ export default function Home() {
                 </div>
               </Panel>
 
-              <Panel className="xl:col-span-5" title="DeepSeek Decision Brain">
+              <Panel className="xl:col-span-5" title="DeepSeek Decision Brain (Operator Mode)">
                 <div
                   className={`rounded-xl border px-4 py-3 ${
                     decision.label === 'TRADE'
@@ -655,6 +676,9 @@ export default function Home() {
                 <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
                   <StateChip state={decision.state} />
                   <span className="rounded-full border border-white/20 bg-white/5 px-2 py-1 text-slate-200">Confidence: {decision.confidence}%</span>
+                  <span className={`rounded-full border px-2 py-1 font-semibold ${decision.label === 'TRADE' ? 'border-emerald-400/50 bg-emerald-500/15 text-emerald-200' : 'border-amber-400/50 bg-amber-500/15 text-amber-200'}`}>
+                    {decision.label === 'TRADE' ? 'CAN TRADE NOW' : 'DO NOT TRADE NOW'}
+                  </span>
                 </div>
 
                 <div className="mt-4 divide-y divide-white/10 text-sm">
@@ -673,8 +697,8 @@ export default function Home() {
                   <LiveBlock title="RISK GUARDRAILS" tone="amber" items={decision.invalidators} />
                 </div>
 
-                <details className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs text-slate-200">
-                  <summary className="uppercase tracking-wide text-slate-400 cursor-pointer">Trigger Diagnostics</summary>
+                <details className="mt-3 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs text-slate-200">
+                  <summary className="uppercase tracking-wide text-slate-400 cursor-pointer">Trigger Diagnostics (Why/Why Not)</summary>
                   <div className="mt-2 mb-2 text-slate-300">Blocking condition now: <span className="text-amber-200">{triggerDiagnostics.blockerNow}</span></div>
                   <div className="space-y-1">
                     {triggerDiagnostics.items.map((item) => (
@@ -715,28 +739,39 @@ export default function Home() {
                   <MiniMetric label="Interval" value={`${Number(workerStatus?.intervalSec || 60)}s`} />
                 </div>
                 <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.03] p-2 text-xs">
+                  <div className="text-slate-400">Execution Policy</div>
+                  <div className="text-slate-100">max_open_positions: {Number(workerStatus?.policy?.maxOpenPositions || 1)}</div>
+                  <div className="text-slate-100">cooldown_minutes: {Number(workerStatus?.policy?.cooldownMinutes || 30)}</div>
+                  <div className="text-slate-400 mt-1">Execution Source</div>
+                  <div className="text-slate-100 font-semibold">{String(workerStatus?.executionSource || 'HYBRID')}</div>
+                  <div className="text-slate-400 mt-1">AI Last Heartbeat</div>
+                  <div className="text-slate-100">{workerStatus?.aiLastHeartbeatAt ? new Date(workerStatus.aiLastHeartbeatAt).toLocaleTimeString() : '—'}</div>
+                  {workerStatus?.fallbackMode && <div className="mt-1 inline-block rounded border border-amber-400/40 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-200">FALLBACK MODE</div>}
+                </div>
+                <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.03] p-2 text-xs">
                   <div className="text-slate-400">Last Run</div>
                   <div className="text-slate-100">{workerStatus?.lastRunAt ? new Date(workerStatus.lastRunAt).toLocaleTimeString() : '—'}</div>
                   <div className="text-slate-400 mt-1">Last Action</div>
                   <div className="text-slate-100">{String(workerStatus?.lastAction || '—').toUpperCase()}</div>
-                  <div className="text-slate-400 mt-1">Reason</div>
-                  <div className="text-slate-200 break-all whitespace-normal leading-tight">{String(workerStatus?.lastReason || '—')}</div>
+                  <div className="text-slate-400 mt-1">Reason (human)</div>
+                  <div className="text-slate-100 whitespace-normal leading-tight font-medium">{String(workerStatus?.lastReasonHuman || workerStatus?.lastReason || '—')}</div>
                 </div>
                 <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.03] p-2">
                   <div className="text-[10px] uppercase tracking-wide text-slate-400 mb-1">Live Feed</div>
                   <div className="space-y-1 text-xs text-slate-200 max-h-28 overflow-auto pr-1">
-                    {liveFeed.length ? liveFeed.slice(0, 6).map((evt, i) => <div key={`${evt}-${i}`} className="break-all whitespace-normal leading-tight">• {evt}</div>) : <div className="text-slate-400">No live events yet.</div>}
+                    {liveFeed.length ? liveFeed.slice(0, 4).map((evt, i) => <div key={`${evt}-${i}`} className="whitespace-normal leading-tight">• {evt}</div>) : <div className="text-slate-400">No live events yet.</div>}
                   </div>
                 </div>
               </Panel>
             </section>
 
             <section className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-              <Panel className="xl:col-span-7" title="Active Positions">
+              <Panel className="xl:col-span-8" title="Active Positions">
                 <table className="w-full text-sm">
                   <thead className="text-slate-400">
                     <tr>
                       <th className="text-left py-2">Pair</th>
+                      <th className="text-left py-2">Side</th>
                       <th className="text-right py-2">Size</th>
                       <th className="text-right py-2">Entry</th>
                       <th className="text-right py-2">Stop</th>
@@ -747,10 +782,11 @@ export default function Home() {
                   </thead>
                   <tbody>
                     {activeTradeRows.length === 0 ? (
-                      <tr><td colSpan={7} className="py-3 text-slate-400">No active positions</td></tr>
+                      <tr><td colSpan={8} className="py-3 text-slate-400">No active positions</td></tr>
                     ) : activeTradeRows.map((t, i) => (
                       <tr key={`${t.ts}-${i}`} className="border-t border-white/10">
                         <td className="py-2 font-semibold">{t.symbol || '—'}</td>
+                        <td className={`py-2 ${String(t.side || '').toUpperCase() === 'LONG' ? 'text-emerald-300' : 'text-red-300'}`}>{String(t.side || '—').toUpperCase()}</td>
                         <td className="py-2 text-right">{typeof t.qty === 'number' ? t.qty.toFixed(6) : '—'}</td>
                         <td className="py-2 text-right">{typeof t.entry === 'number' ? t.entry.toFixed(2) : '—'}</td>
                         <td className="py-2 text-right">{t.stop > 0 ? t.stop.toFixed(2) : '—'}</td>
@@ -758,7 +794,6 @@ export default function Home() {
                         <td className={`py-2 text-right font-semibold ${Number(t.secured || 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>{signedMoney(Number(t.secured || 0))}</td>
                         <td className="py-2 text-right space-x-1">
                           <button onClick={() => secureBreakEven(String(t.symbol || ''))} className="rounded border border-cyan-400/40 px-2 py-1 text-[10px] text-cyan-200 hover:bg-cyan-500/10">BE+0.1%</button>
-                          <button onClick={() => takePartial(String(t.symbol || ''), 5)} className="rounded border border-emerald-400/40 px-2 py-1 text-[10px] text-emerald-200 hover:bg-emerald-500/10">TP 5%</button>
                           <button onClick={() => takePartial(String(t.symbol || ''), 10)} className="rounded border border-emerald-400/40 px-2 py-1 text-[10px] text-emerald-200 hover:bg-emerald-500/10">TP 10%</button>
                           <button onClick={() => takePartial(String(t.symbol || ''), 30)} className="rounded border border-emerald-400/40 px-2 py-1 text-[10px] text-emerald-200 hover:bg-emerald-500/10">TP 30%</button>
                         </td>
@@ -768,7 +803,7 @@ export default function Home() {
                 </table>
               </Panel>
 
-              <Panel className="xl:col-span-3" title="Recent Trades">
+              <Panel className="xl:col-span-4" title="Recent Trades">
                 <table className="w-full text-sm">
                   <thead className="text-slate-400">
                     <tr>
@@ -791,33 +826,60 @@ export default function Home() {
                 </table>
               </Panel>
 
-              <Panel className="xl:col-span-2" title="AI Trace + News">
-                <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2">
-                  <div className="text-[10px] uppercase tracking-wide text-slate-400 mb-1">DeepSeek AI Decision Trace</div>
-                  <div className="space-y-1 text-xs">
-                    {aiDecisionRows.length === 0 ? (
-                      <div className="text-slate-400">No AI decision logs yet.</div>
-                    ) : aiDecisionRows.map((r, i) => (
-                      <div key={`${r.ts}-${i}`} className="border-b border-white/10 pb-1 last:border-b-0">
-                        <div className="flex items-center justify-between">
-                          <span className="font-semibold text-slate-200">{r.symbol}</span>
-                          <span className={`${r.decision === 'TRADE' ? 'text-emerald-300' : r.decision === 'NO_TRADE' ? 'text-amber-300' : 'text-red-300'}`}>{r.decision}</span>
+            </section>
+
+            <section className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+              <Panel className="xl:col-span-12" title="AI Trace + News">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2">
+                    <div className="text-[10px] uppercase tracking-wide text-slate-400 mb-1">DeepSeek AI Decision Trace</div>
+                    <div className="text-[11px] text-slate-400 mb-2">
+                      Heartbeat: {workerStatus?.aiLastHeartbeatAt ? new Date(workerStatus.aiLastHeartbeatAt).toLocaleTimeString() : '—'}
+                      {workerStatus?.fallbackMode ? <span className="ml-2 text-amber-300">(STALE/FALLBACK)</span> : <span className="ml-2 text-emerald-300">(LIVE)</span>}
+                    </div>
+                    <div className="space-y-1 text-xs max-h-64 overflow-auto pr-1">
+                      {aiDecisionRows.length === 0 ? (
+                        <div className="text-slate-400">No AI decision logs yet.</div>
+                      ) : aiDecisionRows.map((r, i) => (
+                        <div key={`${r.ts}-${i}`} className="border-b border-white/10 pb-1 last:border-b-0">
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold text-slate-200">{r.symbol}</span>
+                            <span className={`${r.decision === 'TRADE' ? 'text-emerald-300' : r.decision === 'NO_TRADE' ? 'text-amber-300' : 'text-red-300'}`}>{r.decision}</span>
+                          </div>
+                          <div className="text-slate-400">conf {r.confidence}% • {new Date(r.ts).toLocaleTimeString()}</div>
+                          <div className="text-slate-300 line-clamp-2">{r.reason}</div>
                         </div>
-                        <div className="text-slate-400">conf {r.confidence}% • {new Date(r.ts).toLocaleTimeString()}</div>
-                        <div className="text-slate-300 line-clamp-2">{r.reason}</div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2">
+                    <div className="text-[10px] uppercase tracking-wide text-slate-400 mb-1">DeepSeek Position Monitor</div>
+                    <div className="space-y-1 text-xs max-h-64 overflow-auto pr-1">
+                      {aiPositionFeedbackRows.length === 0 ? (
+                        <div className="text-slate-400">No active AI position feedback.</div>
+                      ) : aiPositionFeedbackRows.map((r: any, i: number) => (
+                        <div key={`${r.ts}-${r.symbol}-${i}`} className="border-b border-white/10 pb-1 last:border-b-0">
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold text-slate-200">{r.symbol}</span>
+                            <span className="text-cyan-300">{String(r.stance || 'WATCH')}</span>
+                          </div>
+                          <div className="text-slate-400">conf {Number(r.confidence || 0)}% • {r.ts ? new Date(r.ts).toLocaleTimeString() : 'now'}</div>
+                          <div className="text-slate-300 line-clamp-2">{String(r.summary || '')}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 text-xs">
+                    {(briefing?.news || []).slice(0, 5).map((n, i) => (
+                      <div key={`${n.source}-${i}`} className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-2">
+                        <div className="text-[10px] text-slate-400">{n.source}</div>
+                        <div className="text-slate-200 line-clamp-3">{n.title}</div>
                       </div>
                     ))}
+                    {(!briefing?.news || briefing.news.length === 0) && <div className="text-slate-400">No headlines right now.</div>}
                   </div>
-                </div>
-
-                <div className="mt-3 space-y-2 text-xs">
-                  {(briefing?.news || []).slice(0, 3).map((n, i) => (
-                    <div key={`${n.source}-${i}`} className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-2">
-                      <div className="text-[10px] text-slate-400">{n.source}</div>
-                      <div className="text-slate-200 line-clamp-3">{n.title}</div>
-                    </div>
-                  ))}
-                  {(!briefing?.news || briefing.news.length === 0) && <div className="text-slate-400">No headlines right now.</div>}
                 </div>
               </Panel>
             </section>

@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import { BinanceService, OrderParams } from './BinanceService';
 import { JournalService } from './JournalService';
+import { StructuredLogger } from './StructuredLogger';
 
 export interface TradingConfig {
   maxPositionSize: number;
@@ -14,6 +15,8 @@ export interface TradingConfig {
   maxTradesPerDay?: number;
   maxConsecutiveLosses?: number;
   minConfidence?: number;
+  maxUnprotectedPositionSeconds?: number;
+  stopPlacementRetries?: number;
 }
 
 export interface TradeSignal {
@@ -67,7 +70,9 @@ export class LiveTradingService extends EventEmitter {
   private isConnected = false;
   private tradingEnabled = false;
   private journal = new JournalService();
+  private logger = new StructuredLogger('trading');
   private lastSignalRejectReason: string | null = null;
+  private unprotectedSince: Map<string, number> = new Map();
 
   constructor(binanceConfig: any, tradingConfig: TradingConfig) {
     super();
@@ -145,6 +150,23 @@ export class LiveTradingService extends EventEmitter {
       return false;
     }
 
+    const protections = await this.ensurePositionProtection(signal, orderResult);
+    if (!protections.ok) {
+      this.lastSignalRejectReason = protections.reason || 'unprotected_position_force_closed';
+      await this.forceCloseUnprotectedOrder(orderResult, signal);
+      this.emit('signal_rejected', { signal, reason: this.lastSignalRejectReason });
+      this.journal.append({
+        ts: new Date().toISOString(),
+        type: 'risk_event',
+        modelId: signal.modelId,
+        symbol: signal.symbol,
+        reason: this.lastSignalRejectReason,
+      });
+      return false;
+    }
+
+    signal.stopLoss = protections.stopLoss;
+    signal.takeProfit = protections.takeProfit;
     this.updateModelAccountOnOpen(signal, orderResult, modelAccount);
 
     this.journal.append({
@@ -271,6 +293,154 @@ export class LiveTradingService extends EventEmitter {
     }
   }
 
+  private async ensurePositionProtection(signal: TradeSignal, orderResult: any): Promise<{ ok: boolean; reason?: string; stopLoss: number; takeProfit?: number }> {
+    const side = signal.side;
+    const entry = Number(orderResult.price || signal.price || 0);
+    if (!(entry > 0)) return { ok: false, reason: 'missing_entry_price', stopLoss: 0 };
+
+    const stopLoss = signal.stopLoss ?? (side === 'BUY'
+      ? entry * (1 - this.config.stopLossPercentage)
+      : entry * (1 + this.config.stopLossPercentage));
+
+    const takeProfit = signal.takeProfit ?? (side === 'BUY'
+      ? entry * (1 + this.config.takeProfitPercentage)
+      : entry * (1 - this.config.takeProfitPercentage));
+
+    const symbol = String(orderResult.symbol || signal.symbol).endsWith('USDT')
+      ? String(orderResult.symbol || signal.symbol)
+      : `${String(orderResult.symbol || signal.symbol)}USDT`;
+
+    const closeSide: 'BUY' | 'SELL' = side === 'BUY' ? 'SELL' : 'BUY';
+    const qty = Number(orderResult.quantity || signal.quantity || 0);
+    const retries = Math.max(1, this.config.stopPlacementRetries ?? 2);
+    let lastErrorMsg = 'unknown';
+
+    const ladder: Array<{ label: string; endpoint: string; make: (i: number) => OrderParams }> = [
+      {
+        label: 'fapi_close_position_mark',
+        endpoint: '/fapi/v1/order',
+        make: (i) => ({
+          symbol,
+          side: closeSide,
+          type: 'STOP_MARKET',
+          stopPrice: stopLoss,
+          closePosition: true,
+          workingType: 'MARK_PRICE',
+          newClientOrderId: `${signal.modelId}_sl_cp_${Date.now()}_${i}`,
+        } as OrderParams),
+      },
+      {
+        label: 'fapi_close_position_contract',
+        endpoint: '/fapi/v1/order',
+        make: (i) => ({
+          symbol,
+          side: closeSide,
+          type: 'STOP_MARKET',
+          stopPrice: stopLoss,
+          closePosition: true,
+          workingType: 'CONTRACT_PRICE',
+          newClientOrderId: `${signal.modelId}_sl_cpc_${Date.now()}_${i}`,
+        } as OrderParams),
+      },
+      {
+        label: 'fapi_reduce_only_qty',
+        endpoint: '/fapi/v1/order',
+        make: (i) => ({
+          symbol,
+          side: closeSide,
+          type: 'STOP_MARKET',
+          stopPrice: stopLoss,
+          quantity: qty > 0 ? qty : undefined,
+          reduceOnly: true,
+          workingType: 'MARK_PRICE',
+          newClientOrderId: `${signal.modelId}_sl_ro_${Date.now()}_${i}`,
+        } as OrderParams),
+      },
+      {
+        label: 'papi_um_close_position_mark',
+        endpoint: '/papi/v1/um/order',
+        make: (i) => ({
+          symbol,
+          side: closeSide,
+          type: 'STOP_MARKET',
+          stopPrice: stopLoss,
+          closePosition: true,
+          workingType: 'MARK_PRICE',
+          newClientOrderId: `${signal.modelId}_sl_papi_${Date.now()}_${i}`,
+        } as OrderParams),
+      },
+      {
+        label: 'papi_um_reduce_only_qty',
+        endpoint: '/papi/v1/um/order',
+        make: (i) => ({
+          symbol,
+          side: closeSide,
+          type: 'STOP_MARKET',
+          stopPrice: stopLoss,
+          quantity: qty > 0 ? qty : undefined,
+          reduceOnly: true,
+          workingType: 'MARK_PRICE',
+          newClientOrderId: `${signal.modelId}_sl_papiro_${Date.now()}_${i}`,
+        } as OrderParams),
+      },
+    ];
+
+    for (const variant of ladder) {
+      for (let i = 0; i < retries; i += 1) {
+        try {
+          await this.binance.placeOrderAt(variant.endpoint, variant.make(i));
+          this.logger.info('protective_stop_attached', {
+            symbol,
+            modelId: signal.modelId,
+            variant: variant.label,
+            stopLoss,
+          });
+          return { ok: true, stopLoss, takeProfit };
+        } catch (error: any) {
+          lastErrorMsg = String(error?.message || 'unknown');
+          this.logger.warn('protective_stop_failed', {
+            symbol,
+            modelId: signal.modelId,
+            variant: variant.label,
+            tryIndex: i + 1,
+            error: lastErrorMsg,
+          });
+        }
+      }
+    }
+
+    const compact = lastErrorMsg.replace(/\s+/g, '_').slice(0, 140);
+    return { ok: false, reason: `stop_placement_failed:${compact}`, stopLoss, takeProfit };
+  }
+
+  private async forceCloseUnprotectedOrder(orderResult: any, signal: TradeSignal): Promise<void> {
+    try {
+      const symbol = String(orderResult.symbol || signal.symbol).endsWith('USDT')
+        ? String(orderResult.symbol || signal.symbol)
+        : `${String(orderResult.symbol || signal.symbol)}USDT`;
+      const qty = Number(orderResult.quantity || signal.quantity || 0);
+      if (!(qty > 0)) return;
+      await this.binance.placeOrder({
+        symbol,
+        side: signal.side === 'BUY' ? 'SELL' : 'BUY',
+        type: 'MARKET',
+        quantity: qty,
+        newClientOrderId: `${signal.modelId}_forceclose_${Date.now()}`,
+      });
+      this.logger.warn('unprotected_position_force_closed', {
+        symbol,
+        modelId: signal.modelId,
+        qty,
+      });
+    } catch (error: any) {
+      this.logger.error('unprotected_position_force_close_failed', {
+        symbol: signal.symbol,
+        modelId: signal.modelId,
+        error: error?.message || 'unknown',
+      });
+    }
+  }
+
   private updateModelAccountOnOpen(signal: TradeSignal, orderResult: any, account: ModelTradingAccount) {
     const side: 'LONG' | 'SHORT' = signal.side === 'BUY' ? 'LONG' : 'SHORT';
     account.positions.push({
@@ -315,6 +485,7 @@ export class LiveTradingService extends EventEmitter {
       // Reconcile with exchange positions for accurate display/state.
       try {
         const exchangePositions = await this.binance.getPositions();
+        const localBySymbol = new Map(account.positions.map((p) => [p.symbol, p]));
         const live = exchangePositions
           .map((p: any) => {
             const amt = Number(p.positionAmt || 0);
@@ -324,15 +495,19 @@ export class LiveTradingService extends EventEmitter {
             const upnl = Number(p.unRealizedProfit || p.unrealizedPnl || 0);
             if (!Number.isFinite(amt) || Math.abs(amt) <= 0 || entry <= 0) return null;
             const side: 'LONG' | 'SHORT' = amt > 0 ? 'LONG' : 'SHORT';
+            const symbol = String(p.symbol || '');
+            const prior = localBySymbol.get(symbol);
             return {
-              symbol: String(p.symbol || ''),
+              symbol,
               side,
               size: Math.abs(amt),
               entryPrice: entry,
               currentPrice: mark > 0 ? mark : entry,
               pnl: upnl,
               leverage: Number.isFinite(leverage) && leverage > 0 ? leverage : 1,
-              openedAt: new Date().toISOString(),
+              stopLoss: prior?.stopLoss,
+              takeProfit: prior?.takeProfit,
+              openedAt: prior?.openedAt || new Date().toISOString(),
               source: 'exchange' as const,
             };
           })
@@ -342,6 +517,68 @@ export class LiveTradingService extends EventEmitter {
         account.positions = live;
       } catch {
         // keep local positions on exchange fetch failures
+      }
+
+      const graceMs = Math.max(15, this.config.maxUnprotectedPositionSeconds ?? 60) * 1000;
+      for (const pos of account.positions) {
+        const key = `${account.modelId}:${pos.symbol}`;
+        if (pos.stopLoss && Number(pos.stopLoss) > 0) {
+          this.unprotectedSince.delete(key);
+          continue;
+        }
+
+        const firstSeen = this.unprotectedSince.get(key) ?? Date.now();
+        this.unprotectedSince.set(key, firstSeen);
+        const ageMs = Date.now() - firstSeen;
+
+        if (ageMs < graceMs) {
+          this.logger.warn('unprotected_position_detected', {
+            modelId: account.modelId,
+            symbol: pos.symbol,
+            ageMs,
+          });
+          continue;
+        }
+
+        const emergencyStop = pos.side === 'LONG'
+          ? pos.currentPrice * (1 - this.config.stopLossPercentage)
+          : pos.currentPrice * (1 + this.config.stopLossPercentage);
+
+        let attached = false;
+        for (let i = 0; i < Math.max(1, this.config.stopPlacementRetries ?? 2); i += 1) {
+          try {
+            await this.binance.placeOrder({
+              symbol: pos.symbol.endsWith('USDT') ? pos.symbol : `${pos.symbol}USDT`,
+              side: pos.side === 'LONG' ? 'SELL' : 'BUY',
+              type: 'STOP_MARKET',
+              stopPrice: emergencyStop,
+              closePosition: true,
+              workingType: 'MARK_PRICE',
+              newClientOrderId: `${account.modelId}_reprotect_${Date.now()}_${i}`,
+            } as OrderParams);
+            pos.stopLoss = emergencyStop;
+            attached = true;
+            this.unprotectedSince.delete(key);
+            this.logger.warn('unprotected_position_recovered', {
+              modelId: account.modelId,
+              symbol: pos.symbol,
+              stopLoss: emergencyStop,
+            });
+            break;
+          } catch (error: any) {
+            this.logger.warn('unprotected_position_reprotect_failed', {
+              modelId: account.modelId,
+              symbol: pos.symbol,
+              tryIndex: i + 1,
+              error: error?.message || 'unknown',
+            });
+          }
+        }
+
+        if (!attached) {
+          await this.closePosition(account.modelId, pos.symbol, 'unprotected_position_timeout');
+          this.unprotectedSince.delete(key);
+        }
       }
 
       account.totalPnL = account.positions.reduce((sum, pos) => sum + pos.pnl, 0);
@@ -450,6 +687,8 @@ export class LiveTradingService extends EventEmitter {
           currentPrice: p.currentPrice,
           pnl: p.pnl,
           leverage: p.leverage,
+          stopLoss: p.stopLoss,
+          takeProfit: p.takeProfit,
           openedAt: p.openedAt,
         })),
         tradingEnabled: a.isActive,

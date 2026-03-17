@@ -11,13 +11,16 @@ export interface BinanceConfig {
 export interface OrderParams {
   symbol: string;
   side: 'BUY' | 'SELL';
-  type: 'MARKET' | 'LIMIT' | 'STOP_LOSS_LIMIT' | 'TAKE_PROFIT_LIMIT';
+  type: 'MARKET' | 'LIMIT' | 'STOP_LOSS_LIMIT' | 'TAKE_PROFIT_LIMIT' | 'STOP_MARKET' | 'TAKE_PROFIT_MARKET';
   quantity?: number;
   quoteOrderQty?: number;
   price?: number;
   stopPrice?: number;
   timeInForce?: 'GTC' | 'IOC' | 'FOK';
   newClientOrderId?: string;
+  reduceOnly?: boolean;
+  closePosition?: boolean;
+  workingType?: 'MARK_PRICE' | 'CONTRACT_PRICE';
 }
 
 export interface AccountInfo {
@@ -129,7 +132,7 @@ export class BinanceService {
     // Public market endpoints must remain unsigned.
     const publicPaths = ['/fapi/v1/ping', '/fapi/v1/time', '/fapi/v1/ticker', '/fapi/v1/klines'];
     if (publicPaths.some((path) => url.startsWith(path))) return false;
-    return url.startsWith('/fapi/');
+    return url.startsWith('/fapi/') || url.startsWith('/papi/') || url.startsWith('/sapi/');
   }
 
   private sanitizeCredential(value: string): string {
@@ -172,12 +175,16 @@ export class BinanceService {
 
   // Place an order
   async placeOrder(params: OrderParams): Promise<any> {
+    return this.placeOrderAt('/fapi/v1/order', params);
+  }
+
+  async placeOrderAt(endpointPath: string, params: OrderParams): Promise<any> {
     try {
       const normalized = await this.normalizeOrderParams(params);
-      const response = await this.client.post('/fapi/v1/order', normalized);
+      const response = await this.client.post(endpointPath, normalized);
       return response.data;
     } catch (error: any) {
-      console.error('Error placing order:', error);
+      console.error(`Error placing order (${endpointPath}):`, error);
       const code = error?.response?.data?.code;
       const msg = error?.response?.data?.msg || error?.message || 'Failed to place order';
       throw new Error(code !== undefined ? `${code}:${msg}` : msg);

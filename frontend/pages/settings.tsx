@@ -941,7 +941,9 @@ export default function Settings() {
   const livePlan = helixEvalOutput?.response?.plan;
   const governanceRecord = liveGovernanceOutput?.record;
   const governanceResult = governanceRecord?.result;
-  const evidenceCount = Number(liveGovernanceOutput?.inputs?.candidateMetrics?.sampleSize || 0);
+  const governanceEvidenceCount = Number(liveGovernanceOutput?.inputs?.candidateMetrics?.sampleSize || 0);
+  const journalEvidenceCount = executionAudit.filter((row) => String(row?.type || '').toLowerCase() === 'trade_close').length;
+  const evidenceCount = Math.max(governanceEvidenceCount, journalEvidenceCount);
   const evidenceTarget = Number(liveGovernanceOutput?.inputs?.contract?.minSamples || 30);
 
   const fallbackAction = workerStatus?.lastAction === 'trade_opened'
