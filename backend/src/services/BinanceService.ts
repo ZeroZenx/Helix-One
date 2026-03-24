@@ -64,7 +64,7 @@ export interface PositionInfo {
 export class BinanceService {
   private client: AxiosInstance;
   private config: BinanceConfig;
-  private symbolFiltersCache: Map<string, { stepSize?: number; tickSize?: number; minQty?: number }> = new Map();
+  private symbolFiltersCache: Map<string, { stepSize?: number; tickSize?: number; minQty?: number; minNotional?: number }> = new Map();
 
   constructor(config: BinanceConfig) {
     this.config = {
@@ -297,6 +297,27 @@ export class BinanceService {
       price = this.roundDownToStep(price, filters.tickSize);
     }
 
+    // Enforce exchange min notional for entries (avoid -4164 on futures testnet/live)
+    if (
+      !params.reduceOnly &&
+      !params.closePosition &&
+      typeof quantity === 'number' &&
+      quantity > 0 &&
+      typeof filters.minNotional === 'number' &&
+      filters.minNotional > 0
+    ) {
+      const effectivePrice = typeof price === 'number' && price > 0
+        ? price
+        : await this.getCurrentPrice(params.symbol);
+
+      const notional = quantity * effectivePrice;
+      if (notional < filters.minNotional && filters.stepSize && filters.stepSize > 0) {
+        const requiredQtyRaw = filters.minNotional / effectivePrice;
+        const requiredQty = Math.ceil(requiredQtyRaw / filters.stepSize) * filters.stepSize;
+        quantity = Number(requiredQty.toFixed(8));
+      }
+    }
+
     return {
       ...params,
       quantity,
@@ -304,7 +325,7 @@ export class BinanceService {
     };
   }
 
-  private async getSymbolFilters(symbol: string): Promise<{ stepSize?: number; tickSize?: number; minQty?: number }> {
+  private async getSymbolFilters(symbol: string): Promise<{ stepSize?: number; tickSize?: number; minQty?: number; minNotional?: number }> {
     const cached = this.symbolFiltersCache.get(symbol);
     if (cached) return cached;
 
@@ -314,11 +335,13 @@ export class BinanceService {
       const target = symbols.find((s: any) => s?.symbol === symbol);
       const lot = target?.filters?.find((f: any) => f?.filterType === 'LOT_SIZE');
       const priceFilter = target?.filters?.find((f: any) => f?.filterType === 'PRICE_FILTER');
+      const minNotionalFilter = target?.filters?.find((f: any) => f?.filterType === 'MIN_NOTIONAL' || f?.filterType === 'NOTIONAL');
 
       const parsed = {
         stepSize: lot ? Number(lot.stepSize) : undefined,
         minQty: lot ? Number(lot.minQty) : undefined,
         tickSize: priceFilter ? Number(priceFilter.tickSize) : undefined,
+        minNotional: minNotionalFilter ? Number(minNotionalFilter.notional ?? minNotionalFilter.minNotional) : undefined,
       };
 
       this.symbolFiltersCache.set(symbol, parsed);
