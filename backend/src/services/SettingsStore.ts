@@ -16,9 +16,13 @@ export interface RuntimeRiskSettings {
 export interface RuntimeSettings {
   masterApiKey: string;
   masterSecretKey: string;
+  aiProvider: 'deepseek' | 'openai' | 'gemini';
   deepseekApiKey: string;
+  openaiApiKey: string;
+  geminiApiKey: string;
   testnet: boolean;
   tradingEnabled: boolean;
+  tradeConfirmation: boolean;
   modelAccounts: Array<{
     modelId: number;
     modelName: string;
@@ -42,9 +46,13 @@ export interface RuntimeSettings {
 const defaultSettings: RuntimeSettings = {
   masterApiKey: '',
   masterSecretKey: '',
+  aiProvider: 'deepseek',
   deepseekApiKey: '',
+  openaiApiKey: '',
+  geminiApiKey: '',
   testnet: true,
   tradingEnabled: false,
+  tradeConfirmation: false,
   modelAccounts: [
     {
       modelId: 1,

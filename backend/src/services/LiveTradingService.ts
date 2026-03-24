@@ -39,6 +39,7 @@ export interface ModelTradingAccount {
   modelName: string;
   allocatedBalance: number;
   currentBalance: number;
+  lastTradeDay?: string;
   positions: Array<{
     symbol: string;
     side: 'LONG' | 'SHORT';
@@ -199,7 +200,27 @@ export class LiveTradingService extends EventEmitter {
     return true;
   }
 
+  private reconcileAccountRiskState(account: ModelTradingAccount): void {
+    const now = Date.now();
+
+    // Reset daily counters when UTC day changes.
+    const utcDay = new Date(now).toISOString().slice(0, 10);
+    if (account.lastTradeDay !== utcDay) {
+      account.tradesToday = 0;
+      account.dailyPnl = 0;
+      account.lastTradeDay = utcDay;
+    }
+
+    // Cooldown expiry should unlock the consecutive-loss shutdown.
+    if (account.cooldownUntil && new Date(account.cooldownUntil).getTime() <= now) {
+      account.cooldownUntil = undefined;
+      account.consecutiveLosses = 0;
+    }
+  }
+
   private validateSignal(signal: TradeSignal, account: ModelTradingAccount): { ok: boolean; reason?: string } {
+    this.reconcileAccountRiskState(account);
+
     const minConfidence = this.config.minConfidence ?? 0.7;
     if (signal.confidence < minConfidence) return { ok: false, reason: 'low_confidence' };
 
@@ -457,10 +478,13 @@ export class LiveTradingService extends EventEmitter {
     });
     account.totalTrades += 1;
     account.tradesToday += 1;
+    account.lastTradeDay = new Date().toISOString().slice(0, 10);
   }
 
   async updatePositions(): Promise<void> {
     for (const [, account] of this.modelAccounts) {
+      this.reconcileAccountRiskState(account);
+
       for (const position of account.positions) {
         try {
           const symbol = position.symbol.endsWith('USDT') ? position.symbol : `${position.symbol}USDT`;
@@ -545,34 +569,65 @@ export class LiveTradingService extends EventEmitter {
           : pos.currentPrice * (1 + this.config.stopLossPercentage);
 
         let attached = false;
-        for (let i = 0; i < Math.max(1, this.config.stopPlacementRetries ?? 2); i += 1) {
-          try {
-            await this.binance.placeOrder({
-              symbol: pos.symbol.endsWith('USDT') ? pos.symbol : `${pos.symbol}USDT`,
-              side: pos.side === 'LONG' ? 'SELL' : 'BUY',
+        const symbol = pos.symbol.endsWith('USDT') ? pos.symbol : `${pos.symbol}USDT`;
+        const closeSide: 'BUY' | 'SELL' = pos.side === 'LONG' ? 'SELL' : 'BUY';
+        const qty = Number(pos.size || 0);
+        const retries = Math.max(1, this.config.stopPlacementRetries ?? 2);
+        const ladder: Array<{ label: string; endpoint: string; make: (i: number) => OrderParams }> = [
+          {
+            label: 'papi_um_close_position_mark',
+            endpoint: '/papi/v1/um/order',
+            make: (i) => ({
+              symbol,
+              side: closeSide,
               type: 'STOP_MARKET',
               stopPrice: emergencyStop,
               closePosition: true,
               workingType: 'MARK_PRICE',
-              newClientOrderId: `${account.modelId}_reprotect_${Date.now()}_${i}`,
-            } as OrderParams);
-            pos.stopLoss = emergencyStop;
-            attached = true;
-            this.unprotectedSince.delete(key);
-            this.logger.warn('unprotected_position_recovered', {
-              modelId: account.modelId,
-              symbol: pos.symbol,
-              stopLoss: emergencyStop,
-            });
-            break;
-          } catch (error: any) {
-            this.logger.warn('unprotected_position_reprotect_failed', {
-              modelId: account.modelId,
-              symbol: pos.symbol,
-              tryIndex: i + 1,
-              error: error?.message || 'unknown',
-            });
+              newClientOrderId: `${account.modelId}_reprotect_papi_${Date.now()}_${i}`,
+            } as OrderParams),
+          },
+          {
+            label: 'papi_um_reduce_only_qty',
+            endpoint: '/papi/v1/um/order',
+            make: (i) => ({
+              symbol,
+              side: closeSide,
+              type: 'STOP_MARKET',
+              stopPrice: emergencyStop,
+              quantity: qty > 0 ? qty : undefined,
+              reduceOnly: true,
+              workingType: 'MARK_PRICE',
+              newClientOrderId: `${account.modelId}_reprotect_papiro_${Date.now()}_${i}`,
+            } as OrderParams),
+          },
+        ];
+
+        for (const variant of ladder) {
+          for (let i = 0; i < retries; i += 1) {
+            try {
+              await this.binance.placeOrderAt(variant.endpoint, variant.make(i));
+              pos.stopLoss = emergencyStop;
+              attached = true;
+              this.unprotectedSince.delete(key);
+              this.logger.warn('unprotected_position_recovered', {
+                modelId: account.modelId,
+                symbol: pos.symbol,
+                stopLoss: emergencyStop,
+                variant: variant.label,
+              });
+              break;
+            } catch (error: any) {
+              this.logger.warn('unprotected_position_reprotect_failed', {
+                modelId: account.modelId,
+                symbol: pos.symbol,
+                variant: variant.label,
+                tryIndex: i + 1,
+                error: error?.message || 'unknown',
+              });
+            }
           }
+          if (attached) break;
         }
 
         if (!attached) {
@@ -621,7 +676,9 @@ export class LiveTradingService extends EventEmitter {
       account.cooldownUntil = new Date(Date.now() + cooldownMinutes * 60_000).toISOString();
     } else {
       account.consecutiveLosses = 0;
+      account.cooldownUntil = undefined;
     }
+    account.lastTradeDay = new Date().toISOString().slice(0, 10);
 
     this.journal.append({
       ts: new Date().toISOString(),

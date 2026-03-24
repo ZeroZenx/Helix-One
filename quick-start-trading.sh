@@ -1,66 +1,41 @@
 #!/bin/bash
+set -euo pipefail
 
-echo "🚀 Helix.One Live Trading Setup"
-echo "================================"
+echo "🚀 Helix.One Trading Setup (current architecture)"
+echo "================================================="
 
-# Check if we're in the right directory
-if [ ! -f "package.json" ]; then
-    echo "❌ Please run this script from the helix-one directory"
-    exit 1
+if [ ! -d "backend" ] || [ ! -d "frontend" ]; then
+  echo "❌ Run this script from the Helix-One project root"
+  exit 1
 fi
 
-echo "📦 Installing dependencies..."
-cd backend
-npm install axios crypto
+echo "📦 Installing backend dependencies..."
+(cd backend && npm install)
+
+echo "📦 Installing frontend dependencies..."
+(cd frontend && npm install)
+
+echo "🔧 Preparing backend env..."
+if [ ! -f backend/.env ]; then
+  cp backend/.env.example backend/.env
+  echo "Created backend/.env from template"
+else
+  echo "backend/.env already exists (kept as-is)"
+fi
 
 echo ""
-echo "🔧 Setting up environment variables..."
-echo "Creating .env file for trading configuration..."
-
-cat > .env << EOF
-# Binance API Configuration
-BINANCE_API_KEY=your_binance_api_key_here
-BINANCE_SECRET_KEY=your_binance_secret_key_here
-BINANCE_TESTNET=true
-
-# Trading Configuration
-MAX_POSITION_SIZE=0.1
-MAX_DAILY_LOSS=0.05
-MAX_LEVERAGE=5
-STOP_LOSS_PERCENTAGE=0.02
-TAKE_PROFIT_PERCENTAGE=0.05
-MIN_TRADE_AMOUNT=10
-
-# Model Allocations (in USDT)
-DEEPSEEK_ALLOCATION=1000
-CLAUDE_ALLOCATION=1000
-GPT5_ALLOCATION=1000
-GEMINI_ALLOCATION=1000
-QWEN_ALLOCATION=1000
-GROK_ALLOCATION=1000
-EOF
-
-echo "✅ Environment file created"
+echo "✅ Next steps"
+echo "1) Edit backend/.env and set:"
+echo "   - BINANCE_API_KEY"
+echo "   - BINANCE_SECRET_KEY"
+echo "   - TRADING_ADMIN_KEY (required for protected admin actions)"
+echo "2) Keep BINANCE_TESTNET=true until fully validated"
+echo "3) Start local services: ./start-local.sh"
+echo "4) Open UI: http://127.0.0.1:3010"
 echo ""
-echo "📋 Next Steps:"
-echo "1. Get your Binance API keys from https://www.binance.com/en/my/settings/api-management"
-echo "2. Update the .env file with your actual API credentials"
-echo "3. Start with testnet (BINANCE_TESTNET=true) for safety"
-echo "4. Run the backend server: npm run dev"
-echo "5. Test the trading endpoints"
-echo ""
-echo "⚠️  IMPORTANT SAFETY NOTES:"
-echo "- Always start with testnet (BINANCE_TESTNET=true)"
-echo "- Use small amounts for initial testing"
-echo "- Monitor your positions closely"
-echo "- Set appropriate risk limits"
-echo ""
-echo "🔗 API Endpoints will be available at:"
+echo "Current trading API endpoints:"
 echo "- GET  /api/trading/status"
-echo "- GET  /api/trading/accounts"
-echo "- POST /api/trading/signals"
+echo "- GET  /api/trading/settings"
+echo "- POST /api/trading/settings"
 echo "- POST /api/trading/toggle"
-echo ""
-echo "📚 See TRADING_SETUP.md for detailed instructions"
-echo ""
-echo "✅ Setup complete! Remember to configure your API keys."
+echo "- POST /api/trading/close-positions"

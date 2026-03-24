@@ -37,7 +37,10 @@ export default function Settings() {
   const [adminKey, setAdminKey] = useState('');
   const [masterApiKey, setMasterApiKey] = useState('');
   const [masterSecretKey, setMasterSecretKey] = useState('');
+  const [aiProvider, setAiProvider] = useState<'deepseek' | 'openai' | 'gemini'>('deepseek');
   const [deepseekApiKey, setDeepseekApiKey] = useState('');
+  const [openaiApiKey, setOpenaiApiKey] = useState('');
+  const [geminiApiKey, setGeminiApiKey] = useState('');
   const [testnet, setTestnet] = useState(false);
   const [globalTradingEnabled, setGlobalTradingEnabled] = useState(false);
   const [portfolioTradingEnabled, setPortfolioTradingEnabled] = useState(false);
@@ -52,6 +55,7 @@ export default function Settings() {
   const [maxConsecutiveLosses, setMaxConsecutiveLosses] = useState(3);
   const [minConfidence, setMinConfidence] = useState(0.7);
   const [deepseekDecisionEnabled, setDeepseekDecisionEnabled] = useState(true);
+  const [tradeConfirmation, setTradeConfirmation] = useState(false);
   const [notificationsPush, setNotificationsPush] = useState(true);
   const [notificationsEmail, setNotificationsEmail] = useState(false);
   const [notificationsTelegram, setNotificationsTelegram] = useState(false);
@@ -66,6 +70,8 @@ export default function Settings() {
   const [hasMasterApiKey, setHasMasterApiKey] = useState(false);
   const [hasMasterSecretKey, setHasMasterSecretKey] = useState(false);
   const [hasDeepseekApiKey, setHasDeepseekApiKey] = useState(false);
+  const [hasOpenaiApiKey, setHasOpenaiApiKey] = useState(false);
+  const [hasGeminiApiKey, setHasGeminiApiKey] = useState(false);
   const [hasTelegramBotToken, setHasTelegramBotToken] = useState(false);
 
   const [status, setStatus] = useState<any>(null);
@@ -109,7 +115,10 @@ export default function Settings() {
     setHasMasterApiKey(Boolean(s.hasMasterApiKey));
     setHasMasterSecretKey(Boolean(s.hasMasterSecretKey));
     setHasDeepseekApiKey(Boolean(s.hasDeepseekApiKey));
+    setHasOpenaiApiKey(Boolean(s.hasOpenaiApiKey));
+    setHasGeminiApiKey(Boolean(s.hasGeminiApiKey));
     setHasTelegramBotToken(Boolean(s.hasTelegramBotToken));
+    setAiProvider((s.aiProvider === 'openai' || s.aiProvider === 'gemini' || s.aiProvider === 'deepseek') ? s.aiProvider : 'deepseek');
 
     if (typeof s.masterApiKey === 'string' && s.masterApiKey && !isMasked(s.masterApiKey)) {
       setMasterApiKey(s.masterApiKey);
@@ -127,6 +136,18 @@ export default function Settings() {
       setDeepseekApiKey(s.deepseekApiKey);
     } else if (Boolean(s.hasDeepseekApiKey) && !deepseekApiKey) {
       setDeepseekApiKey('********');
+    }
+
+    if (typeof s.openaiApiKey === 'string' && s.openaiApiKey && !isMasked(s.openaiApiKey)) {
+      setOpenaiApiKey(s.openaiApiKey);
+    } else if (Boolean(s.hasOpenaiApiKey) && !openaiApiKey) {
+      setOpenaiApiKey('********');
+    }
+
+    if (typeof s.geminiApiKey === 'string' && s.geminiApiKey && !isMasked(s.geminiApiKey)) {
+      setGeminiApiKey(s.geminiApiKey);
+    } else if (Boolean(s.hasGeminiApiKey) && !geminiApiKey) {
+      setGeminiApiKey('********');
     }
 
     setTestnet(Boolean(s.testnet));
@@ -280,12 +301,14 @@ export default function Settings() {
       };
 
       const payload: any = {
+        aiProvider,
         testnet,
         tradingEnabled: globalTradingEnabled,
+        tradeConfirmation,
         modelAccounts: [
           {
             modelId: 1,
-            modelName: 'DeepSeek Chat V3.1',
+            modelName: 'AI Portfolio Engine',
             tradingEnabled: portfolioTradingEnabled,
             balance: deepseekBalance,
           },
@@ -316,6 +339,8 @@ export default function Settings() {
       if (includeSecret(masterApiKey)) payload.masterApiKey = masterApiKey.trim();
       if (includeSecret(masterSecretKey)) payload.masterSecretKey = masterSecretKey.trim();
       if (includeSecret(deepseekApiKey)) payload.deepseekApiKey = deepseekApiKey.trim();
+      if (includeSecret(openaiApiKey)) payload.openaiApiKey = openaiApiKey.trim();
+      if (includeSecret(geminiApiKey)) payload.geminiApiKey = geminiApiKey.trim();
       if (includeSecret(telegramBotToken)) payload.notificationSettings.telegramBotToken = telegramBotToken.trim();
 
       const res = await fetchWithTimeout(`${API}/settings`, {
@@ -415,12 +440,14 @@ export default function Settings() {
 
     try {
       const payload: any = {
+        aiProvider,
         testnet,
         tradingEnabled: globalTradingEnabled,
+        tradeConfirmation,
         modelAccounts: [
           {
             modelId: 1,
-            modelName: 'DeepSeek Chat V3.1',
+            modelName: 'AI Portfolio Engine',
             tradingEnabled: next,
             balance: deepseekBalance,
           },
@@ -1035,7 +1062,15 @@ export default function Settings() {
                 <TextField label="Admin Key" type="password" value={adminKey} onChange={setAdminKey} />
                 <TextField label="Binance API Key" type="password" value={masterApiKey} onChange={setMasterApiKey} placeholder={hasMasterApiKey ? '********' : ''} status={hasMasterApiKey ? 'Saved' : 'Not set'} />
                 <TextField label="Binance API Secret" type="password" value={masterSecretKey} onChange={setMasterSecretKey} placeholder={hasMasterSecretKey ? '********' : ''} status={hasMasterSecretKey ? 'Saved' : 'Not set'} />
+                <SelectField
+                  label="AI Provider"
+                  value={aiProvider}
+                  options={['deepseek', 'openai', 'gemini']}
+                  onChange={(v) => setAiProvider((v === 'openai' || v === 'gemini' || v === 'deepseek') ? v : 'deepseek')}
+                />
                 <TextField label="DeepSeek API Key" type="password" value={deepseekApiKey} onChange={setDeepseekApiKey} placeholder={hasDeepseekApiKey ? '********' : ''} status={hasDeepseekApiKey ? 'Saved' : 'Not set'} />
+                <TextField label="OpenAI API Key" type="password" value={openaiApiKey} onChange={setOpenaiApiKey} placeholder={hasOpenaiApiKey ? '********' : ''} status={hasOpenaiApiKey ? 'Saved' : 'Not set'} />
+                <TextField label="Google Gemini API Key" type="password" value={geminiApiKey} onChange={setGeminiApiKey} placeholder={hasGeminiApiKey ? '********' : ''} status={hasGeminiApiKey ? 'Saved' : 'Not set'} />
 
                 <div className="pt-2">
                   <Toggle label="Trading Mode (Live/Testnet)" checked={!testnet} onChange={(v) => setTestnet(!v)} onLabel="Live" offLabel="Testnet" />
@@ -1061,7 +1096,7 @@ export default function Settings() {
                 <NumberField label="Timeout for Orders (seconds)" value={uiPrefs.orderTimeoutSec} setValue={(v) => setUiPrefs((p) => ({ ...p, orderTimeoutSec: v }))} />
 
                 <div className="space-y-3 pt-1">
-                  <Toggle label="Trade Confirmation" checked={uiPrefs.tradeConfirmation} onChange={(v) => setUiPrefs((p) => ({ ...p, tradeConfirmation: v }))} onLabel="Enabled" offLabel="Disabled" />
+                  <Toggle label="Trade Confirmation" checked={tradeConfirmation} onChange={setTradeConfirmation} onLabel="Enabled" offLabel="Disabled" />
                   <Toggle label="Use DeepSeek Strategy Brain" checked={uiPrefs.useDeepSeekBrain} onChange={(v) => setUiPrefs((p) => ({ ...p, useDeepSeekBrain: v }))} onLabel="Enabled" offLabel="Disabled" />
                   <Toggle label="Global Trading" checked={globalTradingEnabled} onChange={toggleTrading} onLabel="Enabled" offLabel="Disabled" />
                   <Toggle label="DeepSeek Portfolio Trading" checked={portfolioTradingEnabled} onChange={updatePortfolioTradingEnabled} onLabel="Enabled" offLabel="Disabled" />

@@ -43,6 +43,13 @@ let lastExecutionSource: 'RULES' | 'AI' | 'HYBRID' = 'HYBRID';
 let lastFallbackMode = false;
 let lastCycleSymbolRejects: Array<{ symbol: string; reason: string }> = [];
 let lastPositionFeedback: Array<{ symbol: string; stance: 'HOLD' | 'TRIM' | 'EXIT' | 'WATCH'; confidence: number; summary: string; ts: string }> = [];
+const lastSeenPriceBySymbol = new Map<string, number>();
+let lastSideSource: 'AI' | 'RULES' | 'N/A' = 'N/A';
+let lastChosenSide: 'BUY' | 'SELL' | 'N/A' = 'N/A';
+let lastAiGateDecision: 'TRADE' | 'NO_TRADE' | 'N/A' = 'N/A';
+let lastFinalExecutionDecision: 'TRADE' | 'NO_TRADE' = 'NO_TRADE';
+let lastAiConversations: Array<{ ts: string; symbol: string; promptSummary: string; responseSummary: string; confidence: number; delta: string }> = [];
+const prevAiBySymbol = new Map<string, { decision: string; confidence: number; reason: string }>();
 
 function keepOrUpdateSecret(currentValue: string, nextValue: unknown): string {
   if (typeof nextValue !== 'string') return currentValue;
@@ -88,7 +95,10 @@ function humanizeWorkerReason(reason: string) {
   if (r === 'not_started') return 'Worker has not started yet.';
   if (r === 'service_unavailable') return 'Trading service is unavailable right now.';
   if (r === 'trading_or_portfolio_disabled') return 'Trading is currently disabled in settings.';
+  if (r === 'trade_confirmation_required') return 'Trade confirmation is enabled. Auto-execution is blocked until manually confirmed.';
   if (r === 'deepseek_not_configured') return 'DeepSeek API key is missing or not configured.';
+  if (r === 'openai_not_configured') return 'OpenAI API key is missing or not configured.';
+  if (r === 'gemini_not_configured') return 'Gemini API key is missing or not configured.';
   if (r === 'missing_price') return 'Live market price is missing; skipping this cycle.';
   if (r === 'duplicate_cooldown') return 'Duplicate signal cooldown active; waiting before re-entry.';
   if (r === 'stale_trigger_expired_recheck_regime') return 'Trigger expired without fill; waiting for a fresh setup.';
@@ -111,6 +121,48 @@ function humanizeWorkerReason(reason: string) {
     return `Trade rejected for ${symbol}: ${why}.`;
   }
   return r.replace(/_/g, ' ');
+}
+
+function chooseRuleSide(params: {
+  regime: string;
+  symbol: string;
+  currentPrice: number;
+  momentum15mPct?: number;
+  emaTrendPct?: number;
+  rsi14?: number;
+}) : 'BUY' | 'SELL' {
+  const regime = String(params.regime || '').toLowerCase();
+  const momentum15m = Number(params.momentum15mPct || 0);
+  const emaTrend = Number(params.emaTrendPct || 0);
+  const rsi = Number(params.rsi14 || 50);
+
+  if (regime === 'breakdown') return 'SELL';
+  if (regime === 'breakout') return 'BUY';
+
+  // Trend-follow in directional regimes.
+  if (regime === 'trend') {
+    if (emaTrend < -0.03 || momentum15m < -0.08) return 'SELL';
+    return 'BUY';
+  }
+
+  // Symmetric mean-reversion behavior in range/squeeze regimes.
+  if (regime === 'range' || regime === 'squeeze') {
+    if (rsi >= 62 || momentum15m >= 0.10) return 'SELL';
+    if (rsi <= 38 || momentum15m <= -0.10) return 'BUY';
+    if (emaTrend < -0.04) return 'SELL';
+    if (emaTrend > 0.04) return 'BUY';
+  }
+
+  // Micro fallback using recent price drift.
+  const last = lastSeenPriceBySymbol.get(params.symbol);
+  lastSeenPriceBySymbol.set(params.symbol, params.currentPrice);
+  if (last && Number.isFinite(last) && last > 0) {
+    const deltaPct = ((params.currentPrice - last) / last) * 100;
+    if (deltaPct <= -0.05) return 'SELL';
+    if (deltaPct >= 0.05) return 'BUY';
+  }
+
+  return emaTrend < 0 ? 'SELL' : 'BUY';
 }
 
 function buildPositionFeedback(position: any) {
@@ -221,8 +273,8 @@ function buildTradingConfigFromSettings(): TradingConfig {
     maxTradesPerDay: s.riskSettings.maxTradesPerDay,
     maxConsecutiveLosses: s.riskSettings.maxConsecutiveLosses,
     minConfidence: s.riskSettings.minConfidence,
-    maxUnprotectedPositionSeconds: 60,
-    stopPlacementRetries: 2,
+    maxUnprotectedPositionSeconds: 15,
+    stopPlacementRetries: 4,
   };
 }
 
@@ -241,6 +293,16 @@ function startExecutionWorker() {
       }
 
       const s = settingsStore.get();
+
+      // Always refresh position monitor feedback each cycle, even when entry gates block new trades.
+      try {
+        await svc.updatePositions();
+        const currentOpenPositions = svc.getModelAccount('1')?.positions || [];
+        lastPositionFeedback = currentOpenPositions.slice(0, 5).map((p) => buildPositionFeedback(p));
+      } catch {
+        // keep prior monitor state on transient sync failures
+      }
+
       const portfolioEnabled = Boolean(s.modelAccounts?.[0]?.tradingEnabled);
       if (!s.tradingEnabled || !portfolioEnabled) {
         lastWorkerAction = 'skip';
@@ -248,9 +310,22 @@ function startExecutionWorker() {
         return;
       }
 
-      if (!aiService.isDeepSeekConfigured()) {
+      if (Boolean((s as any).tradeConfirmation)) {
         lastWorkerAction = 'skip';
-        lastWorkerReason = 'deepseek_not_configured';
+        lastWorkerReason = 'trade_confirmation_required';
+        return;
+      }
+
+      const selectedProvider = aiService.getSelectedProvider();
+      const providerConfigured = selectedProvider === 'openai'
+        ? aiService.isOpenAIConfigured()
+        : selectedProvider === 'gemini'
+          ? aiService.isGeminiConfigured()
+          : aiService.isDeepSeekConfigured();
+
+      if (!providerConfigured) {
+        lastWorkerAction = 'skip';
+        lastWorkerReason = `${selectedProvider}_not_configured`;
         return;
       }
 
@@ -300,8 +375,7 @@ function startExecutionWorker() {
       };
 
       const symbolRejects: Array<{ symbol: string; reason: string }> = [];
-      let selectedPlan: any = null;
-      let selectedConfidence = Number(snapshot.regimeConfidence || 0);
+      const selectedCandidates: Array<{ plan: any; confidence: number; sideSource: 'AI' | 'RULES'; side: 'BUY' | 'SELL' }> = [];
 
       for (const symbol of EXECUTION_SYMBOLS) {
         const symbolFunding = snapshot.funding.find((x) => x.symbol === symbol) || snapshot.funding[0];
@@ -312,16 +386,84 @@ function startExecutionWorker() {
         }
 
         const stopDistance = currentPrice * 0.005;
+        const micro = (snapshot as any).microstructure?.find((m: any) => m.symbol === symbol) || {};
         const aiDecision = await aiService.getStructuredTradingDecision(
           symbol,
-          { current: currentPrice, change: 0 },
-          { rsi: 50, macd: 0, ema20: currentPrice, volume: snapshot.liquidityState === 'good' ? 1 : 0.5 },
-          'deepseek',
-          runtimeContext
+          { current: currentPrice, change: Number(micro.change24hPct || 0) },
+          {
+            rsi: Number(micro.rsi14 || 50),
+            macd: Number(micro.emaTrendPct || 0),
+            ema20: currentPrice,
+            volume: Number(micro.volume24hUsd || 0),
+            momentum15mPct: Number(micro.momentum15mPct || 0),
+            spreadBps: Number(micro.spreadBps || 0),
+            atrPct: Number(micro.atrPct || 0),
+            support: Number(micro.support || 0),
+            resistance: Number(micro.resistance || 0),
+          },
+          selectedProvider as any,
+          {
+            ...runtimeContext,
+            notes: [
+              ...(runtimeContext.notes || []),
+              `symbol_microstructure=${JSON.stringify({
+                symbol,
+                spreadBps: Number(micro.spreadBps || 0),
+                atrPct: Number(micro.atrPct || 0),
+                emaTrendPct: Number(micro.emaTrendPct || 0),
+                rsi14: Number(micro.rsi14 || 50),
+                momentum15mPct: Number(micro.momentum15mPct || 0),
+                volume24hUsd: Number(micro.volume24hUsd || 0),
+                support: Number(micro.support || 0),
+                resistance: Number(micro.resistance || 0),
+              })}`,
+            ],
+          }
         );
         lastAiDecisionAt = new Date().toISOString();
 
-        const side: 'BUY' | 'SELL' = aiDecision.decision === 'TRADE' && aiDecision.side === 'SHORT' ? 'SELL' : 'BUY';
+        const aiReason = Array.isArray(aiDecision.reasons) && aiDecision.reasons.length
+          ? String(aiDecision.reasons[0])
+          : 'no_reason';
+        const prev = prevAiBySymbol.get(symbol);
+        const delta = !prev
+          ? 'first observation'
+          : prev.decision !== aiDecision.decision
+            ? `decision ${prev.decision} → ${aiDecision.decision}`
+            : prev.confidence !== Number(aiDecision.confidence || 0)
+              ? `confidence ${prev.confidence}% → ${Number(aiDecision.confidence || 0)}%`
+              : prev.reason !== aiReason
+                ? 'reason updated'
+                : 'no material change';
+
+        prevAiBySymbol.set(symbol, {
+          decision: aiDecision.decision,
+          confidence: Number(aiDecision.confidence || 0),
+          reason: aiReason,
+        });
+
+        lastAiConversations.unshift({
+          ts: new Date().toISOString(),
+          symbol,
+          promptSummary: `regime=${snapshot.marketRegime}, liq=${snapshot.liquidityState}, vol=${snapshot.volatilityState}, conf=${snapshot.regimeConfidence}%`,
+          responseSummary: `${aiDecision.decision} (${aiReason})`,
+          confidence: Number(aiDecision.confidence || 0),
+          delta,
+        });
+        lastAiConversations = lastAiConversations.slice(0, 30);
+
+        const ruleSide = chooseRuleSide({
+          regime: snapshot.marketRegime,
+          symbol,
+          currentPrice,
+          momentum15mPct: Number(micro.momentum15mPct || 0),
+          emaTrendPct: Number(micro.emaTrendPct || 0),
+          rsi14: Number(micro.rsi14 || 50),
+        });
+        const side: 'BUY' | 'SELL' = aiDecision.decision === 'TRADE'
+          ? (aiDecision.side === 'SHORT' ? 'SELL' : aiDecision.side === 'LONG' ? 'BUY' : ruleSide)
+          : ruleSide;
+        const sideSource: 'AI' | 'RULES' = aiDecision.side ? 'AI' : 'RULES';
         const trendStrength = Math.max(35, Math.min(95, Number(aiDecision.confidence || snapshot.regimeConfidence || 50)));
         const volatilityPct = snapshot.volatilityState === 'high' ? 2.6 : snapshot.volatilityState === 'low' ? 1.0 : 1.8;
         const spreadBps = snapshot.liquidityState === 'poor' ? 15 : snapshot.liquidityState === 'acceptable' ? 8 : 4;
@@ -334,7 +476,7 @@ function startExecutionWorker() {
           stopLoss: aiDecision.stop_loss ?? (side === 'BUY' ? currentPrice - stopDistance : currentPrice + stopDistance),
           takeProfit: aiDecision.take_profit ?? (side === 'BUY' ? currentPrice + stopDistance * 2 : currentPrice - stopDistance * 2),
           confidence: trendStrength,
-          thesis: `ai=${aiDecision.decision} regime=${snapshot.marketRegime} confidence=${aiDecision.confidence}`,
+          thesis: `ai=${aiDecision.decision} regime=${snapshot.marketRegime} confidence=${aiDecision.confidence} side=${side} side_source=${aiDecision.side ? 'ai' : 'rules'}`,
           style: snapshot.marketRegime === 'range' ? 'mean_reversion' : 'momentum',
         };
 
@@ -355,7 +497,7 @@ function startExecutionWorker() {
 
         const reasons = [...(aiDecision.reasons || []), ...(plan.reasons || [])];
         logger.info('ai_decision_trace', {
-          model: 'deepseek',
+          model: selectedProvider,
           symbol,
           decision: aiDecision.decision === 'TRADE' && plan.decision === 'TRADE' ? 'TRADE' : 'NO_TRADE',
           regime: snapshot.marketRegime,
@@ -383,7 +525,15 @@ function startExecutionWorker() {
           expectedNetEdgeBps: Number(plan.expectedNetEdgeBps || 0),
         });
 
-        if (aiDecision.decision !== 'TRADE') {
+        const softProbeEligible = (
+          aiDecision.decision !== 'TRADE' &&
+          snapshot.marketRegime === 'range' &&
+          Number(snapshot.regimeConfidence || 0) >= 60 &&
+          snapshot.liquidityState === 'good' &&
+          snapshot.volatilityState !== 'high'
+        );
+
+        if (aiDecision.decision !== 'TRADE' && !softProbeEligible) {
           symbolRejects.push({ symbol, reason: `ai_no_trade:${(aiDecision.reasons || [])[0] || 'model_blocked'}` });
           continue;
         }
@@ -393,13 +543,35 @@ function startExecutionWorker() {
           continue;
         }
 
-        selectedPlan = plan;
-        selectedConfidence = Number(aiDecision.confidence || snapshot.regimeConfidence || 0);
-        break;
+        if (softProbeEligible) {
+          const probePlan = {
+            ...plan,
+            leverageCap: 1,
+            probeMode: true,
+            reasons: [...(plan.reasons || []), 'soft_probe_unlock_range_regime'],
+          };
+          selectedCandidates.push({
+            plan: probePlan,
+            confidence: Number(aiDecision.confidence || snapshot.regimeConfidence || 0),
+            sideSource: 'RULES',
+            side,
+          });
+        } else {
+          selectedCandidates.push({
+            plan,
+            confidence: Number(aiDecision.confidence || snapshot.regimeConfidence || 0),
+            sideSource,
+            side,
+          });
+        }
       }
 
       lastCycleSymbolRejects = symbolRejects;
-      if (!selectedPlan) {
+      if (!selectedCandidates.length) {
+        lastAiGateDecision = 'NO_TRADE';
+        lastFinalExecutionDecision = 'NO_TRADE';
+        lastSideSource = 'N/A';
+        lastChosenSide = 'N/A';
         lastWorkerAction = 'skip';
         lastWorkerReason = symbolRejects.length
           ? `plan_blocked:${symbolRejects.map((r) => `${r.symbol}:${r.reason}`).join(';')}`
@@ -408,88 +580,107 @@ function startExecutionWorker() {
         return;
       }
 
+      lastAiGateDecision = 'TRADE';
+      lastSideSource = selectedCandidates[0].sideSource;
+      lastChosenSide = selectedCandidates[0].side;
+
       const aiStale = !lastAiDecisionAt || (Date.now() - new Date(lastAiDecisionAt).getTime()) > AI_FRESHNESS_MAX_MS;
       if (aiStale) {
         lastWorkerAction = 'skip';
         lastFallbackMode = true;
+        lastFinalExecutionDecision = 'NO_TRADE';
         lastWorkerReason = 'ai_stale_guard_blocked';
         armedTrigger = null;
         return;
       }
       lastFallbackMode = false;
       lastExecutionSource = 'HYBRID';
-      const plan = selectedPlan;
 
+      const maxOpenPositions = Math.max(1, Number((s.riskSettings as any).maxOpenPositions || 1));
+      const openNow = Number(svc.getModelAccount('1')?.positions?.length || 0);
+      const slotsLeft = Math.max(0, maxOpenPositions - openNow);
+      const maxTradesToday = Number(s.riskSettings.maxTradesPerDay || 5);
+      const tradesToday = Number(svc.getModelAccount('1')?.tradesToday || 0);
+      const tradesLeft = Math.max(0, maxTradesToday - tradesToday);
+      const executionBudget = Math.max(0, Math.min(slotsLeft, tradesLeft, selectedCandidates.length));
+
+      if (executionBudget <= 0) {
+        lastFinalExecutionDecision = 'NO_TRADE';
+        lastWorkerAction = 'skip';
+        lastWorkerReason = `capacity_blocked:slots_left=${slotsLeft};trades_left=${tradesLeft}`;
+        armedTrigger = null;
+        return;
+      }
+
+      const openedSymbols: string[] = [];
+      const rejectionRows: string[] = [];
       const now = Date.now();
-      const signalKey = `${plan.symbol}:${plan.side}:${Math.round(plan.entry)}`;
-      if (signalKey === lastAutoSignalKey && now - lastAutoSignalAt < 15 * 60 * 1000) {
-        lastWorkerAction = 'skip';
-        lastWorkerReason = 'duplicate_cooldown';
-        return;
+
+      for (const candidate of selectedCandidates.slice(0, executionBudget)) {
+        const plan = candidate.plan;
+        const signalKey = `${plan.symbol}:${plan.side}:${Math.round(plan.entry)}`;
+        if (signalKey === lastAutoSignalKey && now - lastAutoSignalAt < 15 * 60 * 1000) {
+          rejectionRows.push(`${plan.symbol}:duplicate_cooldown`);
+          continue;
+        }
+
+        const probeMode = Boolean((plan as any).probeMode);
+        const probeQty = probeMode
+          ? (() => {
+              const currentPrice = Number(plan.entry || 0);
+              const accountBal = Number(portfolio?.currentBalance || portfolio?.allocatedBalance || balance || 0);
+              if (!(currentPrice > 0) || !(accountBal > 0)) return undefined;
+              const baseUsd = accountBal * (Number(s.riskSettings.maxPositionSizePct || 7) / 100);
+              const probeUsd = Math.max(10, baseUsd * 0.35);
+              return probeUsd / currentPrice;
+            })()
+          : undefined;
+
+        const signal: TradeSignal = {
+          modelId: '1',
+          symbol: plan.symbol,
+          side: plan.side,
+          type: 'MARKET',
+          quantity: probeQty,
+          confidence: Math.max(0, Math.min(1, Number(candidate.confidence || 0) / 100)),
+          reason: `auto_worker_unified regime=${snapshot.marketRegime} rr=${Number(plan.expectedRMultiple || 0).toFixed(2)} edge=${Number(plan.expectedNetEdgeBps || 0).toFixed(1)}bps${probeMode ? ' soft_probe=1' : ''}`,
+          stopLoss: plan.stopLoss,
+          takeProfit: plan.takeProfit,
+          leverage: probeMode ? 1 : Math.min(s.riskSettings.maxLeverage || 2, 2),
+          timestamp: new Date(),
+        };
+
+        const ok = await svc.processTradeSignal(signal);
+        if (ok) {
+          openedSymbols.push(`${signal.symbol}:${signal.side}`);
+          lastAutoSignalKey = signalKey;
+          lastAutoSignalAt = now;
+          logger.info('auto_execution_trade_opened', { symbol: signal.symbol, side: signal.side, confidence: signal.confidence });
+        } else {
+          const reject = svc.getLastSignalRejectReason();
+          rejectionRows.push(`${signal.symbol}:${reject || 'signal_rejected_by_risk_gate'}`);
+          logger.warn('ai_decision_rejected', {
+            symbol: signal.symbol,
+            side: signal.side,
+            reason: reject || 'signal_rejected_by_risk_gate',
+          });
+        }
       }
 
-      if (!armedTrigger || armedTrigger.key !== signalKey) {
-        armedTrigger = { key: signalKey, cyclesWithoutFill: 0, armedAt: now };
-      } else {
-        armedTrigger.cyclesWithoutFill += 1;
-      }
-
-      if ((armedTrigger?.cyclesWithoutFill || 0) >= STALE_TRIGGER_MAX_CYCLES) {
-        lastWorkerAction = 'skip';
-        lastWorkerReason = 'stale_trigger_expired_recheck_regime';
-        logger.warn('stale_trigger_expired', {
-          key: signalKey,
-          cyclesWithoutFill: armedTrigger?.cyclesWithoutFill,
-          regime: snapshot.marketRegime,
-          confidence: snapshot.regimeConfidence,
-        });
-        armedTrigger = null;
-        return;
-      }
-
-      const signal: TradeSignal = {
-        modelId: '1',
-        symbol: plan.symbol,
-        side: plan.side,
-        type: 'MARKET',
-        confidence: Math.max(0, Math.min(1, Number(selectedConfidence || 0) / 100)),
-        reason: `auto_worker_unified regime=${snapshot.marketRegime} rr=${Number(plan.expectedRMultiple || 0).toFixed(2)} edge=${Number(plan.expectedNetEdgeBps || 0).toFixed(1)}bps`,
-        stopLoss: plan.stopLoss,
-        takeProfit: plan.takeProfit,
-        leverage: Math.min(s.riskSettings.maxLeverage || 2, 2),
-        timestamp: new Date(),
-      };
-
-      const ok = await svc.processTradeSignal(signal);
-      if (ok) {
-        lastAutoSignalKey = signalKey;
-        lastAutoSignalAt = now;
+      if (openedSymbols.length > 0) {
+        lastFinalExecutionDecision = 'TRADE';
         lastWorkerAction = 'trade_opened';
-        lastWorkerReason = `${signal.symbol}:${signal.side}`;
+        lastWorkerReason = openedSymbols.join(',');
         armedTrigger = null;
-        logger.info('auto_execution_trade_opened', { symbol: signal.symbol, side: signal.side, confidence: signal.confidence });
       } else {
+        lastFinalExecutionDecision = 'NO_TRADE';
         lastWorkerAction = 'skip';
-        const reject = svc.getLastSignalRejectReason();
-        lastWorkerReason = reject ? `signal_rejected:${signal.symbol}:${reject}` : `signal_rejected:${signal.symbol}:signal_rejected_by_risk_gate`;
-        logger.warn('ai_decision_rejected', {
-          symbol: signal.symbol,
-          side: signal.side,
-          reason: reject || 'signal_rejected_by_risk_gate',
-          triggerCyclesWithoutFill: armedTrigger?.cyclesWithoutFill || 0,
-        });
-        journalService.append({
-          ts: new Date().toISOString(),
-          type: 'ai_decision',
-          model: 'deepseek',
-          symbol: signal.symbol,
-          decision: 'NO_TRADE',
-          confidence: Math.round(signal.confidence * 100),
-          reasons: [reject || 'signal_rejected_by_risk_gate'],
-          gateResult: reject ? `signal_rejected:${reject}` : 'signal_rejected_by_risk_gate',
-        });
+        lastWorkerReason = rejectionRows.length ? `signal_rejected:${rejectionRows.join(';')}` : 'signal_rejected:no_candidate_executed';
       }
 
+      // Refresh account state from exchange before generating monitor feedback,
+      // so position monitor still works after backend restarts.
+      await svc.updatePositions();
       const openPositions = svc.getModelAccount('1')?.positions || [];
       lastPositionFeedback = openPositions.slice(0, 5).map((p) => buildPositionFeedback(p));
       for (const feedback of lastPositionFeedback) {
@@ -505,9 +696,14 @@ function startExecutionWorker() {
         });
       }
     } catch (error: any) {
+      const msg = String(error?.message || 'unknown');
+      const degraded = /enotfound|econnreset|timeout|aborted|network/i.test(msg);
       lastWorkerAction = 'error';
-      lastWorkerReason = error?.message || 'unknown';
-      logger.warn('auto_execution_worker_cycle_failed', { error: error?.message || 'unknown' });
+      lastWorkerReason = degraded ? 'network_provider_degraded' : msg;
+      logger.warn('auto_execution_worker_cycle_failed', {
+        error: msg,
+        degraded,
+      });
     } finally {
       lastWorkerReasonHuman = humanizeWorkerReason(lastWorkerReason);
     }
@@ -643,7 +839,7 @@ router.get('/status', async (req, res) => {
 
     res.json({
       ...tradingStatus,
-      providerMode: 'deepseek_only',
+      providerMode: 'multi_provider',
       engineConnected: tradingStatus.connected,
       globalTradingEnabled: tradingStatus.enabled,
       portfolioTradingEnabled: portfolioEnabled,
@@ -656,7 +852,27 @@ router.get('/status', async (req, res) => {
   }
 });
 
-router.get('/worker-status', (req, res) => {
+router.get('/worker-status', async (req, res) => {
+  let effectivePositionFeedback = lastPositionFeedback;
+
+  // Fallback hydration: if monitor cache is empty but there are live positions,
+  // rebuild feedback at response-time so UI is never blank for open positions.
+  if (!effectivePositionFeedback.length) {
+    try {
+      const svc = await ensureTradingService();
+      if (svc) {
+        await svc.updatePositions();
+        const openPositions = svc.getModelAccount('1')?.positions || [];
+        if (openPositions.length > 0) {
+          effectivePositionFeedback = openPositions.slice(0, 5).map((p) => buildPositionFeedback(p));
+          lastPositionFeedback = effectivePositionFeedback;
+        }
+      }
+    } catch {
+      // keep empty cache on transient failures
+    }
+  }
+
   res.json({
     success: true,
     running: executionWorkerStarted,
@@ -680,11 +896,16 @@ router.get('/worker-status', (req, res) => {
     aiFreshnessMaxMs: AI_FRESHNESS_MAX_MS,
     fallbackMode: lastFallbackMode,
     symbolRejects: lastCycleSymbolRejects,
-    positionFeedback: lastPositionFeedback,
+    positionFeedback: effectivePositionFeedback,
     policy: {
       maxOpenPositions: Math.max(1, Number((settingsStore.get().riskSettings as any).maxOpenPositions || 1)),
       cooldownMinutes: Number(settingsStore.get().riskSettings.cooldownMinutes || 30),
     },
+    aiGateDecision: lastAiGateDecision,
+    finalExecutionDecision: lastFinalExecutionDecision,
+    sideSource: lastSideSource,
+    chosenSide: lastChosenSide,
+    aiConversations: lastAiConversations,
   });
 });
 
@@ -696,6 +917,8 @@ router.get('/settings', (req, res) => {
     masterApiKey: masked(s.masterApiKey),
     masterSecretKey: '',
     deepseekApiKey: '',
+    openaiApiKey: '',
+    geminiApiKey: '',
     notificationSettings: {
       ...s.notificationSettings,
       telegramBotToken: '',
@@ -703,9 +926,11 @@ router.get('/settings', (req, res) => {
     hasMasterApiKey: Boolean(s.masterApiKey),
     hasMasterSecretKey: Boolean(s.masterSecretKey),
     hasDeepseekApiKey: Boolean(s.deepseekApiKey),
+    hasOpenaiApiKey: Boolean((s as any).openaiApiKey),
+    hasGeminiApiKey: Boolean((s as any).geminiApiKey),
     hasTelegramBotToken: Boolean(s.notificationSettings.telegramBotToken),
-    providerMode: 'deepseek_only',
-    modelAccounts: [{ modelId: 1, modelName: 'DeepSeek Chat V3.1', tradingEnabled: s.modelAccounts[0]?.tradingEnabled ?? false, balance: s.modelAccounts[0]?.balance ?? 10000 }],
+    providerMode: 'multi_provider',
+    modelAccounts: [{ modelId: 1, modelName: 'AI Portfolio Engine', tradingEnabled: s.modelAccounts[0]?.tradingEnabled ?? false, balance: s.modelAccounts[0]?.balance ?? 10000 }],
   });
 });
 
@@ -714,13 +939,22 @@ router.post('/settings', authenticateAdmin, async (req, res) => {
     const payload = req.body || {};
     const current = settingsStore.get();
 
+    const requestedProvider = String(payload.aiProvider || current.aiProvider || 'deepseek').toLowerCase();
+    const aiProvider = (requestedProvider === 'openai' || requestedProvider === 'gemini' || requestedProvider === 'deepseek')
+      ? requestedProvider as 'deepseek' | 'openai' | 'gemini'
+      : 'deepseek';
+
     const next = {
       ...current,
       masterApiKey: keepOrUpdateSecret(current.masterApiKey, payload.masterApiKey),
       masterSecretKey: keepOrUpdateSecret(current.masterSecretKey, payload.masterSecretKey),
+      aiProvider,
       deepseekApiKey: keepOrUpdateSecret(current.deepseekApiKey, payload.deepseekApiKey),
+      openaiApiKey: keepOrUpdateSecret((current as any).openaiApiKey || '', payload.openaiApiKey),
+      geminiApiKey: keepOrUpdateSecret((current as any).geminiApiKey || '', payload.geminiApiKey),
       testnet: payload.testnet ?? current.testnet,
       tradingEnabled: payload.tradingEnabled ?? current.tradingEnabled,
+      tradeConfirmation: payload.tradeConfirmation ?? current.tradeConfirmation ?? false,
       modelAccounts: [
         {
           modelId: 1,
@@ -750,10 +984,11 @@ router.post('/settings', authenticateAdmin, async (req, res) => {
     logger.info('settings_saved', {
       testnet: next.testnet,
       tradingEnabled: next.tradingEnabled,
-      deepseekEnabled: next.modelAccounts?.[0]?.tradingEnabled ?? false,
+      aiProvider: next.aiProvider,
+      portfolioEnabled: next.modelAccounts?.[0]?.tradingEnabled ?? false,
     });
 
-    res.json({ success: true, settings: next, providerMode: 'deepseek_only' });
+    res.json({ success: true, settings: next, providerMode: 'multi_provider' });
   } catch (error: any) {
     logger.error('settings_save_failed', { error: error?.message || 'unknown' });
     res.status(500).json({ success: false, error: error?.message || 'save_failed' });
@@ -897,7 +1132,7 @@ router.get('/daily-briefing', async (req, res) => {
 
     res.json({
       ...briefing,
-      providerMode: 'deepseek_only',
+      providerMode: 'multi_provider',
       exchangeConnected,
       exchangeError,
       accountSource: exchangeConnected ? 'binance' : 'unavailable',
@@ -925,15 +1160,32 @@ router.get('/journal', async (req, res) => {
 
     const limit = Number(req.query.limit || 200);
     const lastN = Number(req.query.reviewWindow || 100);
+    const tradeCloseLimit = Number(req.query.tradeCloseLimit || 0);
+    const tradeCloseScanLimit = Number(req.query.tradeCloseScanLimit || 5000);
+    const readLimit = Math.max(limit, tradeCloseLimit, tradeCloseScanLimit);
 
-    const liveEntries = svc.getJournalEntries(limit) || [];
-    const fileEntries = journalService.list(limit) || [];
-    const merged = [...liveEntries, ...fileEntries]
-      .sort((a: any, b: any) => new Date(String(b?.ts || 0)).getTime() - new Date(String(a?.ts || 0)).getTime())
-      .slice(0, limit);
+    const liveEntries = svc.getJournalEntries(readLimit) || [];
+    const fileEntries = journalService.list(readLimit) || [];
+    const allMerged = [...liveEntries, ...fileEntries]
+      .sort((a: any, b: any) => new Date(String(b?.ts || 0)).getTime() - new Date(String(a?.ts || 0)).getTime());
+
+    const baseWindow = allMerged.slice(0, limit);
+
+    const entries = tradeCloseLimit > 0
+      ? (() => {
+          const tradeCloses = allMerged.filter((e: any) => e?.type === 'trade_close').slice(0, tradeCloseLimit);
+          const dedup = new Map<string, any>();
+          [...baseWindow, ...tradeCloses].forEach((e: any) => {
+            const key = `${e?.ts || ''}|${e?.type || ''}|${e?.modelId || ''}|${e?.symbol || ''}|${e?.reason || ''}`;
+            if (!dedup.has(key)) dedup.set(key, e);
+          });
+          return Array.from(dedup.values())
+            .sort((a: any, b: any) => new Date(String(b?.ts || 0)).getTime() - new Date(String(a?.ts || 0)).getTime());
+        })()
+      : baseWindow;
 
     res.json({
-      entries: merged,
+      entries,
       review: svc.getJournalReview(lastN),
     });
   } catch (error: any) {

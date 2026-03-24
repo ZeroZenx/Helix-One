@@ -29,6 +29,8 @@ type TradingStatus = {
     tradingEnabled: boolean;
     killSwitchTriggered?: boolean;
     cooldownUntil?: string | null;
+    tradesToday?: number;
+    dailyPnl?: number;
   }>;
 };
 
@@ -121,6 +123,20 @@ type DeepSeekDecision = {
   confidence?: number;
   reasoning_summary?: string;
   changes_since_last?: string[];
+  market_narrative?: string;
+  bias?: 'LONG' | 'SHORT' | 'NEUTRAL';
+  cancel_if?: string[];
+  scenarios?: Array<{
+    name?: string;
+    trigger?: string;
+    invalidation?: string;
+    expected_rr?: string;
+    action?: 'WAIT' | 'PREPARE' | 'EXECUTE';
+  }>;
+  risk_coach?: {
+    blocker?: string;
+    fix_next?: string[];
+  };
 };
 
 const API = getTradingApiBaseUrl();
@@ -148,6 +164,9 @@ export default function Home() {
   const [workerStatus, setWorkerStatus] = useState<any>(null);
   const [cycleChanges, setCycleChanges] = useState<string[]>([]);
   const [uiBuildId, setUiBuildId] = useState('unknown');
+  const [feedFilter, setFeedFilter] = useState<'ALL' | 'DECISIONS' | 'RISK' | 'EXECUTION'>('ALL');
+  const [replayIndex, setReplayIndex] = useState(0);
+  const [richExpanded, setRichExpanded] = useState(false);
   const previousCycleRef = useRef<{ regimeConfidence: number; volatility: string; fundingRatePct: number } | null>(null);
 
   const liveConnected = Boolean(status?.engineConnected);
@@ -191,6 +210,7 @@ export default function Home() {
 
     const deepseek = briefing?.deepseekDecision || null;
     const mode = deepseek?.decision || ruleMode;
+    const finalExecutionDecision: 'TRADE' | 'NO_TRADE' = workerStatus?.finalExecutionDecision === 'NO_TRADE' ? 'NO_TRADE' : mode === 'TRADE' ? 'TRADE' : 'NO_TRADE';
     const regime = String(market.regime || 'unclear').toUpperCase();
     const volatility = String(market.volatilityState || 'unknown').toUpperCase();
     const liquidity = String(market.liquidityState || 'unknown').toUpperCase();
@@ -264,9 +284,17 @@ export default function Home() {
       rr: deepseek?.entry_plan?.rr || '>= 1.5',
     };
 
+    const actionableNext = mode === 'TRADE'
+      ? `Need now: 15m confirmation close + hold above ${zoneLow} + momentum/volume expansion in zone ${zoneLow}-${zoneHigh}.`
+      : `Need now: rebuild setup quality before entry — watch 15m structure around ${zoneLow}-${zoneHigh}.`;
+
     return {
-      label: mode,
-      quality: mode === 'TRADE' ? 'VALID SETUP' : mode === 'COOLDOWN' ? 'LOCKED' : 'LOW CONFIDENCE',
+      label: finalExecutionDecision,
+      ruleBias: mode,
+      aiGate: String(workerStatus?.aiGateDecision || 'N/A'),
+      sideSource: String(workerStatus?.sideSource || 'N/A'),
+      chosenSide: String(workerStatus?.chosenSide || 'N/A'),
+      quality: finalExecutionDecision === 'TRADE' ? 'VALID SETUP' : mode === 'COOLDOWN' ? 'LOCKED' : 'LOW CONFIDENCE',
       checks: `${Math.max(0, 6 - failedChecks)} / 6 Checks`,
       failedChecks,
       state,
@@ -279,6 +307,7 @@ export default function Home() {
         deepseek?.reasoning_summary ||
         `Rules-first gate active. Regime ${regime}, liquidity ${liquidity}, volatility ${volatility}.`,
       changesSinceLast: deepseek?.changes_since_last?.length ? deepseek.changes_since_last : cycleChanges,
+      actionableNext,
     };
   }, [
     liveConnected,
@@ -291,6 +320,10 @@ export default function Home() {
     portfolio?.killSwitchTriggered,
     riskSettings.maxLeverage,
     briefing?.deepseekDecision,
+    workerStatus?.finalExecutionDecision,
+    workerStatus?.aiGateDecision,
+    workerStatus?.sideSource,
+    workerStatus?.chosenSide,
     coins,
     cycleChanges,
   ]);
@@ -378,8 +411,31 @@ export default function Home() {
       if (j.type === 'trade_close') events.push(`Closed ${j.symbol || 'pair'} • PnL ${signedMoney(Number(j.pnl || 0))}`);
       if (j.type === 'trade_open') events.push(`Opened ${j.symbol || 'pair'} • qty ${Number(j.qty || 0).toFixed(6)}`);
     }
-    return events.slice(0, 6);
+    return events.slice(0, 8);
   }, [workerStatus?.lastRunAt, workerStatus?.lastAction, workerStatus?.lastReason, cycleChanges, journal]);
+
+  const lastReasonText = String(workerStatus?.lastReasonHuman || workerStatus?.lastReason || '—');
+
+  const reasonBreakdown = useMemo(() => {
+    const bySymbol: Array<{ symbol: string; reason: string }> = [];
+    const symbolRegex = /([A-Z]{3,}USDT):\s*([^•]+?)(?=(?:\s*•\s*[A-Z]{3,}USDT:)|$)/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = symbolRegex.exec(lastReasonText)) !== null) {
+      bySymbol.push({
+        symbol: match[1],
+        reason: match[2].trim(),
+      });
+    }
+
+    const headline = lastReasonText.split(/\s*•\s*/)[0]?.trim() || '—';
+
+    return {
+      headline,
+      bySymbol,
+      hasStructuredReasons: bySymbol.length > 0,
+    };
+  }, [lastReasonText]);
 
   async function loadDashboard() {
     try {
@@ -388,7 +444,7 @@ export default function Home() {
         fetchWithTimeout(`${API}/settings`),
         fetchWithTimeout(`${API}/daily-briefing`),
         fetchWithTimeout(`${API}/risk-context?symbols=BTCUSDT,ETHUSDT,SOLUSDT`),
-        fetchWithTimeout(`${API}/journal?limit=300`),
+        fetchWithTimeout(`${API}/journal?limit=300&tradeCloseLimit=50&tradeCloseScanLimit=5000`),
         fetchWithTimeout(`${API}/worker-status`),
       ]);
 
@@ -556,8 +612,15 @@ export default function Home() {
             confidence: Number(j.confidence || 0),
             reason: (() => {
               const base = Array.isArray(j.reasons) && j.reasons.length ? j.reasons[0] : (j.gateResult || 'n/a');
-              if (String(base).toLowerCase().includes('unable to generate signal')) {
+              const b = String(base).toLowerCase();
+              if (b.includes('unable to generate signal')) {
                 return 'No clean setup this cycle; DeepSeek confidence too weak to issue a trade.';
+              }
+              if (b.includes('model_output_invalid_json')) {
+                return 'DeepSeek response format invalid this cycle; parser fallback blocked execution.';
+              }
+              if (b.includes('regime') && b.includes('unclear')) {
+                return 'AI disagreement: regime interpretation mismatch (engine shows qualified trend context).';
               }
               return String(base).replace(/_/g, ' ');
             })(),
@@ -569,8 +632,247 @@ export default function Home() {
   ).slice(0, 8);
 
   const aiPositionFeedbackRows = Array.isArray(workerStatus?.positionFeedback)
-    ? workerStatus.positionFeedback.slice(0, 4)
+    ? workerStatus.positionFeedback.slice(0, 6)
     : [];
+
+  const aiConversationRows = Array.isArray(workerStatus?.aiConversations)
+    ? workerStatus.aiConversations.slice(0, 10)
+    : [];
+
+  const readinessScore = useMemo(() => {
+    const scoreParts = [
+      (market.regimeConfidence || 0) >= 60 ? 20 : Math.round((Number(market.regimeConfidence || 0) / 60) * 20),
+      String(market.liquidityState || '').toLowerCase() === 'good' ? 20 : String(market.liquidityState || '').toLowerCase() === 'acceptable' ? 12 : 5,
+      String(market.volatilityState || '').toLowerCase() === 'low' ? 20 : String(market.volatilityState || '').toLowerCase() === 'normal' ? 14 : 5,
+      risks.length === 0 ? 20 : Math.max(5, 20 - risks.length * 7),
+      decision.label === 'TRADE' ? 20 : decision.state === 'TRIGGER_ARMED' ? 12 : 6,
+    ];
+    return Math.max(0, Math.min(100, scoreParts.reduce((a, b) => a + b, 0)));
+  }, [market.regimeConfidence, market.liquidityState, market.volatilityState, risks.length, decision.label, decision.state]);
+
+  const riskCapacity = useMemo(() => {
+    const maxTrades = Number(riskSettings.maxTradesPerDay ?? 5);
+
+    // Prefer backend portfolio counter (authoritative) and fallback to deduped journal count.
+    const backendTradesToday = Number((portfolio as any)?.tradesToday);
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const dedupTradeOpens = new Set(
+      journal
+        .filter((j) => j.type === 'trade_open')
+        .filter((j) => {
+          const t = new Date(String(j.ts || '')).getTime();
+          return Number.isFinite(t) && t >= startOfDay.getTime();
+        })
+        .map((j) => `${j.ts}|${j.symbol || ''}|${j.side || ''}|${j.entry || ''}|${j.qty || ''}`)
+    );
+    const rawTradesToday = Number.isFinite(backendTradesToday) && backendTradesToday >= 0
+      ? backendTradesToday
+      : dedupTradeOpens.size;
+    const tradesToday = Math.min(maxTrades, Math.max(0, rawTradesToday));
+
+    const dailyLossLimitPct = Number(riskSettings.maxDailyLossPct ?? 3);
+    const dayPnl = Number(account.previousDayPnl || 0);
+    const dailyLossUsedPct = dayPnl < 0 && walletBalance > 0
+      ? Math.min(100, (Math.abs(dayPnl) / walletBalance) * 100)
+      : 0;
+    const tradeSlotsLeft = Math.max(0, maxTrades - tradesToday);
+    const cooldownUntilTs = portfolio?.cooldownUntil ? Date.parse(portfolio.cooldownUntil) : NaN;
+    const cooldownMinutes = Number.isFinite(cooldownUntilTs) && cooldownUntilTs > Date.now()
+      ? Math.ceil((cooldownUntilTs - Date.now()) / 60000)
+      : 0;
+
+    return {
+      maxTrades,
+      tradesToday,
+      tradeSlotsLeft,
+      dailyLossLimitPct,
+      dailyLossUsedPct,
+      lossCapacityLeftPct: Math.max(0, dailyLossLimitPct - dailyLossUsedPct),
+      openPositions: livePositions.length,
+      maxOpenPositions: Number(workerStatus?.policy?.maxOpenPositions || 1),
+      cooldownMinutes,
+    };
+  }, [riskSettings.maxTradesPerDay, riskSettings.maxDailyLossPct, journal, account.previousDayPnl, walletBalance, portfolio?.cooldownUntil, livePositions.length, workerStatus?.policy?.maxOpenPositions]);
+
+  const heatMatrixRows = useMemo(() => {
+    const rejectMap = new Map<string, string>();
+    for (const r of (workerStatus?.symbolRejects || [])) {
+      if (r?.symbol) rejectMap.set(String(r.symbol), String(r.reason || 'blocked'));
+    }
+
+    return EXEC_SYMBOLS.map((symbol) => {
+      const base = symbol.replace('USDT', '');
+      const coin = coins.find((c) => c.symbol === base);
+      const change = Number(coin?.change || 0);
+      const structure = Math.min(100, Math.max(0, 50 + Math.round(change * 5)));
+      const momentum = Math.min(100, Math.max(0, 50 + Math.round(change * 7)));
+      const volume = (market.regimeConfidence || 0);
+      const risk = Math.max(0, 100 - (risks.length * 20) - (String(market.volatilityState || '').toLowerCase() === 'high' ? 25 : 0));
+      const blocked = rejectMap.has(symbol);
+      const gate = blocked ? 25 : decision.label === 'TRADE' ? 85 : 45;
+      return { symbol, structure, momentum, volume, risk, gate, blocked };
+    });
+  }, [workerStatus?.symbolRejects, coins, market.regimeConfidence, market.volatilityState, risks.length, decision.label]);
+
+  const timelineEvents = useMemo(() => {
+    const cycleRows = aiDecisionRows.map((r) => ({
+      ts: r.ts,
+      label: `${r.symbol} ${r.decision}`,
+      detail: `${r.reason} • conf ${r.confidence}%`,
+      tone: r.decision === 'TRADE' ? 'text-emerald-300' : r.decision === 'NO_TRADE' ? 'text-amber-300' : 'text-red-300',
+    }));
+    const actionRows = (workerStatus?.lastRunAt && workerStatus?.lastAction)
+      ? [{
+          ts: workerStatus.lastRunAt,
+          label: `Worker ${String(workerStatus.lastAction).toUpperCase()}`,
+          detail: String(workerStatus?.lastReasonHuman || workerStatus?.lastReason || 'n/a'),
+          tone: 'text-cyan-300',
+        }]
+      : [];
+
+    return [...actionRows, ...cycleRows]
+      .sort((a, b) => new Date(String(b.ts || 0)).getTime() - new Date(String(a.ts || 0)).getTime())
+      .slice(0, 12);
+  }, [aiDecisionRows, workerStatus?.lastRunAt, workerStatus?.lastAction, workerStatus?.lastReasonHuman, workerStatus?.lastReason]);
+
+  const replayCursor = timelineEvents[Math.min(replayIndex, Math.max(0, timelineEvents.length - 1))] || null;
+
+  const postTradeQuality = useMemo(() => {
+    const rows = recentTradeRows.slice(0, 8);
+    const wins = rows.filter((r) => Number(r.pnl || 0) > 0).length;
+    const losses = rows.filter((r) => Number(r.pnl || 0) < 0).length;
+    const avgPnl = rows.length ? rows.reduce((sum, r) => sum + Number(r.pnl || 0), 0) / rows.length : 0;
+    const ruleAdherence = Math.max(50, 100 - risks.length * 10 - (decision.label === 'NO_TRADE' ? 5 : 0));
+    return {
+      sample: rows.length,
+      winRate: rows.length ? Math.round((wins / rows.length) * 100) : 0,
+      losses,
+      avgPnl,
+      slippage: 'n/a',
+      rrAchieved: rows.length ? (avgPnl > 0 ? '>= 1.2 (estimated)' : '< 1.0 (estimated)') : 'n/a',
+      ruleAdherence,
+    };
+  }, [recentTradeRows, risks.length, decision.label]);
+
+  const deepseekPlaybook = useMemo(() => {
+    const ds = briefing?.deepseekDecision || {};
+    const narrative = ds.market_narrative || decision.reasoningSummary;
+    const bias = ds.bias || (decision.chosenSide === 'BUY' ? 'LONG' : decision.chosenSide === 'SELL' ? 'SHORT' : 'NEUTRAL');
+    const mustHappen = (decision.triggerConditions || []).slice(0, 3);
+    const cancelIf = (ds.cancel_if && ds.cancel_if.length ? ds.cancel_if : decision.invalidators || []).slice(0, 3);
+    return { narrative, bias, mustHappen, cancelIf };
+  }, [briefing?.deepseekDecision, decision.reasoningSummary, decision.chosenSide, decision.triggerConditions, decision.invalidators]);
+
+  const deepseekScenarios = useMemo(() => {
+    const ds = briefing?.deepseekDecision || {};
+    const fromModel = Array.isArray(ds.scenarios) ? ds.scenarios.filter(Boolean).slice(0, 3) : [];
+    if (fromModel.length > 0) {
+      return fromModel.map((s: any, idx: number) => ({
+        name: s?.name || (idx === 0 ? 'Base Case' : idx === 1 ? 'Bull Breakout' : 'Bear Failure'),
+        trigger: s?.trigger || 'Await structure confirmation.',
+        invalidation: s?.invalidation || 'Invalid if structure breaks.',
+        expected_rr: s?.expected_rr || String(decision.entryPlan?.rr || '>= 1.5'),
+        action: s?.action || 'WAIT',
+      }));
+    }
+    const zone = String(decision.entryPlan?.zone || '—');
+    const stop = String(decision.entryPlan?.stop || '—');
+    return [
+      {
+        name: 'Base Case',
+        trigger: `15m close + hold in ${zone} with momentum/volume expansion.`,
+        invalidation: `Price loses support and closes below stop reference ${stop}.`,
+        expected_rr: String(decision.entryPlan?.rr || '>= 1.5'),
+        action: decision.label === 'TRADE' ? 'PREPARE' : 'WAIT',
+      },
+      {
+        name: 'Bull Breakout',
+        trigger: 'Consecutive higher highs with expanding volume above trigger zone.',
+        invalidation: 'Breakout retest fails with weak follow-through volume.',
+        expected_rr: '>= 1.8',
+        action: decision.label === 'TRADE' ? 'EXECUTE' : 'PREPARE',
+      },
+      {
+        name: 'Bear Failure',
+        trigger: 'Failed breakout and rejection at resistance with negative momentum.',
+        invalidation: 'Recovery above trigger zone with renewed expansion.',
+        expected_rr: '>= 1.4',
+        action: 'WAIT',
+      },
+    ];
+  }, [briefing?.deepseekDecision, decision.entryPlan, decision.label]);
+
+  const deepseekRiskCoach = useMemo(() => {
+    const ds = briefing?.deepseekDecision?.risk_coach;
+    const blocker = ds?.blocker || triggerDiagnostics.blockerNow || reasonBreakdown.headline;
+    const fixNext = ds?.fix_next?.length
+      ? ds.fix_next.slice(0, 3)
+      : [
+          'Wait for clean 15m confirmation + hold in the entry zone.',
+          'Require momentum + volume expansion to validate continuation.',
+          'Keep risk gates unchanged; avoid forcing entries during unclear structure.',
+        ];
+    return { blocker, fixNext };
+  }, [briefing?.deepseekDecision, triggerDiagnostics.blockerNow, reasonBreakdown.headline]);
+
+  const deepseekOperatorFeed = useMemo(() => {
+    const rows = aiConversationRows.slice(0, 6).map((r: any) => ({
+      ts: r.ts,
+      text: `${String(r.symbol || 'Market')}: ${String(r.responseSummary || 'Monitoring setup')}`,
+      delta: String(r.delta || ''),
+    }));
+    if (rows.length) return rows;
+    return [
+      {
+        ts: new Date().toISOString(),
+        text: decision.label === 'TRADE'
+          ? 'Execution window open. Waiting for final candle confirmation before entry.'
+          : 'No clean setup yet. Monitoring structure, momentum, and volume for valid trigger.',
+        delta: 'baseline',
+      },
+    ];
+  }, [aiConversationRows, decision.label]);
+
+  const deepseekLearningLoop = useMemo(() => {
+    const rows = recentTradeRows.slice(0, 10);
+    if (!rows.length) {
+      return [{
+        lesson: 'No recent closed trades to learn from yet.',
+        tweak: 'Keep collecting samples before changing live rules.',
+      }];
+    }
+    const losses = rows.filter((r) => Number(r.pnl || 0) < 0);
+    const wins = rows.filter((r) => Number(r.pnl || 0) > 0);
+    const avgLoss = losses.length ? losses.reduce((s, r) => s + Number(r.pnl || 0), 0) / losses.length : 0;
+    const avgWin = wins.length ? wins.reduce((s, r) => s + Number(r.pnl || 0), 0) / wins.length : 0;
+    return [
+      {
+        lesson: `Last ${rows.length} closes: ${wins.length} wins / ${losses.length} losses.`,
+        tweak: 'Adjust only one filter at a time; validate changes in paper mode first.',
+      },
+      {
+        lesson: losses.length ? `Average loss: ${signedMoney(avgLoss)}.` : 'No losses in current sample.',
+        tweak: 'If losses cluster in squeeze/unclear structure, tighten breakout confirmation filter.',
+      },
+      {
+        lesson: wins.length ? `Average win: ${signedMoney(avgWin)}.` : 'No wins in current sample yet.',
+        tweak: 'When wins appear with strong volume expansion, prioritize that condition in entries.',
+      },
+    ];
+  }, [recentTradeRows]);
+
+  const filteredFeed = useMemo(() => {
+    const classify = (evt: string) => {
+      const s = evt.toLowerCase();
+      if (s.includes('risk') || s.includes('cooldown') || s.includes('invalid')) return 'RISK';
+      if (s.includes('opened') || s.includes('closed') || s.includes('action:')) return 'EXECUTION';
+      return 'DECISIONS';
+    };
+
+    if (feedFilter === 'ALL') return liveFeed;
+    return liveFeed.filter((evt) => classify(evt) === feedFilter);
+  }, [liveFeed, feedFilter]);
 
   return (
     <>
@@ -583,11 +885,11 @@ export default function Home() {
       </Head>
 
       <div className="min-h-screen text-slate-100" style={{ fontFamily: 'IBM Plex Sans, Space Grotesk, sans-serif', background: 'radial-gradient(1200px 800px at 20% 0%, #1a2438 0%, #0b101a 40%, #05070c 100%)' }}>
-        <div className="mx-auto max-w-[1240px] px-4 md:px-6 py-5">
+        <div className="mx-auto w-full max-w-[1420px] px-3 sm:px-4 md:px-6 py-4 md:py-5">
           <header className="rounded-2xl border border-white/10 bg-slate-900/60 backdrop-blur-md p-4 md:p-5 shadow-2xl shadow-black/30">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div className="flex flex-wrap items-center gap-4">
-                <div className="text-3xl font-bold tracking-wide" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
+                <div className="text-2xl sm:text-3xl font-bold tracking-wide" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
                   <span className="text-emerald-300">HELIX</span>.ONE
                 </div>
                 <StatusPill tone={liveConnected ? 'good' : 'bad'}>{liveConnected ? 'LIVE' : 'OFFLINE'}</StatusPill>
@@ -595,6 +897,9 @@ export default function Home() {
                 <div className="text-slate-400 text-sm">Last update: {lastUpdated || '—'}</div>
               </div>
               <div className="flex items-center gap-3">
+                <button onClick={() => setRichExpanded((v) => !v)} className={`rounded-lg border px-3 py-2 text-sm font-medium ${richExpanded ? 'border-cyan-400/50 bg-cyan-500/10 text-cyan-200' : 'border-white/15 bg-white/5 hover:bg-white/10 text-slate-200'}`}>
+                  {richExpanded ? 'Rich Intel: ON' : 'Rich Intel: OFF'}
+                </button>
                 <a href="/settings" className="rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 px-4 py-2 text-sm font-medium">Settings</a>
               </div>
             </div>
@@ -603,7 +908,7 @@ export default function Home() {
           <main className="mt-5 space-y-5">
             {error && <div className="rounded-xl border border-red-500/40 bg-red-900/30 px-4 py-3 text-red-100 text-sm">{error}</div>}
 
-            <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-2">
+            <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
               <TopMetric label="Binance Wallet Balance" value={walletBalance > 0 ? money(walletBalance) : '—'} />
               <TopMetric label="Available Margin" value={availableMargin > 0 ? money(availableMargin) : '—'} tone="green" />
               <TopMetric label="Daily P&L" value={typeof account.previousDayPnl === 'number' ? signedMoney(account.previousDayPnl) : '—'} tone={Number(account.previousDayPnl || 0) >= 0 ? 'green' : 'red'} />
@@ -611,6 +916,31 @@ export default function Home() {
               <div className={`rounded-xl border px-4 py-3 ${riskPosture.tone}`}>
                 <div className="text-xs uppercase tracking-wider text-slate-300/80">Risk Posture</div>
                 <div className="text-2xl font-semibold mt-1">{riskPosture.label}</div>
+              </div>
+            </section>
+
+            <section className="sticky top-2 z-20 rounded-2xl border border-cyan-400/30 bg-slate-900/85 backdrop-blur-md p-3 md:p-4 shadow-lg shadow-black/30">
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3 text-sm">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-slate-400">Decision</div>
+                  <div className={`font-bold text-lg ${decision.label === 'TRADE' ? 'text-emerald-300' : 'text-amber-300'}`}>{decision.label}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-slate-400">Side</div>
+                  <div className="font-semibold text-slate-100">{String(decision.chosenSide || 'N/A')}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-slate-400">Confidence / Readiness</div>
+                  <div className="font-semibold text-slate-100">{decision.confidence}% / {readinessScore}%</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-slate-400">Invalidation</div>
+                  <div className="font-semibold text-red-300">{decision.invalidators?.[0] || '—'}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-slate-400">Next Trigger</div>
+                  <div className="font-semibold text-cyan-200">{String((decision as any).actionableNext || decision.triggerConditions?.[0] || 'Awaiting signal')}</div>
+                </div>
               </div>
             </section>
 
@@ -646,6 +976,44 @@ export default function Home() {
                     ))}
                   </div>
                 </div>
+
+                <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-xs uppercase tracking-wide text-slate-400">Action Readiness Score</div>
+                    <div className={`text-sm font-bold ${readinessScore >= 75 ? 'text-emerald-300' : readinessScore >= 55 ? 'text-amber-300' : 'text-red-300'}`}>{readinessScore}/100</div>
+                  </div>
+                  <div className="h-2 rounded bg-black/30 overflow-hidden">
+                    <div className={`h-full ${readinessScore >= 75 ? 'bg-emerald-400' : readinessScore >= 55 ? 'bg-amber-400' : 'bg-red-400'}`} style={{ width: `${readinessScore}%` }} />
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3 overflow-auto">
+                  <div className="text-xs uppercase tracking-wide text-slate-400 mb-2">Symbol Heat Matrix</div>
+                  <table className="w-full text-[11px] min-w-[420px]">
+                    <thead className="text-slate-400">
+                      <tr>
+                        <th className="text-left py-1">Symbol</th>
+                        <th className="text-right py-1">Structure</th>
+                        <th className="text-right py-1">Momentum</th>
+                        <th className="text-right py-1">Volume</th>
+                        <th className="text-right py-1">Risk</th>
+                        <th className="text-right py-1">Final Gate</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {heatMatrixRows.map((r) => (
+                        <tr key={r.symbol} className="border-t border-white/10">
+                          <td className="py-1 font-semibold">{r.symbol}</td>
+                          <td className="py-1 text-right"><HeatCell value={r.structure} /></td>
+                          <td className="py-1 text-right"><HeatCell value={r.momentum} /></td>
+                          <td className="py-1 text-right"><HeatCell value={r.volume} /></td>
+                          <td className="py-1 text-right"><HeatCell value={r.risk} /></td>
+                          <td className="py-1 text-right"><HeatCell value={r.gate} blocked={r.blocked} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </Panel>
 
               <Panel className="xl:col-span-5" title="DeepSeek Decision Brain (Operator Mode)">
@@ -653,19 +1021,13 @@ export default function Home() {
                   className={`rounded-xl border px-4 py-3 ${
                     decision.label === 'TRADE'
                       ? 'border-emerald-500/70 bg-emerald-950/20'
-                      : decision.label === 'COOLDOWN'
-                        ? 'border-amber-500/70 bg-amber-950/20'
-                        : 'border-red-500/70 bg-red-950/30'
+                      : 'border-red-500/70 bg-red-950/30'
                   }`}
                 >
                   <div className="text-center text-sm tracking-wide text-slate-300">CURRENT DECISION:</div>
                   <div
                     className={`text-center text-4xl font-bold mt-1 tracking-wide ${
-                      decision.label === 'TRADE'
-                        ? 'text-emerald-300'
-                        : decision.label === 'COOLDOWN'
-                          ? 'text-amber-300'
-                          : 'text-red-300'
+                      decision.label === 'TRADE' ? 'text-emerald-300' : 'text-red-300'
                     }`}
                     style={{ fontFamily: 'Space Grotesk, sans-serif' }}
                   >
@@ -685,16 +1047,38 @@ export default function Home() {
                   <DetailRow
                     label="Setup Quality"
                     value={decision.quality}
-                    highlight={decision.label === 'TRADE' ? 'text-emerald-300' : decision.label === 'COOLDOWN' ? 'text-amber-300' : 'text-red-300'}
+                    highlight={decision.label === 'TRADE' ? 'text-emerald-300' : 'text-red-300'}
                   />
                   <DetailRow label="Risk Flags" value={risks.length ? risks.join(', ') : 'None'} highlight={risks.length ? 'text-amber-300' : 'text-emerald-300'} />
                   <DetailRow label="Pre-Checks" value={`${decision.checks} ${decision.failedChecks > 0 ? '(some failed)' : ''}`} highlight={decision.failedChecks > 0 ? 'text-amber-300' : 'text-emerald-300'} />
+                  <DetailRow label="Rule Bias" value={String(decision.ruleBias || 'N/A')} />
+                  <DetailRow label="AI Gate" value={String(decision.aiGate || 'N/A')} highlight={String(decision.aiGate || '') === 'NO_TRADE' ? 'text-amber-300' : 'text-emerald-300'} />
+                  <DetailRow label="Side Source" value={`${String(decision.sideSource || 'N/A')} ${String(decision.chosenSide || 'N/A') !== 'N/A' ? `(${String(decision.chosenSide)})` : ''}`} />
                 </div>
 
                 <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
                   <LiveBlock title="NOW" tone="emerald" items={[decision.nowAction, `Entry Zone: ${decision.entryPlan.zone}`, `Plan: SL ${decision.entryPlan.stop} • TP1 ${decision.entryPlan.tp1} • TP2 ${decision.entryPlan.tp2} • R:R ${decision.entryPlan.rr}`]} />
                   <LiveBlock title="TRIGGERS" tone="blue" items={decision.triggerConditions} />
                   <LiveBlock title="RISK GUARDRAILS" tone="amber" items={decision.invalidators} />
+                </div>
+
+                <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs text-slate-200">
+                  <div className="uppercase tracking-wide text-slate-400 mb-2">Trigger Progress Tracker</div>
+                  <div className="space-y-2">
+                    {triggerDiagnostics.items.slice(0, 5).map((item) => {
+                      const state = item.passed ? 'passed' : (decision.label === 'TRADE' ? 'waiting' : 'failed');
+                      return (
+                        <div key={item.key} className="rounded border border-white/10 bg-black/20 px-2 py-1.5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-slate-200">{item.label}</span>
+                            <span className={state === 'passed' ? 'text-emerald-300' : state === 'waiting' ? 'text-amber-300' : 'text-red-300'}>
+                              {state === 'passed' ? '✅ PASSED' : state === 'waiting' ? '⏳ WAITING' : '❌ FAILED'}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
 
                 <details className="mt-3 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs text-slate-200">
@@ -712,9 +1096,15 @@ export default function Home() {
 
                 <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs text-slate-200">
                   <div className="uppercase tracking-wide text-slate-400 mb-1">Why now</div>
+                  {decision.label === 'NO_TRADE' && decision.ruleBias === 'TRADE' && (
+                    <div className="mb-2 rounded border border-amber-400/40 bg-amber-500/10 px-2 py-1 text-amber-200">Execution blocked by AI gate this cycle.</div>
+                  )}
                   <div>{decision.reasoningSummary}</div>
+                  <div className="mt-2 rounded border border-cyan-400/30 bg-cyan-500/10 px-2 py-1 text-cyan-200">{String((decision as any).actionableNext || '')}</div>
                 </div>
 
+                {richExpanded && (
+                  <>
                 <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs text-slate-200">
                   <div className="uppercase tracking-wide text-slate-400 mb-1">What changed</div>
                   {decision.changesSinceLast.length ? (
@@ -727,6 +1117,42 @@ export default function Home() {
                     <div>No material change since last cycle.</div>
                   )}
                 </div>
+
+                <div className="mt-3 rounded-xl border border-cyan-400/30 bg-cyan-500/10 p-3 text-xs text-cyan-100">
+                  <div className="uppercase tracking-wide text-cyan-300 mb-1">DeepSeek Playbook</div>
+                  <div className="mb-1"><span className="text-cyan-200">Narrative:</span> {deepseekPlaybook.narrative}</div>
+                  <div className="mb-1"><span className="text-cyan-200">Bias:</span> {deepseekPlaybook.bias}</div>
+                  <div className="mb-1"><span className="text-cyan-200">Must happen next:</span></div>
+                  <ul className="list-disc ml-4 space-y-0.5">{deepseekPlaybook.mustHappen.map((x, i) => <li key={`${x}-${i}`}>{x}</li>)}</ul>
+                  <div className="mt-2 mb-1"><span className="text-cyan-200">Cancel if:</span></div>
+                  <ul className="list-disc ml-4 space-y-0.5">{deepseekPlaybook.cancelIf.map((x, i) => <li key={`${x}-${i}`}>{x}</li>)}</ul>
+                </div>
+
+                <div className="mt-3 rounded-xl border border-indigo-400/30 bg-indigo-500/10 p-3 text-xs text-indigo-100">
+                  <div className="uppercase tracking-wide text-indigo-300 mb-2">DeepSeek Scenario Engine</div>
+                  <div className="space-y-2">
+                    {deepseekScenarios.map((s, i) => (
+                      <div key={`${s.name}-${i}`} className="rounded border border-white/15 bg-black/20 p-2">
+                        <div className="flex items-center justify-between">
+                          <div className="font-semibold">{s.name}</div>
+                          <div className="text-[10px] rounded border border-white/20 px-1.5 py-0.5">{s.action}</div>
+                        </div>
+                        <div className="mt-1">Trigger: {s.trigger}</div>
+                        <div>Invalidation: {s.invalidation}</div>
+                        <div>Expected R:R: {s.expected_rr}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="mt-3 rounded-xl border border-amber-400/30 bg-amber-500/10 p-3 text-xs text-amber-100">
+                  <div className="uppercase tracking-wide text-amber-300 mb-1">DeepSeek Risk Coach</div>
+                  <div className="mb-1"><span className="text-amber-200">Blocker:</span> {deepseekRiskCoach.blocker}</div>
+                  <div className="mb-1 text-amber-200">What to fix before next cycle:</div>
+                  <ul className="list-disc ml-4 space-y-0.5">{deepseekRiskCoach.fixNext.map((x, i) => <li key={`${x}-${i}`}>{x}</li>)}</ul>
+                </div>
+                  </>
+                )}
               </Panel>
 
               <Panel className="xl:col-span-3" title="Ops & Risk">
@@ -748,18 +1174,69 @@ export default function Home() {
                   <div className="text-slate-100">{workerStatus?.aiLastHeartbeatAt ? new Date(workerStatus.aiLastHeartbeatAt).toLocaleTimeString() : '—'}</div>
                   {workerStatus?.fallbackMode && <div className="mt-1 inline-block rounded border border-amber-400/40 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-200">FALLBACK MODE</div>}
                 </div>
-                <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.03] p-2 text-xs">
-                  <div className="text-slate-400">Last Run</div>
-                  <div className="text-slate-100">{workerStatus?.lastRunAt ? new Date(workerStatus.lastRunAt).toLocaleTimeString() : '—'}</div>
-                  <div className="text-slate-400 mt-1">Last Action</div>
-                  <div className="text-slate-100">{String(workerStatus?.lastAction || '—').toUpperCase()}</div>
-                  <div className="text-slate-400 mt-1">Reason (human)</div>
-                  <div className="text-slate-100 whitespace-normal leading-tight font-medium">{String(workerStatus?.lastReasonHuman || workerStatus?.lastReason || '—')}</div>
+
+                <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.03] p-3 text-xs">
+                  <div className="text-slate-400 mb-2">Risk Capacity</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <MiniMetric label="Trades Used" value={`${riskCapacity.tradesToday}/${riskCapacity.maxTrades}`} />
+                    <MiniMetric label="Slots Left" value={`${riskCapacity.tradeSlotsLeft}`} />
+                    <MiniMetric label="Loss Used" value={`${riskCapacity.dailyLossUsedPct.toFixed(2)}%`} />
+                    <MiniMetric label="Loss Capacity Left" value={`${riskCapacity.lossCapacityLeftPct.toFixed(2)}%`} />
+                    <MiniMetric label="Open/Max" value={`${riskCapacity.openPositions}/${riskCapacity.maxOpenPositions}`} />
+                    <MiniMetric label="Cooldown" value={riskCapacity.cooldownMinutes > 0 ? `${riskCapacity.cooldownMinutes}m` : 'none'} />
+                  </div>
                 </div>
-                <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.03] p-2">
-                  <div className="text-[10px] uppercase tracking-wide text-slate-400 mb-1">Live Feed</div>
-                  <div className="space-y-1 text-xs text-slate-200 max-h-28 overflow-auto pr-1">
-                    {liveFeed.length ? liveFeed.slice(0, 4).map((evt, i) => <div key={`${evt}-${i}`} className="whitespace-normal leading-tight">• {evt}</div>) : <div className="text-slate-400">No live events yet.</div>}
+                <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.03] p-3 text-xs space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <div className="text-slate-400">Last Run</div>
+                      <div className="text-slate-100 font-semibold text-sm">{workerStatus?.lastRunAt ? new Date(workerStatus.lastRunAt).toLocaleTimeString() : '—'}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-400">Last Action</div>
+                      <div className={`inline-flex mt-0.5 rounded border px-2 py-0.5 text-[11px] font-semibold ${String(workerStatus?.lastAction || '').toUpperCase() === 'SKIP' ? 'border-amber-400/40 bg-amber-500/10 text-amber-200' : 'border-cyan-400/40 bg-cyan-500/10 text-cyan-200'}`}>
+                        {String(workerStatus?.lastAction || '—').toUpperCase()}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-slate-400 mb-1">Reason (human)</div>
+                    <div className="rounded border border-white/10 bg-black/20 px-3 py-2 text-slate-100 leading-relaxed">{reasonBreakdown.headline}</div>
+                  </div>
+
+                  {reasonBreakdown.hasStructuredReasons && (
+                    <div className="space-y-2">
+                      <div className="text-slate-400">By Symbol</div>
+                      <div className="space-y-2">
+                        {reasonBreakdown.bySymbol.map((item) => (
+                          <div key={`${item.symbol}-${item.reason}`} className="rounded border border-white/10 bg-black/20 px-3 py-2">
+                            <div className="text-[11px] font-semibold text-cyan-200">{item.symbol}</div>
+                            <div className="text-slate-200 leading-relaxed">{item.reason}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.03] p-3">
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="text-[10px] uppercase tracking-wide text-slate-400">Live Feed</div>
+                    <div className="flex flex-wrap gap-1">
+                      {(['ALL', 'DECISIONS', 'RISK', 'EXECUTION'] as const).map((f) => (
+                        <button
+                          key={f}
+                          onClick={() => setFeedFilter(f)}
+                          className={`rounded border px-2 py-0.5 text-[10px] ${feedFilter === f ? 'border-cyan-400/50 bg-cyan-500/10 text-cyan-200' : 'border-white/20 text-slate-300 hover:bg-white/10'}`}
+                        >
+                          {f}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="space-y-2 text-xs text-slate-200 max-h-44 overflow-auto pr-1">
+                    {filteredFeed.length ? filteredFeed.slice(0, 8).map((evt, i) => <div key={`${evt}-${i}`} className="whitespace-normal leading-relaxed rounded border border-white/10 bg-black/20 px-2 py-1.5">• {evt}</div>) : <div className="text-slate-400">No events for this filter.</div>}
                   </div>
                 </div>
               </Panel>
@@ -767,7 +1244,8 @@ export default function Home() {
 
             <section className="grid grid-cols-1 xl:grid-cols-12 gap-4">
               <Panel className="xl:col-span-8" title="Active Positions">
-                <table className="w-full text-sm">
+                <div className="overflow-x-auto -mx-1 px-1">
+                <table className="w-full min-w-[760px] text-sm">
                   <thead className="text-slate-400">
                     <tr>
                       <th className="text-left py-2">Pair</th>
@@ -801,10 +1279,12 @@ export default function Home() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               </Panel>
 
               <Panel className="xl:col-span-4" title="Recent Trades">
-                <table className="w-full text-sm">
+                <div className="overflow-x-auto -mx-1 px-1">
+                <table className="w-full min-w-[320px] text-sm">
                   <thead className="text-slate-400">
                     <tr>
                       <th className="text-left py-2">Pair</th>
@@ -824,13 +1304,67 @@ export default function Home() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               </Panel>
 
             </section>
 
+            {richExpanded && (
+            <section className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+              <Panel className="xl:col-span-5" title="Post-Trade Quality Panel">
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <MiniMetric label="Sample Size" value={`${postTradeQuality.sample}`} />
+                  <MiniMetric label="Win Rate" value={`${postTradeQuality.winRate}%`} />
+                  <MiniMetric label="Avg PnL" value={signedMoney(postTradeQuality.avgPnl)} />
+                  <MiniMetric label="Loss Count" value={`${postTradeQuality.losses}`} />
+                  <MiniMetric label="RR Achieved" value={postTradeQuality.rrAchieved} />
+                  <MiniMetric label="Rule Adherence" value={`${postTradeQuality.ruleAdherence}%`} />
+                </div>
+                <div className="mt-3 text-xs text-slate-300 rounded border border-white/10 bg-black/20 p-2">
+                  Slippage: {postTradeQuality.slippage} (wire in exchange fill audit for exact value).
+                </div>
+              </Panel>
+
+              <Panel className="xl:col-span-7" title="Session Replay (Recent Cycles)">
+                {timelineEvents.length === 0 ? (
+                  <div className="text-slate-400 text-sm">No replay events yet.</div>
+                ) : (
+                  <>
+                    <input
+                      type="range"
+                      min={0}
+                      max={Math.max(0, timelineEvents.length - 1)}
+                      value={Math.min(replayIndex, Math.max(0, timelineEvents.length - 1))}
+                      onChange={(e) => setReplayIndex(Number(e.target.value || 0))}
+                      className="w-full"
+                    />
+                    {replayCursor && (
+                      <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.03] p-3 text-sm">
+                        <div className="flex items-center justify-between">
+                          <div className={`font-semibold ${replayCursor.tone}`}>{replayCursor.label}</div>
+                          <div className="text-slate-400 text-xs">{new Date(replayCursor.ts).toLocaleTimeString()}</div>
+                        </div>
+                        <div className="mt-1 text-slate-200">{replayCursor.detail}</div>
+                      </div>
+                    )}
+                    <div className="mt-2 space-y-1 text-xs max-h-28 overflow-auto pr-1">
+                      {timelineEvents.slice(0, 8).map((evt, i) => (
+                        <div key={`${evt.ts}-${i}`} className="rounded border border-white/10 bg-black/20 px-2 py-1">
+                          <span className={evt.tone}>{evt.label}</span>
+                          <span className="text-slate-400"> • {new Date(evt.ts).toLocaleTimeString()}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </Panel>
+            </section>
+            )}
+
+            {richExpanded && (
             <section className="grid grid-cols-1 xl:grid-cols-12 gap-4">
               <Panel className="xl:col-span-12" title="AI Trace + News">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
                   <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2">
                     <div className="text-[10px] uppercase tracking-wide text-slate-400 mb-1">DeepSeek AI Decision Trace</div>
                     <div className="text-[11px] text-slate-400 mb-2">
@@ -871,6 +1405,25 @@ export default function Home() {
                     </div>
                   </div>
 
+                  <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2">
+                    <div className="text-[10px] uppercase tracking-wide text-slate-400 mb-1">AI Conversation Stream</div>
+                    <div className="space-y-1 text-xs max-h-64 overflow-auto pr-1">
+                      {aiConversationRows.length === 0 ? (
+                        <div className="text-slate-400">No conversation cycles yet.</div>
+                      ) : aiConversationRows.map((r: any, i: number) => (
+                        <div key={`${r.ts}-${r.symbol}-${i}`} className="border-b border-white/10 pb-1 last:border-b-0">
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold text-slate-200">{r.symbol}</span>
+                            <span className="text-slate-300">{Number(r.confidence || 0)}%</span>
+                          </div>
+                          <div className="text-slate-400">sent: {String(r.promptSummary || '')}</div>
+                          <div className="text-slate-300">recv: {String(r.responseSummary || '')}</div>
+                          <div className="text-cyan-300">Δ {String(r.delta || 'no change')}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
                   <div className="space-y-2 text-xs">
                     {(briefing?.news || []).slice(0, 5).map((n, i) => (
                       <div key={`${n.source}-${i}`} className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-2">
@@ -881,8 +1434,35 @@ export default function Home() {
                     {(!briefing?.news || briefing.news.length === 0) && <div className="text-slate-400">No headlines right now.</div>}
                   </div>
                 </div>
+
+                <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+                    <div className="text-[10px] uppercase tracking-wide text-slate-400 mb-2">DeepSeek Operator Feed</div>
+                    <div className="space-y-2 text-xs max-h-48 overflow-auto pr-1">
+                      {deepseekOperatorFeed.map((row, i) => (
+                        <div key={`${row.ts}-${i}`} className="rounded border border-white/10 bg-black/20 px-2 py-1.5">
+                          <div className="text-slate-200">{row.text}</div>
+                          <div className="text-cyan-300 text-[11px] mt-1">Δ {row.delta || 'no change'}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+                    <div className="text-[10px] uppercase tracking-wide text-slate-400 mb-2">DeepSeek Learning Loop</div>
+                    <div className="space-y-2 text-xs max-h-48 overflow-auto pr-1">
+                      {deepseekLearningLoop.map((row, i) => (
+                        <div key={`${row.lesson}-${i}`} className="rounded border border-white/10 bg-black/20 px-2 py-1.5">
+                          <div className="text-slate-200">{row.lesson}</div>
+                          <div className="text-amber-200 mt-1">Next tweak: {row.tweak}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
               </Panel>
             </section>
+            )}
           </main>
 
           <footer className="mt-8 border-t border-white/10 pt-5 text-center text-sm text-slate-400">
@@ -931,8 +1511,8 @@ function LiveBlock({ title, items, tone }: { title: string; items: string[]; ton
 
 function Panel({ title, className = '', children }: { title: string; className?: string; children: React.ReactNode }) {
   return (
-    <section className={`rounded-2xl border border-white/10 bg-slate-900/60 backdrop-blur-md p-4 shadow-xl shadow-black/30 ${className}`}>
-      <h2 className="text-xl font-semibold mb-3" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{title}</h2>
+    <section className={`rounded-2xl border border-white/10 bg-slate-900/60 backdrop-blur-md p-3 sm:p-4 shadow-xl shadow-black/30 ${className}`}>
+      <h2 className="text-lg sm:text-xl font-semibold mb-3" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{title}</h2>
       {children}
     </section>
   );
@@ -941,9 +1521,9 @@ function Panel({ title, className = '', children }: { title: string; className?:
 function TopMetric({ label, value, tone = 'default' }: { label: string; value: string; tone?: 'default' | 'green' | 'red' }) {
   const toneClass = tone === 'green' ? 'text-emerald-300' : tone === 'red' ? 'text-red-300' : 'text-slate-100';
   return (
-    <div className="rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-md px-4 py-3">
-      <div className="text-xs uppercase tracking-wider text-slate-400">{label}</div>
-      <div className={`text-3xl font-semibold mt-1 ${toneClass}`} style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{value}</div>
+    <div className="rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-md px-3 sm:px-4 py-3">
+      <div className="text-[11px] uppercase tracking-wider text-slate-400">{label}</div>
+      <div className={`text-2xl sm:text-3xl font-semibold mt-1 ${toneClass}`} style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{value}</div>
     </div>
   );
 }
@@ -955,6 +1535,12 @@ function MiniMetric({ label, value }: { label: string; value: string }) {
       <div className="text-slate-100 font-semibold">{value}</div>
     </div>
   );
+}
+
+function HeatCell({ value, blocked = false }: { value: number; blocked?: boolean }) {
+  const v = Math.max(0, Math.min(100, Number(value || 0)));
+  const tone = blocked ? 'text-red-300 border-red-400/40 bg-red-500/10' : v >= 70 ? 'text-emerald-300 border-emerald-400/40 bg-emerald-500/10' : v >= 50 ? 'text-amber-300 border-amber-400/40 bg-amber-500/10' : 'text-red-300 border-red-400/40 bg-red-500/10';
+  return <span className={`inline-flex min-w-12 justify-center rounded border px-1.5 py-0.5 ${tone}`}>{v}</span>;
 }
 
 function StatusPill({ children, tone }: { children: React.ReactNode; tone: 'good' | 'bad' }) {

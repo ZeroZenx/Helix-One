@@ -80,14 +80,68 @@ export class AIService {
     this.grokKey = process.env.GROK_API_KEY || '';
   }
 
-  private getActiveDeepSeekKey(): string {
-    try {
-      const runtimeKey = this.settingsStore.get().deepseekApiKey || '';
-      if (runtimeKey) return runtimeKey;
-    } catch {
-      // ignore settings read failures and fallback to env.
+  private isTransientNetworkError(error: any): boolean {
+    const code = String(error?.code || error?.cause?.code || '').toUpperCase();
+    const msg = String(error?.message || '').toLowerCase();
+    return (
+      code === 'ECONNRESET' ||
+      code === 'ETIMEDOUT' ||
+      code === 'ENOTFOUND' ||
+      code === 'EAI_AGAIN' ||
+      msg.includes('timeout') ||
+      msg.includes('network') ||
+      msg.includes('socket hang up') ||
+      msg.includes('aborted')
+    );
+  }
+
+  private async withRetry<T>(fn: () => Promise<T>, retries = 2, baseDelayMs = 600): Promise<T> {
+    let lastError: any;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        return await fn();
+      } catch (error: any) {
+        lastError = error;
+        const retryable = this.isTransientNetworkError(error);
+        if (!retryable || attempt >= retries) break;
+        const delay = baseDelayMs * Math.pow(2, attempt);
+        await new Promise((r) => setTimeout(r, delay));
+      }
     }
-    return this.deepseekKey;
+    throw lastError;
+  }
+
+  private getSettingsSnapshot() {
+    try {
+      return this.settingsStore.get();
+    } catch {
+      return null;
+    }
+  }
+
+  getSelectedProvider(): AIProvider {
+    const s = this.getSettingsSnapshot();
+    const p = String(s?.aiProvider || 'deepseek').toLowerCase();
+    if (p === 'openai' || p === 'gemini' || p === 'deepseek') return p as AIProvider;
+    return 'deepseek';
+  }
+
+  private getActiveDeepSeekKey(): string {
+    const s = this.getSettingsSnapshot();
+    const runtimeKey = s?.deepseekApiKey || '';
+    return runtimeKey || this.deepseekKey;
+  }
+
+  private getActiveOpenAIKey(): string {
+    const s = this.getSettingsSnapshot();
+    const runtimeKey = s?.openaiApiKey || '';
+    return runtimeKey || this.openaiKey;
+  }
+
+  private getActiveGeminiKey(): string {
+    const s = this.getSettingsSnapshot();
+    const runtimeKey = s?.geminiApiKey || '';
+    return runtimeKey || this.geminiKey;
   }
 
   private loadPrompt(fileName: string, fallback: string): string {
@@ -247,6 +301,12 @@ Return ONE JSON object ONLY in this exact schema:
 Runtime context (hard constraints + current operating environment):
 ${JSON.stringify(runtimeContext || {}, null, 2)}
 
+Regime authority policy (important):
+- regime_label_from_engine: ${runtimeContext?.market?.regime || 'unclear'}
+- regime_confidence_from_engine: ${Number(runtimeContext?.market?.regimeConfidence || 0)}
+- if regime_confidence_from_engine >= 60 and liquidity is not poor and volatility is not high,
+  do NOT mark regime as unclear unless there is strong contradictory technical evidence.
+
 If runtime context signals missing/stale/conflicting data or risk threshold breach, return NO_TRADE.`;
 
     const messages = [
@@ -255,11 +315,16 @@ If runtime context signals missing/stale/conflicting data or risk threshold brea
     ];
 
     try {
-      const response = await this.callAI(messages, provider);
-      const parsed = JSON.parse(response);
+      const response = provider === 'deepseek'
+        ? await this.callDeepSeek(messages, { enforceJson: true, temperature: 0.1, maxTokens: 1200 })
+        : await this.callAI(messages, provider);
+      const parsed = this.parseStructuredJson(response);
       return this.applyHardRiskGates(this.normalizeDecision(parsed, symbol, runtimeContext), runtimeContext);
-    } catch (error) {
-      return this.applyHardRiskGates(this.defaultNoTrade(symbol, 'Unable to generate signal'), runtimeContext);
+    } catch (error: any) {
+      const msg = String(error?.message || 'invalid_json');
+      const rawPreview = String(error?.rawPreview || '').slice(0, 1800);
+      console.warn('[deepseek-parse-failed]', { symbol, provider, msg, rawPreview });
+      return this.applyHardRiskGates(this.defaultNoTrade(symbol, 'MODEL_OUTPUT_INVALID_JSON'), runtimeContext);
     }
   }
 
@@ -297,6 +362,53 @@ Keep it actionable and specific.`;
     ];
 
     return await this.callAI(messages, provider);
+  }
+
+  private parseStructuredJson(raw: string): any {
+    const text = String(raw || '')
+      .replace(/^\uFEFF/, '')
+      .replace(/[\u0000-\u001F\u007F]/g, ' ')
+      .trim();
+    if (!text) {
+      const err: any = new Error('empty_model_response');
+      err.rawPreview = text;
+      throw err;
+    }
+
+    const parseAny = (candidate: string): any => JSON.parse(candidate);
+
+    try {
+      const direct = parseAny(text);
+      // Support wrapped payloads from some providers
+      if (direct && typeof direct === 'object') {
+        if (typeof (direct as any).content === 'string') {
+          return this.parseStructuredJson((direct as any).content);
+        }
+        if ((direct as any).data && typeof (direct as any).data === 'object') {
+          return (direct as any).data;
+        }
+      }
+      return direct;
+    } catch {
+      try {
+        const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+        const candidateFromFence = fenceMatch?.[1]?.trim();
+        if (candidateFromFence) return parseAny(candidateFromFence);
+
+        const start = text.indexOf('{');
+        const end = text.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+          const candidate = text.slice(start, end + 1);
+          return parseAny(candidate);
+        }
+      } catch {
+        // pass through to typed error below
+      }
+
+      const err: any = new Error('invalid_json');
+      err.rawPreview = text;
+      throw err;
+    }
   }
 
   private defaultNoTrade(symbol: string, reason: string): StructuredTradingDecision {
@@ -350,6 +462,26 @@ Keep it actionable and specific.`;
 
     if (normalized.reasons.length === 0) {
       normalized.reasons.push(normalized.decision === 'TRADE' ? 'Trade candidate accepted by model.' : 'Model returned NO_TRADE.');
+    }
+
+    const engineRegime = runtimeContext?.market?.regime;
+    const engineRegimeConfidence = Number(runtimeContext?.market?.regimeConfidence || 0);
+    const liquidity = String(runtimeContext?.market?.liquidityState || '').toLowerCase();
+    const volatility = String(runtimeContext?.market?.volatilityState || '').toLowerCase();
+
+    if (
+      engineRegime &&
+      engineRegimeConfidence >= 60 &&
+      liquidity !== 'poor' &&
+      volatility !== 'high' &&
+      normalized.regime === 'unclear'
+    ) {
+      normalized.regime = engineRegime as any;
+      normalized.reasons = normalized.reasons.map((r) =>
+        /regime\s+unclear/i.test(String(r))
+          ? `Regime aligned to engine: ${engineRegime} (${engineRegimeConfidence}%).`
+          : r
+      );
     }
 
     if (!runtimeContext?.market?.regime && normalized.regime === 'unclear') {
@@ -420,49 +552,16 @@ Keep it actionable and specific.`;
    * Call OpenAI API
    */
   private async callOpenAI(messages: any[]): Promise<string> {
-    if (!this.openaiKey) {
+    const key = this.getActiveOpenAIKey();
+    if (!key) {
       throw new Error('OpenAI API key not configured');
     }
 
     try {
-      const response = await axios.post(
+      const response = await this.withRetry(() => axios.post(
         this.openaiUrl,
         {
           model: 'gpt-4-turbo-preview',
-          messages,
-          temperature: 0.7,
-          max_tokens: 1000
-        },
-        {
-          headers: {
-            'Authorization': `Bearer ${this.openaiKey}`,
-            'Content-Type': 'application/json'
-          },
-          timeout: 30000
-        }
-      );
-
-      return response.data.choices[0].message.content;
-    } catch (error: any) {
-      console.error('OpenAI API error:', error.response?.data || error.message);
-      throw new Error(`OpenAI error: ${error.response?.data?.error?.message || error.message}`);
-    }
-  }
-
-  /**
-   * Call DeepSeek API
-   */
-  private async callDeepSeek(messages: any[]): Promise<string> {
-    const key = this.getActiveDeepSeekKey();
-    if (!key) {
-      throw new Error('DeepSeek API key not configured');
-    }
-
-    try {
-      const response = await axios.post(
-        this.deepseekUrl,
-        {
-          model: 'deepseek-chat',
           messages,
           temperature: 0.7,
           max_tokens: 1000
@@ -474,7 +573,42 @@ Keep it actionable and specific.`;
           },
           timeout: 30000
         }
-      );
+      ));
+
+      return response.data.choices[0].message.content;
+    } catch (error: any) {
+      console.error('OpenAI API error:', error.response?.data || error.message);
+      throw new Error(`OpenAI error: ${error.response?.data?.error?.message || error.message}`);
+    }
+  }
+
+  /**
+   * Call DeepSeek API
+   */
+  private async callDeepSeek(messages: any[], opts?: { enforceJson?: boolean; temperature?: number; maxTokens?: number }): Promise<string> {
+    const key = this.getActiveDeepSeekKey();
+    if (!key) {
+      throw new Error('DeepSeek API key not configured');
+    }
+
+    try {
+      const response = await this.withRetry(() => axios.post(
+        this.deepseekUrl,
+        {
+          model: 'deepseek-chat',
+          messages,
+          temperature: opts?.temperature ?? 0.7,
+          max_tokens: opts?.maxTokens ?? 1000,
+          ...(opts?.enforceJson ? { response_format: { type: 'json_object' } } : {}),
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${key}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 30000
+        }
+      ));
 
       return response.data.choices[0].message.content;
     } catch (error: any) {
@@ -487,7 +621,7 @@ Keep it actionable and specific.`;
    * Check if OpenAI is configured
    */
   isOpenAIConfigured(): boolean {
-    return !!this.openaiKey;
+    return !!this.getActiveOpenAIKey();
   }
 
   /**
@@ -503,6 +637,8 @@ Keep it actionable and specific.`;
   getAvailableProviders(): AIProvider[] {
     const providers: AIProvider[] = [];
     if (this.isDeepSeekConfigured()) providers.push('deepseek');
+    if (this.isOpenAIConfigured()) providers.push('openai');
+    if (this.isGeminiConfigured()) providers.push('gemini');
     return providers;
   }
 
@@ -571,7 +707,8 @@ Keep it actionable and specific.`;
    * Call Gemini (Google) API
    */
   private async callGemini(messages: any[]): Promise<string> {
-    if (!this.geminiKey) {
+    const key = this.getActiveGeminiKey();
+    if (!key) {
       throw new Error('Gemini API key not configured');
     }
 
@@ -580,7 +717,7 @@ Keep it actionable and specific.`;
       const prompt = messages.map(m => m.content).join('\n\n');
 
       const response = await axios.post(
-        `${this.geminiUrl}?key=${this.geminiKey}`,
+        `${this.geminiUrl}?key=${key}`,
         {
           contents: [{
             parts: [{
@@ -647,7 +784,7 @@ Keep it actionable and specific.`;
    * Check if Gemini is configured
    */
   isGeminiConfigured(): boolean {
-    return !!this.geminiKey;
+    return !!this.getActiveGeminiKey();
   }
 
   /**

@@ -4,6 +4,19 @@ export interface RiskIntelSnapshot {
   generatedAt: string;
   funding: Array<{ symbol: string; fundingRate: number; markPrice: number }>;
   openInterest: Array<{ symbol: string; openInterestUsd: number }>;
+  microstructure: Array<{
+    symbol: string;
+    spreadBps: number;
+    atrPct: number;
+    emaTrendPct: number;
+    change24hPct: number;
+    rsi14: number;
+    momentum15mPct: number;
+    volume24hUsd: number;
+    support: number;
+    resistance: number;
+    available: boolean;
+  }>;
   newsHeadlines: Array<{ source: string; title: string }>;
   marketRegime: 'trend' | 'range' | 'breakout' | 'breakdown' | 'squeeze' | 'event_driven' | 'unclear';
   regimeConfidence: number;
@@ -13,6 +26,35 @@ export interface RiskIntelSnapshot {
 }
 
 export class RiskIntelService {
+  private isTransientNetworkError(error: any): boolean {
+    const code = String(error?.code || error?.cause?.code || '').toUpperCase();
+    const msg = String(error?.message || '').toLowerCase();
+    return (
+      code === 'ECONNRESET' ||
+      code === 'ETIMEDOUT' ||
+      code === 'ENOTFOUND' ||
+      code === 'EAI_AGAIN' ||
+      msg.includes('timeout') ||
+      msg.includes('network')
+    );
+  }
+
+  private async getWithRetry(url: string, config: any, retries = 2, baseDelayMs = 400): Promise<any> {
+    let lastError: any;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        return await axios.get(url, config);
+      } catch (error: any) {
+        lastError = error;
+        const retryable = this.isTransientNetworkError(error);
+        if (!retryable || attempt >= retries) break;
+        const delay = baseDelayMs * Math.pow(2, attempt);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+    throw lastError;
+  }
+
   async getSnapshot(symbols: string[] = ['BTCUSDT', 'ETHUSDT']): Promise<RiskIntelSnapshot> {
     const [funding, oi, news, micro] = await Promise.all([
       this.fetchFunding(symbols),
@@ -77,6 +119,7 @@ export class RiskIntelService {
       generatedAt: new Date().toISOString(),
       funding,
       openInterest: oi,
+      microstructure: micro,
       newsHeadlines: news,
       marketRegime,
       regimeConfidence,
@@ -93,15 +136,20 @@ export class RiskIntelService {
       atrPct: number;
       emaTrendPct: number;
       change24hPct: number;
+      rsi14: number;
+      momentum15mPct: number;
+      volume24hUsd: number;
+      support: number;
+      resistance: number;
       available: boolean;
     }> = [];
 
     for (const symbol of symbols) {
       try {
         const [bookRes, klineRes, ticker24hRes] = await Promise.all([
-          axios.get('https://fapi.binance.com/fapi/v1/ticker/bookTicker', { params: { symbol }, timeout: 8000 }),
-          axios.get('https://fapi.binance.com/fapi/v1/klines', { params: { symbol, interval: '5m', limit: 120 }, timeout: 8000 }),
-          axios.get('https://fapi.binance.com/fapi/v1/ticker/24hr', { params: { symbol }, timeout: 8000 }),
+          this.getWithRetry('https://fapi.binance.com/fapi/v1/ticker/bookTicker', { params: { symbol }, timeout: 8000 }),
+          this.getWithRetry('https://fapi.binance.com/fapi/v1/klines', { params: { symbol, interval: '5m', limit: 120 }, timeout: 8000 }),
+          this.getWithRetry('https://fapi.binance.com/fapi/v1/ticker/24hr', { params: { symbol }, timeout: 8000 }),
         ]);
 
         const bid = Number(bookRes.data.bidPrice || 0);
@@ -122,10 +170,20 @@ export class RiskIntelService {
         const emaTrendPct = lastClose > 0 ? ((ema20 - ema50) / lastClose) * 100 : 0;
 
         const change24hPct = Number(ticker24hRes.data?.priceChangePercent || 0);
+        const volume24hUsd = Number(ticker24hRes.data?.quoteVolume || 0);
+        const momentum15mPct = closes.length > 3 && closes[closes.length - 4] > 0
+          ? ((lastClose - closes[closes.length - 4]) / closes[closes.length - 4]) * 100
+          : 0;
+        const rsi14 = this.calcRsi(closes, 14);
 
-        out.push({ symbol, spreadBps, atrPct, emaTrendPct, change24hPct, available: true });
+        const recentHighs = highs.slice(-20).filter((x: number) => Number.isFinite(x) && x > 0);
+        const recentLows = lows.slice(-20).filter((x: number) => Number.isFinite(x) && x > 0);
+        const resistance = recentHighs.length ? Math.max(...recentHighs) : lastClose;
+        const support = recentLows.length ? Math.min(...recentLows) : lastClose;
+
+        out.push({ symbol, spreadBps, atrPct, emaTrendPct, change24hPct, rsi14, momentum15mPct, volume24hUsd, support, resistance, available: true });
       } catch {
-        out.push({ symbol, spreadBps: 0, atrPct: 0, emaTrendPct: 0, change24hPct: 0, available: false });
+        out.push({ symbol, spreadBps: 0, atrPct: 0, emaTrendPct: 0, change24hPct: 0, rsi14: 50, momentum15mPct: 0, volume24hUsd: 0, support: 0, resistance: 0, available: false });
       }
     }
 
@@ -164,8 +222,8 @@ export class RiskIntelService {
     for (const symbol of symbols) {
       try {
         const [fundingRes, markRes] = await Promise.all([
-          axios.get('https://fapi.binance.com/fapi/v1/premiumIndex', { params: { symbol }, timeout: 8000 }),
-          axios.get('https://fapi.binance.com/fapi/v1/premiumIndex', { params: { symbol }, timeout: 8000 }),
+          this.getWithRetry('https://fapi.binance.com/fapi/v1/premiumIndex', { params: { symbol }, timeout: 8000 }),
+          this.getWithRetry('https://fapi.binance.com/fapi/v1/premiumIndex', { params: { symbol }, timeout: 8000 }),
         ]);
         out.push({
           symbol,
@@ -184,8 +242,8 @@ export class RiskIntelService {
     for (const symbol of symbols) {
       try {
         const [oiRes, markRes] = await Promise.all([
-          axios.get('https://fapi.binance.com/fapi/v1/openInterest', { params: { symbol }, timeout: 8000 }),
-          axios.get('https://fapi.binance.com/fapi/v1/premiumIndex', { params: { symbol }, timeout: 8000 }),
+          this.getWithRetry('https://fapi.binance.com/fapi/v1/openInterest', { params: { symbol }, timeout: 8000 }),
+          this.getWithRetry('https://fapi.binance.com/fapi/v1/premiumIndex', { params: { symbol }, timeout: 8000 }),
         ]);
         const oi = Number(oiRes.data.openInterest || 0);
         const mark = Number(markRes.data.markPrice || 0);
@@ -209,7 +267,7 @@ export class RiskIntelService {
     await Promise.all(
       feeds.map(async (feed) => {
         try {
-          const res = await axios.get(feed.url, { timeout: 8000 });
+          const res = await this.getWithRetry(feed.url, { timeout: 8000 });
           const xml: string = String(res.data || '');
           const matches = [...xml.matchAll(/<title><!\[CDATA\[(.*?)\]\]><\/title>|<title>(.*?)<\/title>/g)]
             .map((m) => (m[1] || m[2] || '').trim())
@@ -250,6 +308,22 @@ export class RiskIntelService {
       ema = values[i] * k + ema * (1 - k);
     }
     return ema;
+  }
+
+  private calcRsi(values: number[], period = 14): number {
+    if (!Array.isArray(values) || values.length <= period) return 50;
+    let gains = 0;
+    let losses = 0;
+    for (let i = values.length - period; i < values.length; i += 1) {
+      const prev = values[i - 1];
+      const curr = values[i];
+      const diff = curr - prev;
+      if (diff >= 0) gains += diff;
+      else losses += Math.abs(diff);
+    }
+    if (losses === 0) return 100;
+    const rs = gains / losses;
+    return Math.max(0, Math.min(100, 100 - 100 / (1 + rs)));
   }
 
   private calcAtr(highs: number[], lows: number[], closes: number[], period: number): number {
