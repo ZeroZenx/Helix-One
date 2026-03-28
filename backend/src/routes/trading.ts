@@ -1087,6 +1087,220 @@ router.post('/signals', authenticateAdmin, async (req, res) => {
   }
 });
 
+router.post('/manual-trade', authenticateAdmin, async (req, res) => {
+  try {
+    const svc = await ensureTradingService();
+    if (!svc) return res.status(400).json({ error: 'Trading service not initialized. Configure API keys first.' });
+
+    const body = req.body || {};
+    const symbol = String(body.symbol || '').trim().toUpperCase();
+    const side = String(body.side || '').trim().toUpperCase();
+    const type = String(body.type || 'MARKET').trim().toUpperCase();
+    const confidenceRaw = Number(body.confidence);
+    const confidence = confidenceRaw > 1 ? confidenceRaw / 100 : confidenceRaw;
+    const reason = String(body.reason || body.notes || 'Manual trade entry').trim();
+
+    if (!symbol || !['BUY', 'SELL'].includes(side) || !['MARKET', 'LIMIT'].includes(type)) {
+      return res.status(400).json({ success: false, error: 'invalid_manual_trade_fields' });
+    }
+
+    if (!Number.isFinite(confidence) || confidence <= 0 || confidence > 1) {
+      return res.status(400).json({ success: false, error: 'confidence_must_be_between_0_and_1_or_0_and_100' });
+    }
+
+    const signal: TradeSignal = {
+      modelId: '1',
+      symbol,
+      side: side as 'BUY' | 'SELL',
+      type: type as 'MARKET' | 'LIMIT',
+      quantity: Number.isFinite(Number(body.quantity)) && Number(body.quantity) > 0 ? Number(body.quantity) : undefined,
+      price: Number.isFinite(Number(body.price)) && Number(body.price) > 0 ? Number(body.price) : undefined,
+      stopLoss: Number.isFinite(Number(body.stopLoss)) && Number(body.stopLoss) > 0 ? Number(body.stopLoss) : undefined,
+      takeProfit: Number.isFinite(Number(body.takeProfit)) && Number(body.takeProfit) > 0 ? Number(body.takeProfit) : undefined,
+      leverage: Number.isFinite(Number(body.leverage)) && Number(body.leverage) > 0 ? Number(body.leverage) : undefined,
+      confidence,
+      reason: `[manual] ${reason}`,
+      timestamp: new Date(),
+    };
+
+    const success = await svc.processTradeSignal(signal);
+    const rejectReason = success ? null : svc.getLastSignalRejectReason();
+
+    journalService.append({
+      ts: new Date().toISOString(),
+      type: 'manual_signal',
+      source: 'manual',
+      enteredBy: 'dashboard',
+      symbol,
+      side,
+      confidence,
+      reason,
+      accepted: success,
+      rejectReason,
+    });
+
+    logger.info('manual_trade_processed', {
+      success,
+      symbol,
+      side,
+      source: 'manual',
+      rejectReason,
+    });
+
+    if (!success) {
+      return res.status(400).json({
+        success: false,
+        error: rejectReason || 'manual_trade_rejected',
+        rejectReason,
+      });
+    }
+
+    return res.json({
+      success: true,
+      source: 'manual',
+      signal,
+    });
+  } catch (error: any) {
+    logger.error('manual_trade_failed', { error: error?.message || 'unknown' });
+    res.status(500).json({ success: false, error: error?.message || 'manual_trade_failed' });
+  }
+});
+
+router.get('/open-orders', async (req, res) => {
+  try {
+    const svc = await ensureTradingService();
+    if (!svc) return res.json({ success: true, orders: [] });
+
+    const symbol = req.query.symbol ? String(req.query.symbol).toUpperCase() : undefined;
+    const orders = await svc.getOpenOrders(symbol);
+
+    const normalized = orders
+      .filter((o: any) => String(o?.status || '').toUpperCase() === 'NEW')
+      .map((o: any) => ({
+        orderId: Number(o.orderId),
+        symbol: String(o.symbol || ''),
+        side: String(o.side || '').toUpperCase(),
+        type: String(o.type || '').toUpperCase(),
+        price: Number(o.price || 0),
+        origQty: Number(o.origQty || 0),
+        executedQty: Number(o.executedQty || 0),
+        status: String(o.status || '').toUpperCase(),
+        time: Number(o.time || Date.now()),
+      }))
+      .sort((a: any, b: any) => b.time - a.time);
+
+    res.json({ success: true, orders: normalized });
+  } catch (error: any) {
+    logger.error('open_orders_failed', { error: error?.message || 'unknown' });
+    res.status(500).json({ success: false, error: error?.message || 'open_orders_failed' });
+  }
+});
+
+router.post('/cancel-order', authenticateAdmin, async (req, res) => {
+  try {
+    const svc = await ensureTradingService();
+    if (!svc) return res.status(400).json({ success: false, error: 'Trading service not initialized' });
+
+    const symbol = String(req.body?.symbol || '').trim().toUpperCase();
+    const orderId = Number(req.body?.orderId);
+    if (!symbol || !Number.isFinite(orderId) || orderId <= 0) {
+      return res.status(400).json({ success: false, error: 'symbol_and_valid_orderId_required' });
+    }
+
+    const result = await svc.cancelOpenOrder(symbol, orderId);
+    journalService.append({
+      ts: new Date().toISOString(),
+      type: 'manual_order_cancel',
+      source: 'manual',
+      enteredBy: 'dashboard',
+      symbol,
+      orderId,
+      status: String(result?.status || 'CANCELED').toUpperCase(),
+    });
+
+    res.json({ success: true, result });
+  } catch (error: any) {
+    logger.error('cancel_order_failed', { error: error?.message || 'unknown' });
+    res.status(500).json({ success: false, error: error?.message || 'cancel_order_failed' });
+  }
+});
+
+router.post('/cancel-open-orders', authenticateAdmin, async (req, res) => {
+  try {
+    const svc = await ensureTradingService();
+    if (!svc) return res.status(400).json({ success: false, error: 'Trading service not initialized' });
+
+    const symbolFilter = req.body?.symbol ? String(req.body.symbol).trim().toUpperCase() : undefined;
+    const orders = await svc.getOpenOrders(symbolFilter);
+    const pending = orders.filter((o: any) => String(o?.status || '').toUpperCase() === 'NEW');
+
+    const canceled: Array<{ symbol: string; orderId: number }> = [];
+    const failed: Array<{ symbol: string; orderId: number; error: string }> = [];
+
+    for (const order of pending) {
+      const symbol = String(order?.symbol || '').toUpperCase();
+      const orderId = Number(order?.orderId);
+      if (!symbol || !Number.isFinite(orderId) || orderId <= 0) continue;
+
+      try {
+        await svc.cancelOpenOrder(symbol, orderId);
+        canceled.push({ symbol, orderId });
+        journalService.append({
+          ts: new Date().toISOString(),
+          type: 'manual_order_cancel',
+          source: 'manual',
+          enteredBy: 'dashboard',
+          symbol,
+          orderId,
+          status: 'CANCELED',
+        });
+      } catch (error: any) {
+        failed.push({ symbol, orderId, error: String(error?.message || 'cancel_failed') });
+      }
+    }
+
+    res.json({
+      success: failed.length === 0,
+      requested: pending.length,
+      canceledCount: canceled.length,
+      failedCount: failed.length,
+      canceled,
+      failed,
+    });
+  } catch (error: any) {
+    logger.error('cancel_open_orders_failed', { error: error?.message || 'unknown' });
+    res.status(500).json({ success: false, error: error?.message || 'cancel_open_orders_failed' });
+  }
+});
+
+router.post('/update-stop-loss', authenticateAdmin, async (req, res) => {
+  try {
+    const svc = await ensureTradingService();
+    if (!svc) return res.status(400).json({ success: false, error: 'Trading service not initialized' });
+
+    const symbol = String(req.body?.symbol || '').trim().toUpperCase();
+    const stopLoss = Number(req.body?.stopLoss);
+    if (!symbol || !Number.isFinite(stopLoss) || stopLoss <= 0) {
+      return res.status(400).json({ success: false, error: 'symbol_and_valid_stopLoss_required' });
+    }
+
+    const result = await svc.updateStopLoss('1', symbol, stopLoss);
+    journalService.append({
+      ts: new Date().toISOString(),
+      type: 'manual_stop_update',
+      source: 'manual',
+      enteredBy: 'dashboard',
+      symbol,
+      stopLoss,
+    });
+
+    return res.json({ success: true, result });
+  } catch (error: any) {
+    logger.error('update_stop_loss_failed', { error: error?.message || 'unknown' });
+    res.status(500).json({ success: false, error: error?.message || 'update_stop_loss_failed' });
+  }
+});
+
 router.post('/close-positions', authenticateAdmin, async (req, res) => {
   try {
     const svc = await ensureTradingService();

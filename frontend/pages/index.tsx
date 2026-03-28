@@ -1,6 +1,6 @@
 import Head from 'next/head';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { fetchWithTimeout, getTradingApiBaseUrl } from '../src/utils/api';
+import { fetchWithTimeout } from '../src/utils/api';
 
 type TradingStatus = {
   connected: boolean;
@@ -139,7 +139,7 @@ type DeepSeekDecision = {
   };
 };
 
-const API = getTradingApiBaseUrl();
+const API = 'http://127.0.0.1:3001/api/trading';
 
 const TRACKED_SYMBOLS = [
   { id: 'bitcoin', symbol: 'BTC' },
@@ -167,9 +167,28 @@ export default function Home() {
   const [feedFilter, setFeedFilter] = useState<'ALL' | 'DECISIONS' | 'RISK' | 'EXECUTION'>('ALL');
   const [replayIndex, setReplayIndex] = useState(0);
   const [richExpanded, setRichExpanded] = useState(false);
+  const [density, setDensity] = useState<'comfortable' | 'compact'>('compact');
+
+  const [manualAdminKey, setManualAdminKey] = useState('');
+  const [manualSymbol, setManualSymbol] = useState<'BTCUSDT' | 'ETHUSDT' | 'SOLUSDT'>('BTCUSDT');
+  const [manualSide, setManualSide] = useState<'BUY' | 'SELL'>('BUY');
+  const [manualType, setManualType] = useState<'MARKET' | 'LIMIT'>('MARKET');
+  const [manualQty, setManualQty] = useState('');
+  const [manualPrice, setManualPrice] = useState('');
+  const [manualStopLoss, setManualStopLoss] = useState('');
+  const [manualTakeProfit, setManualTakeProfit] = useState('');
+  const [manualLeverage, setManualLeverage] = useState('1');
+  const [manualConfidence, setManualConfidence] = useState('70');
+  const [manualReason, setManualReason] = useState('Manual discretionary setup');
+  const [manualSubmitting, setManualSubmitting] = useState(false);
+  const [manualFeedback, setManualFeedback] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const [slDrafts, setSlDrafts] = useState<Record<string, string>>({});
+  const [openOrders, setOpenOrders] = useState<Array<{ orderId: number; symbol: string; side: string; type: string; price: number; origQty: number; executedQty: number; status: string; time: number }>>([]);
+  const [ordersFeedback, setOrdersFeedback] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const [openOrderFilter, setOpenOrderFilter] = useState<'ALL' | 'BTCUSDT' | 'ETHUSDT' | 'SOLUSDT'>('ALL');
   const previousCycleRef = useRef<{ regimeConfidence: number; volatility: string; fundingRatePct: number } | null>(null);
 
-  const liveConnected = Boolean(status?.engineConnected);
+  const liveConnected = Boolean(status?.engineConnected || workerStatus);
   const account = briefing?.account || {};
   const market = briefing?.market || {};
   const risks = (riskContext?.riskFlags || briefing?.notes || []).slice(0, 3);
@@ -437,68 +456,131 @@ export default function Home() {
     };
   }, [lastReasonText]);
 
+  async function pingStatusFast() {
+    try {
+      const res = await fetchWithTimeout('http://127.0.0.1:3001/api/trading/status', {}, 20000);
+      if (!res.ok) return;
+      const payload = (await res.json()) as TradingStatus;
+      setStatus(payload);
+      setError('');
+      setLastUpdated(new Date().toLocaleTimeString());
+    } catch {
+      // keep previous status when ping fails
+    }
+  }
+
   async function loadDashboard() {
     try {
-      const [statusRes, settingsRes, briefingRes, riskRes, journalRes, workerRes] = await Promise.allSettled([
-        fetchWithTimeout(`${API}/status`),
+      const [statusRes, settingsRes, briefingRes, riskRes, journalRes, workerRes, openOrdersRes] = await Promise.allSettled([
+        fetchWithTimeout(`${API}/status`, {}, 20000),
         fetchWithTimeout(`${API}/settings`),
         fetchWithTimeout(`${API}/daily-briefing`),
         fetchWithTimeout(`${API}/risk-context?symbols=BTCUSDT,ETHUSDT,SOLUSDT`),
         fetchWithTimeout(`${API}/journal?limit=300&tradeCloseLimit=50&tradeCloseScanLimit=5000`),
         fetchWithTimeout(`${API}/worker-status`),
+        fetchWithTimeout(`${API}/open-orders`),
       ]);
 
+      let statusApplied = false;
       if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
-        setStatus((await statusRes.value.json()) as TradingStatus);
+        try {
+          const statusPayload = (await statusRes.value.json()) as TradingStatus;
+          setStatus(statusPayload);
+          statusApplied = true;
+        } catch {
+          // keep previous status if payload parse fails
+        }
+      }
+
+      if (!statusApplied) {
+        try {
+          const fallbackRes = await fetchWithTimeout('http://127.0.0.1:3001/api/trading/status');
+          if (fallbackRes.ok) {
+            const statusPayload = (await fallbackRes.json()) as TradingStatus;
+            setStatus(statusPayload);
+            statusApplied = true;
+          }
+        } catch {
+          // keep previous status
+        }
       }
 
       if (settingsRes.status === 'fulfilled' && settingsRes.value.ok) {
-        setSettings((await settingsRes.value.json()) as SettingsPayload);
+        try {
+          setSettings((await settingsRes.value.json()) as SettingsPayload);
+        } catch {
+          // ignore malformed settings payload
+        }
       }
 
       if (briefingRes.status === 'fulfilled' && briefingRes.value.ok) {
-        const nextBriefing = (await briefingRes.value.json()) as BriefingPayload;
+        try {
+          const nextBriefing = (await briefingRes.value.json()) as BriefingPayload;
 
-        const nextConfidence = Number(nextBriefing.market?.regimeConfidence || 0);
-        const nextVolatility = String(nextBriefing.market?.volatilityState || 'unknown').toUpperCase();
-        const nextFundingPct = Number(nextBriefing.market?.funding?.[0]?.fundingRate || 0) * 100;
+          const nextConfidence = Number(nextBriefing.market?.regimeConfidence || 0);
+          const nextVolatility = String(nextBriefing.market?.volatilityState || 'unknown').toUpperCase();
+          const nextFundingPct = Number(nextBriefing.market?.funding?.[0]?.fundingRate || 0) * 100;
 
-        const prev = previousCycleRef.current;
-        if (prev) {
-          const changes: string[] = [];
-          if (prev.regimeConfidence !== nextConfidence) {
-            changes.push(`Regime confidence: ${prev.regimeConfidence}% → ${nextConfidence}%`);
+          const prev = previousCycleRef.current;
+          if (prev) {
+            const changes: string[] = [];
+            if (prev.regimeConfidence !== nextConfidence) {
+              changes.push(`Regime confidence: ${prev.regimeConfidence}% → ${nextConfidence}%`);
+            }
+            if (prev.volatility !== nextVolatility) {
+              changes.push(`Volatility: ${prev.volatility} → ${nextVolatility}`);
+            }
+            if (Math.abs(prev.fundingRatePct - nextFundingPct) >= 0.01) {
+              changes.push(`Funding: ${prev.fundingRatePct.toFixed(2)}% → ${nextFundingPct.toFixed(2)}%`);
+            }
+            setCycleChanges(changes);
           }
-          if (prev.volatility !== nextVolatility) {
-            changes.push(`Volatility: ${prev.volatility} → ${nextVolatility}`);
-          }
-          if (Math.abs(prev.fundingRatePct - nextFundingPct) >= 0.01) {
-            changes.push(`Funding: ${prev.fundingRatePct.toFixed(2)}% → ${nextFundingPct.toFixed(2)}%`);
-          }
-          setCycleChanges(changes);
+
+          previousCycleRef.current = {
+            regimeConfidence: nextConfidence,
+            volatility: nextVolatility,
+            fundingRatePct: nextFundingPct,
+          };
+
+          setBriefing(nextBriefing);
+        } catch {
+          // ignore malformed briefing payload
         }
-
-        previousCycleRef.current = {
-          regimeConfidence: nextConfidence,
-          volatility: nextVolatility,
-          fundingRatePct: nextFundingPct,
-        };
-
-        setBriefing(nextBriefing);
       }
 
       if (riskRes.status === 'fulfilled' && riskRes.value.ok) {
-        setRiskContext((await riskRes.value.json()) as RiskContext);
+        try {
+          setRiskContext((await riskRes.value.json()) as RiskContext);
+        } catch {
+          // ignore malformed risk payload
+        }
       }
 
       if (journalRes.status === 'fulfilled' && journalRes.value.ok) {
-        const payload = await journalRes.value.json();
-        setJournal(Array.isArray(payload?.entries) ? payload.entries : []);
+        try {
+          const payload = await journalRes.value.json();
+          setJournal(Array.isArray(payload?.entries) ? payload.entries : []);
+        } catch {
+          // ignore malformed journal payload
+        }
       }
 
       if (workerRes.status === 'fulfilled' && workerRes.value.ok) {
-        const payload = await workerRes.value.json();
-        setWorkerStatus(payload);
+        try {
+          const payload = await workerRes.value.json();
+          setWorkerStatus(payload);
+        } catch {
+          // ignore malformed worker payload
+        }
+      }
+
+      if (openOrdersRes.status === 'fulfilled' && openOrdersRes.value.ok) {
+        try {
+          const payload = await openOrdersRes.value.json();
+          setOpenOrders(Array.isArray(payload?.orders) ? payload.orders : []);
+        } catch {
+          // ignore malformed open-orders payload
+        }
       }
 
       setLastUpdated(new Date().toLocaleTimeString());
@@ -554,13 +636,188 @@ export default function Home() {
     }
   }
 
+  async function updateStopLoss(symbol: string, fallbackStop: number) {
+    if (!manualAdminKey.trim()) {
+      setManualFeedback({ kind: 'error', text: 'Admin Key is required to update Stop Loss.' });
+      return;
+    }
+
+    const raw = slDrafts[symbol];
+    const stopLoss = Number(raw && raw.trim() ? raw : fallbackStop);
+    if (!Number.isFinite(stopLoss) || stopLoss <= 0) {
+      setManualFeedback({ kind: 'error', text: `Invalid Stop Loss for ${symbol}.` });
+      return;
+    }
+
+    const confirmText = `Update ${symbol} Stop Loss to ${stopLoss}?`;
+    if (typeof window !== 'undefined' && !window.confirm(confirmText)) return;
+
+    try {
+      const res = await fetchWithTimeout(`${API}/update-stop-loss`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': manualAdminKey.trim(),
+        },
+        body: JSON.stringify({ symbol, stopLoss }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        setManualFeedback({ kind: 'error', text: `SL update failed: ${String(data?.error || 'update_stop_loss_failed')}` });
+        return;
+      }
+
+      setManualFeedback({ kind: 'success', text: `${symbol} Stop Loss updated to ${stopLoss}.` });
+      await loadDashboard();
+    } catch (e: any) {
+      setManualFeedback({ kind: 'error', text: e?.message || 'Failed to update Stop Loss.' });
+    }
+  }
+
+  async function submitManualTrade() {
+    setManualFeedback(null);
+
+    if (!manualAdminKey.trim()) {
+      setManualFeedback({ kind: 'error', text: 'Admin key is required for manual trade submission.' });
+      return;
+    }
+
+    const confidenceNum = Number(manualConfidence);
+    if (!Number.isFinite(confidenceNum) || confidenceNum <= 0 || confidenceNum > 100) {
+      setManualFeedback({ kind: 'error', text: 'Confidence must be between 1 and 100.' });
+      return;
+    }
+
+    if (!manualStopLoss || !manualTakeProfit) {
+      setManualFeedback({ kind: 'error', text: 'Stop Loss and Take Profit are required.' });
+      return;
+    }
+
+    const payload: any = {
+      symbol: manualSymbol,
+      side: manualSide,
+      type: manualType,
+      confidence: confidenceNum,
+      reason: manualReason || 'Manual discretionary setup',
+      stopLoss: Number(manualStopLoss),
+      takeProfit: Number(manualTakeProfit),
+      leverage: Number(manualLeverage || 1),
+    };
+
+    if (manualQty && Number.isFinite(Number(manualQty)) && Number(manualQty) > 0) {
+      payload.quantity = Number(manualQty);
+    }
+
+    if (manualType === 'LIMIT' && manualPrice && Number.isFinite(Number(manualPrice)) && Number(manualPrice) > 0) {
+      payload.price = Number(manualPrice);
+    }
+
+    const confirmText = `Submit manual ${manualSide} ${manualSymbol} trade now?`;
+    if (typeof window !== 'undefined' && !window.confirm(confirmText)) return;
+
+    try {
+      setManualSubmitting(true);
+      const res = await fetchWithTimeout(`${API}/manual-trade`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': manualAdminKey.trim(),
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        const reason = String(data?.rejectReason || data?.error || 'manual_trade_rejected');
+        setManualFeedback({ kind: 'error', text: `Manual trade rejected: ${reason}` });
+        return;
+      }
+
+      setManualFeedback({ kind: 'success', text: 'Manual trade submitted successfully.' });
+      await loadDashboard();
+    } catch (e: any) {
+      setManualFeedback({ kind: 'error', text: e?.message || 'Failed to submit manual trade.' });
+    } finally {
+      setManualSubmitting(false);
+    }
+  }
+
+  async function cancelOpenOrder(order: { symbol: string; orderId: number }) {
+    setOrdersFeedback(null);
+    if (!manualAdminKey.trim()) {
+      setOrdersFeedback({ kind: 'error', text: 'Admin Key is required to cancel orders.' });
+      return;
+    }
+
+    const confirmText = `Cancel ${order.symbol} order #${order.orderId}?`;
+    if (typeof window !== 'undefined' && !window.confirm(confirmText)) return;
+
+    try {
+      const res = await fetchWithTimeout(`${API}/cancel-order`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': manualAdminKey.trim(),
+        },
+        body: JSON.stringify({ symbol: order.symbol, orderId: order.orderId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        setOrdersFeedback({ kind: 'error', text: `Cancel failed: ${String(data?.error || 'cancel_order_failed')}` });
+        return;
+      }
+      setOrdersFeedback({ kind: 'success', text: `Canceled order #${order.orderId} (${order.symbol})` });
+      await loadDashboard();
+    } catch (e: any) {
+      setOrdersFeedback({ kind: 'error', text: e?.message || 'Failed to cancel order.' });
+    }
+  }
+
+  async function cancelAllOpenOrders(scope: 'ALL' | 'FILTERED') {
+    setOrdersFeedback(null);
+    if (!manualAdminKey.trim()) {
+      setOrdersFeedback({ kind: 'error', text: 'Admin Key is required to cancel orders.' });
+      return;
+    }
+
+    const symbol = scope === 'FILTERED' && openOrderFilter !== 'ALL' ? openOrderFilter : undefined;
+    const confirmText = symbol
+      ? `Cancel all open orders for ${symbol}?`
+      : 'Cancel ALL open orders?';
+    if (typeof window !== 'undefined' && !window.confirm(confirmText)) return;
+
+    try {
+      const res = await fetchWithTimeout(`${API}/cancel-open-orders`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': manualAdminKey.trim(),
+        },
+        body: JSON.stringify(symbol ? { symbol } : {}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) {
+        setOrdersFeedback({ kind: 'error', text: `Bulk cancel failed: ${String(data?.error || 'cancel_open_orders_failed')}` });
+        return;
+      }
+
+      setOrdersFeedback({ kind: 'success', text: `Canceled ${Number(data?.canceledCount || 0)} order(s).` });
+      await loadDashboard();
+    } catch (e: any) {
+      setOrdersFeedback({ kind: 'error', text: e?.message || 'Failed to cancel open orders.' });
+    }
+  }
+
   useEffect(() => {
+    pingStatusFast();
     loadDashboard();
     loadMarket();
     if (typeof window !== 'undefined') {
       setUiBuildId((window as any)?.__NEXT_DATA__?.buildId || 'unknown');
     }
     const id = setInterval(() => {
+      pingStatusFast();
       loadDashboard();
       loadMarket();
     }, 5000);
@@ -598,7 +855,19 @@ export default function Home() {
   const recentTradeRows = journal
     .filter((j) => j.type === 'trade_close')
     .sort((a, b) => new Date(String(b.ts || 0)).getTime() - new Date(String(a.ts || 0)).getTime())
-    .slice(0, 12);
+    .slice(0, 20)
+    .map((j) => {
+      const rawDirection = String((j as any).positionSide || (j as any).direction || (j as any).side || '').toUpperCase();
+      const direction = rawDirection === 'BUY' ? 'LONG' : rawDirection === 'SELL' ? 'SHORT' : (rawDirection || '—');
+      const ts = String((j as any).closedAt || j.ts || '');
+      return {
+        ts,
+        symbol: String((j as any).symbol || '—'),
+        side: String((j as any).side || '—').toUpperCase(),
+        direction,
+        pnl: Number((j as any).pnl || 0),
+      };
+    });
   const aiDecisionRows = Array.from(
     new Map(
       journal
@@ -737,6 +1006,17 @@ export default function Home() {
   }, [aiDecisionRows, workerStatus?.lastRunAt, workerStatus?.lastAction, workerStatus?.lastReasonHuman, workerStatus?.lastReason]);
 
   const replayCursor = timelineEvents[Math.min(replayIndex, Math.max(0, timelineEvents.length - 1))] || null;
+  const isCompact = density === 'compact';
+  const tableTextClass = isCompact ? 'text-xs' : 'text-sm';
+  const headerPyClass = isCompact ? 'py-1.5' : 'py-2';
+  const rowPyClass = isCompact ? 'py-1.5' : 'py-2';
+  const rowEmptyPyClass = isCompact ? 'py-2' : 'py-3';
+  const actionBtnClass = isCompact ? 'px-1.5 py-0.5 text-[10px]' : 'px-2 py-1 text-[10px]';
+
+  const visibleOpenOrders = useMemo(() => {
+    if (openOrderFilter === 'ALL') return openOrders;
+    return openOrders.filter((o) => o.symbol === openOrderFilter);
+  }, [openOrders, openOrderFilter]);
 
   const postTradeQuality = useMemo(() => {
     const rows = recentTradeRows.slice(0, 8);
@@ -885,8 +1165,8 @@ export default function Home() {
       </Head>
 
       <div className="min-h-screen text-slate-100" style={{ fontFamily: 'IBM Plex Sans, Space Grotesk, sans-serif', background: 'radial-gradient(1200px 800px at 20% 0%, #1a2438 0%, #0b101a 40%, #05070c 100%)' }}>
-        <div className="mx-auto w-full max-w-[1420px] px-3 sm:px-4 md:px-6 py-4 md:py-5">
-          <header className="rounded-2xl border border-white/10 bg-slate-900/60 backdrop-blur-md p-4 md:p-5 shadow-2xl shadow-black/30">
+        <div className="mx-auto w-full max-w-[1420px] px-2 sm:px-3 md:px-5 lg:px-6 py-3 sm:py-4 md:py-5">
+          <header className="rounded-2xl border border-white/10 bg-slate-900/60 backdrop-blur-md p-3 sm:p-4 md:p-5 shadow-2xl shadow-black/30">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div className="flex flex-wrap items-center gap-4">
                 <div className="text-2xl sm:text-3xl font-bold tracking-wide" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
@@ -897,6 +1177,9 @@ export default function Home() {
                 <div className="text-slate-400 text-sm">Last update: {lastUpdated || '—'}</div>
               </div>
               <div className="flex items-center gap-3">
+                <button onClick={() => setDensity((d) => (d === 'compact' ? 'comfortable' : 'compact'))} className="rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 px-3 py-2 text-sm font-medium text-slate-200">
+                  Density: {isCompact ? 'Compact' : 'Comfortable'}
+                </button>
                 <button onClick={() => setRichExpanded((v) => !v)} className={`rounded-lg border px-3 py-2 text-sm font-medium ${richExpanded ? 'border-cyan-400/50 bg-cyan-500/10 text-cyan-200' : 'border-white/15 bg-white/5 hover:bg-white/10 text-slate-200'}`}>
                   {richExpanded ? 'Rich Intel: ON' : 'Rich Intel: OFF'}
                 </button>
@@ -905,10 +1188,10 @@ export default function Home() {
             </div>
           </header>
 
-          <main className="mt-5 space-y-5">
+          <main className="mt-4 sm:mt-5 space-y-4 sm:space-y-5">
             {error && <div className="rounded-xl border border-red-500/40 bg-red-900/30 px-4 py-3 text-red-100 text-sm">{error}</div>}
 
-            <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
+            <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-1.5 sm:gap-2">
               <TopMetric label="Binance Wallet Balance" value={walletBalance > 0 ? money(walletBalance) : '—'} />
               <TopMetric label="Available Margin" value={availableMargin > 0 ? money(availableMargin) : '—'} tone="green" />
               <TopMetric label="Daily P&L" value={typeof account.previousDayPnl === 'number' ? signedMoney(account.previousDayPnl) : '—'} tone={Number(account.previousDayPnl || 0) >= 0 ? 'green' : 'red'} />
@@ -919,7 +1202,7 @@ export default function Home() {
               </div>
             </section>
 
-            <section className="sticky top-2 z-20 rounded-2xl border border-cyan-400/30 bg-slate-900/85 backdrop-blur-md p-3 md:p-4 shadow-lg shadow-black/30">
+            <section className="sticky top-1 sm:top-2 z-20 rounded-2xl border border-cyan-400/30 bg-slate-900/85 backdrop-blur-md p-2.5 sm:p-3 md:p-4 shadow-lg shadow-black/30">
               <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3 text-sm">
                 <div>
                   <div className="text-[10px] uppercase tracking-wide text-slate-400">Decision</div>
@@ -944,7 +1227,7 @@ export default function Home() {
               </div>
             </section>
 
-            <section className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+            <section className="grid grid-cols-1 xl:grid-cols-12 gap-2 items-start">
               <Panel className="xl:col-span-4" title="Market & Risk Overview">
                 <div className="space-y-1">
                   {coins.map((c) => (
@@ -1014,6 +1297,60 @@ export default function Home() {
                     </tbody>
                   </table>
                 </div>
+
+                {richExpanded && (
+                  <div className="mt-2 grid grid-cols-1 gap-2">
+                    <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2.5">
+                      <div className="text-[10px] uppercase tracking-wide text-slate-400 mb-2">Post-Trade Quality Panel</div>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <MiniMetric label="Sample Size" value={`${postTradeQuality.sample}`} />
+                        <MiniMetric label="Win Rate" value={`${postTradeQuality.winRate}%`} />
+                        <MiniMetric label="Avg PnL" value={signedMoney(postTradeQuality.avgPnl)} />
+                        <MiniMetric label="Loss Count" value={`${postTradeQuality.losses}`} />
+                        <MiniMetric label="RR Achieved" value={postTradeQuality.rrAchieved} />
+                        <MiniMetric label="Rule Adherence" value={`${postTradeQuality.ruleAdherence}%`} />
+                      </div>
+                      <div className="mt-2 text-xs text-slate-300 rounded border border-white/10 bg-white/[0.02] p-2">
+                        Slippage: {postTradeQuality.slippage} (wire in exchange fill audit for exact value).
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2.5">
+                      <div className="text-[10px] uppercase tracking-wide text-slate-400 mb-2">Session Replay (Recent Cycles)</div>
+                      {timelineEvents.length === 0 ? (
+                        <div className="text-slate-400 text-sm">No replay events yet.</div>
+                      ) : (
+                        <>
+                          <input
+                            type="range"
+                            min={0}
+                            max={Math.max(0, timelineEvents.length - 1)}
+                            value={Math.min(replayIndex, Math.max(0, timelineEvents.length - 1))}
+                            onChange={(e) => setReplayIndex(Number(e.target.value || 0))}
+                            className="w-full"
+                          />
+                          {replayCursor && (
+                            <div className="mt-2 rounded-lg border border-white/10 bg-white/[0.03] p-2 text-sm">
+                              <div className="flex items-center justify-between">
+                                <div className={`font-semibold ${replayCursor.tone}`}>{replayCursor.label}</div>
+                                <div className="text-slate-400 text-xs">{new Date(replayCursor.ts).toLocaleTimeString()}</div>
+                              </div>
+                              <div className="mt-1 text-slate-200">{replayCursor.detail}</div>
+                            </div>
+                          )}
+                          <div className="mt-2 space-y-1 text-xs max-h-24 overflow-auto pr-1">
+                            {timelineEvents.slice(0, 8).map((evt, i) => (
+                              <div key={`${evt.ts}-${i}`} className="rounded border border-white/10 bg-white/[0.02] px-2 py-1">
+                                <span className={evt.tone}>{evt.label}</span>
+                                <span className="text-slate-400"> • {new Date(evt.ts).toLocaleTimeString()}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
               </Panel>
 
               <Panel className="xl:col-span-5" title="DeepSeek Decision Brain (Operator Mode)">
@@ -1068,7 +1405,7 @@ export default function Home() {
                     {triggerDiagnostics.items.slice(0, 5).map((item) => {
                       const state = item.passed ? 'passed' : (decision.label === 'TRADE' ? 'waiting' : 'failed');
                       return (
-                        <div key={item.key} className="rounded border border-white/10 bg-black/20 px-2 py-1.5">
+                        <div key={item.key} className="rounded border border-white/10 bg-white/[0.02] px-2 py-1.5">
                           <div className="flex items-center justify-between">
                             <span className="text-slate-200">{item.label}</span>
                             <span className={state === 'passed' ? 'text-emerald-300' : state === 'waiting' ? 'text-amber-300' : 'text-red-300'}>
@@ -1132,7 +1469,7 @@ export default function Home() {
                   <div className="uppercase tracking-wide text-indigo-300 mb-2">DeepSeek Scenario Engine</div>
                   <div className="space-y-2">
                     {deepseekScenarios.map((s, i) => (
-                      <div key={`${s.name}-${i}`} className="rounded border border-white/15 bg-black/20 p-2">
+                      <div key={`${s.name}-${i}`} className="rounded border border-white/15 bg-white/[0.02] p-2">
                         <div className="flex items-center justify-between">
                           <div className="font-semibold">{s.name}</div>
                           <div className="text-[10px] rounded border border-white/20 px-1.5 py-0.5">{s.action}</div>
@@ -1202,7 +1539,7 @@ export default function Home() {
 
                   <div>
                     <div className="text-slate-400 mb-1">Reason (human)</div>
-                    <div className="rounded border border-white/10 bg-black/20 px-3 py-2 text-slate-100 leading-relaxed">{reasonBreakdown.headline}</div>
+                    <div className="rounded border border-white/10 bg-white/[0.02] px-3 py-2 text-slate-100 leading-relaxed">{reasonBreakdown.headline}</div>
                   </div>
 
                   {reasonBreakdown.hasStructuredReasons && (
@@ -1210,7 +1547,7 @@ export default function Home() {
                       <div className="text-slate-400">By Symbol</div>
                       <div className="space-y-2">
                         {reasonBreakdown.bySymbol.map((item) => (
-                          <div key={`${item.symbol}-${item.reason}`} className="rounded border border-white/10 bg-black/20 px-3 py-2">
+                          <div key={`${item.symbol}-${item.reason}`} className="rounded border border-white/10 bg-white/[0.02] px-3 py-2">
                             <div className="text-[11px] font-semibold text-cyan-200">{item.symbol}</div>
                             <div className="text-slate-200 leading-relaxed">{item.reason}</div>
                           </div>
@@ -1236,26 +1573,117 @@ export default function Home() {
                     </div>
                   </div>
                   <div className="space-y-2 text-xs text-slate-200 max-h-44 overflow-auto pr-1">
-                    {filteredFeed.length ? filteredFeed.slice(0, 8).map((evt, i) => <div key={`${evt}-${i}`} className="whitespace-normal leading-relaxed rounded border border-white/10 bg-black/20 px-2 py-1.5">• {evt}</div>) : <div className="text-slate-400">No events for this filter.</div>}
+                    {filteredFeed.length ? filteredFeed.slice(0, 8).map((evt, i) => <div key={`${evt}-${i}`} className="whitespace-normal leading-relaxed rounded border border-white/10 bg-white/[0.02] px-2 py-1.5">• {evt}</div>) : <div className="text-slate-400">No events for this filter.</div>}
                   </div>
+                </div>
+
+                <div className="mt-3 rounded-lg border border-cyan-400/30 bg-cyan-500/10 p-3">
+                  <div className="text-[10px] uppercase tracking-wide text-cyan-300 mb-2">Manual Trade Entry</div>
+
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <label className="col-span-2">
+                      <div className="mb-1 text-slate-300">Admin Key</div>
+                      <input
+                        type="password"
+                        placeholder="Enter admin key"
+                        value={manualAdminKey}
+                        onChange={(e) => setManualAdminKey(e.target.value)}
+                        className="w-full rounded border border-white/20 bg-black/30 px-2 py-1.5 text-slate-100"
+                      />
+                    </label>
+
+                    <label>
+                      <div className="mb-1 text-slate-300">Symbol</div>
+                      <select value={manualSymbol} onChange={(e) => setManualSymbol(e.target.value as 'BTCUSDT' | 'ETHUSDT' | 'SOLUSDT')} className="w-full rounded border border-white/20 bg-black/30 px-2 py-1.5 text-slate-100">
+                        <option value="BTCUSDT">BTCUSDT</option>
+                        <option value="ETHUSDT">ETHUSDT</option>
+                        <option value="SOLUSDT">SOLUSDT</option>
+                      </select>
+                    </label>
+
+                    <label>
+                      <div className="mb-1 text-slate-300">Side</div>
+                      <select value={manualSide} onChange={(e) => setManualSide(e.target.value as 'BUY' | 'SELL')} className="w-full rounded border border-white/20 bg-black/30 px-2 py-1.5 text-slate-100">
+                        <option value="BUY">BUY</option>
+                        <option value="SELL">SELL</option>
+                      </select>
+                    </label>
+
+                    <label>
+                      <div className="mb-1 text-slate-300">Order Type</div>
+                      <select value={manualType} onChange={(e) => setManualType(e.target.value as 'MARKET' | 'LIMIT')} className="w-full rounded border border-white/20 bg-black/30 px-2 py-1.5 text-slate-100">
+                        <option value="MARKET">MARKET</option>
+                        <option value="LIMIT">LIMIT</option>
+                      </select>
+                    </label>
+
+                    <label>
+                      <div className="mb-1 text-slate-300">Quantity (optional)</div>
+                      <input type="number" placeholder="e.g. 0.01" value={manualQty} onChange={(e) => setManualQty(e.target.value)} className="w-full rounded border border-white/20 bg-black/30 px-2 py-1.5 text-slate-100" />
+                    </label>
+
+                    <label>
+                      <div className="mb-1 text-slate-300">Limit Price {manualType !== 'LIMIT' ? '(LIMIT only)' : ''}</div>
+                      <input type="number" placeholder="e.g. 67000" value={manualPrice} onChange={(e) => setManualPrice(e.target.value)} disabled={manualType !== 'LIMIT'} className="w-full rounded border border-white/20 bg-black/30 px-2 py-1.5 text-slate-100 disabled:opacity-50" />
+                    </label>
+
+                    <label>
+                      <div className="mb-1 text-slate-300">Leverage</div>
+                      <input type="number" placeholder="e.g. 5" value={manualLeverage} onChange={(e) => setManualLeverage(e.target.value)} className="w-full rounded border border-white/20 bg-black/30 px-2 py-1.5 text-slate-100" />
+                    </label>
+
+                    <label>
+                      <div className="mb-1 text-slate-300">Stop Loss</div>
+                      <input type="number" placeholder="e.g. 66500" value={manualStopLoss} onChange={(e) => setManualStopLoss(e.target.value)} className="w-full rounded border border-white/20 bg-black/30 px-2 py-1.5 text-slate-100" />
+                    </label>
+
+                    <label>
+                      <div className="mb-1 text-slate-300">Take Profit</div>
+                      <input type="number" placeholder="e.g. 68000" value={manualTakeProfit} onChange={(e) => setManualTakeProfit(e.target.value)} className="w-full rounded border border-white/20 bg-black/30 px-2 py-1.5 text-slate-100" />
+                    </label>
+
+                    <label>
+                      <div className="mb-1 text-slate-300">Confidence (%)</div>
+                      <input type="number" placeholder="1 - 100" value={manualConfidence} onChange={(e) => setManualConfidence(e.target.value)} className="w-full rounded border border-white/20 bg-black/30 px-2 py-1.5 text-slate-100" />
+                    </label>
+
+                    <label>
+                      <div className="mb-1 text-slate-300">Reason / Notes</div>
+                      <input type="text" placeholder="Why this trade?" value={manualReason} onChange={(e) => setManualReason(e.target.value)} className="w-full rounded border border-white/20 bg-black/30 px-2 py-1.5 text-slate-100" />
+                    </label>
+                  </div>
+
+                  {manualFeedback && (
+                    <div className={`mt-2 rounded border px-2 py-1.5 text-xs ${manualFeedback.kind === 'success' ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200' : 'border-red-400/40 bg-red-500/10 text-red-200'}`}>
+                      {manualFeedback.text}
+                    </div>
+                  )}
+
+                  <button
+                    onClick={submitManualTrade}
+                    disabled={manualSubmitting}
+                    className="mt-2 w-full rounded border border-cyan-300/40 bg-cyan-500/20 px-3 py-2 text-xs font-semibold text-cyan-100 hover:bg-cyan-500/30 disabled:opacity-50"
+                  >
+                    {manualSubmitting ? 'Submitting manual trade…' : 'Submit Manual Trade'}
+                  </button>
                 </div>
               </Panel>
             </section>
 
-            <section className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-              <Panel className="xl:col-span-8" title="Active Positions">
+            <section className="grid grid-cols-1 xl:grid-cols-12 gap-2 items-start">
+              <Panel className="xl:col-span-7" title="Active Positions">
                 <div className="overflow-x-auto -mx-1 px-1">
                 <table className="w-full min-w-[760px] text-sm">
                   <thead className="text-slate-400">
                     <tr>
-                      <th className="text-left py-2">Pair</th>
-                      <th className="text-left py-2">Side</th>
-                      <th className="text-right py-2">Size</th>
-                      <th className="text-right py-2">Entry</th>
-                      <th className="text-right py-2">Stop</th>
-                      <th className="text-left py-2">SL Status</th>
-                      <th className="text-right py-2">Secured (est)</th>
-                      <th className="text-right py-2">Actions</th>
+                      <th className={`text-left ${headerPyClass}`}>Pair</th>
+                      <th className={`text-left ${headerPyClass}`}>Side</th>
+                      <th className={`text-right ${headerPyClass}`}>Size</th>
+                      <th className={`text-right ${headerPyClass}`}>Entry</th>
+                      <th className={`text-right ${headerPyClass}`}>Stop</th>
+                      <th className={`text-left ${headerPyClass}`}>SL Status</th>
+                      <th className={`text-right ${headerPyClass}`}>Secured (est)</th>
+                      <th className={`text-right ${headerPyClass}`}>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1263,17 +1691,30 @@ export default function Home() {
                       <tr><td colSpan={8} className="py-3 text-slate-400">No active positions</td></tr>
                     ) : activeTradeRows.map((t, i) => (
                       <tr key={`${t.ts}-${i}`} className="border-t border-white/10">
-                        <td className="py-2 font-semibold">{t.symbol || '—'}</td>
-                        <td className={`py-2 ${String(t.side || '').toUpperCase() === 'LONG' ? 'text-emerald-300' : 'text-red-300'}`}>{String(t.side || '—').toUpperCase()}</td>
-                        <td className="py-2 text-right">{typeof t.qty === 'number' ? t.qty.toFixed(6) : '—'}</td>
-                        <td className="py-2 text-right">{typeof t.entry === 'number' ? t.entry.toFixed(2) : '—'}</td>
-                        <td className="py-2 text-right">{t.stop > 0 ? t.stop.toFixed(2) : '—'}</td>
-                        <td className={`py-2 ${t.slStatus === 'Locked Profit' ? 'text-emerald-300' : t.slStatus === 'Break-even' ? 'text-cyan-300' : 'text-slate-300'}`}>{t.slStatus}</td>
-                        <td className={`py-2 text-right font-semibold ${Number(t.secured || 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>{signedMoney(Number(t.secured || 0))}</td>
-                        <td className="py-2 text-right space-x-1">
-                          <button onClick={() => secureBreakEven(String(t.symbol || ''))} className="rounded border border-cyan-400/40 px-2 py-1 text-[10px] text-cyan-200 hover:bg-cyan-500/10">BE+0.1%</button>
-                          <button onClick={() => takePartial(String(t.symbol || ''), 10)} className="rounded border border-emerald-400/40 px-2 py-1 text-[10px] text-emerald-200 hover:bg-emerald-500/10">TP 10%</button>
-                          <button onClick={() => takePartial(String(t.symbol || ''), 30)} className="rounded border border-emerald-400/40 px-2 py-1 text-[10px] text-emerald-200 hover:bg-emerald-500/10">TP 30%</button>
+                        <td className="py-1.5 font-semibold">{t.symbol || '—'}</td>
+                        <td className={`py-1.5 ${String(t.side || '').toUpperCase() === 'LONG' ? 'text-emerald-300' : 'text-red-300'}`}>{String(t.side || '—').toUpperCase()}</td>
+                        <td className="py-1.5 text-right">{typeof t.qty === 'number' ? t.qty.toFixed(6) : '—'}</td>
+                        <td className="py-1.5 text-right">{typeof t.entry === 'number' ? t.entry.toFixed(2) : '—'}</td>
+                        <td className="py-1.5 text-right">{t.stop > 0 ? t.stop.toFixed(2) : '—'}</td>
+                        <td className={`py-1.5 ${t.slStatus === 'Locked Profit' ? 'text-emerald-300' : t.slStatus === 'Break-even' ? 'text-cyan-300' : 'text-slate-300'}`}>{t.slStatus}</td>
+                        <td className={`py-1.5 text-right font-semibold ${Number(t.secured || 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>{signedMoney(Number(t.secured || 0))}</td>
+                        <td className="py-1.5 text-right space-x-1">
+                          <button onClick={() => secureBreakEven(String(t.symbol || ''))} className="rounded border border-cyan-400/40 px-1.5 py-0.5 text-[10px] text-cyan-200 hover:bg-cyan-500/10">BE+0.1%</button>
+                          <button onClick={() => takePartial(String(t.symbol || ''), 10)} className="rounded border border-emerald-400/40 px-1.5 py-0.5 text-[10px] text-emerald-200 hover:bg-emerald-500/10">TP 10%</button>
+                          <button onClick={() => takePartial(String(t.symbol || ''), 30)} className="rounded border border-emerald-400/40 px-1.5 py-0.5 text-[10px] text-emerald-200 hover:bg-emerald-500/10">TP 30%</button>
+                          <input
+                            type="number"
+                            value={slDrafts[String(t.symbol || '')] ?? (Number(t.stop || 0) > 0 ? Number(t.stop).toFixed(2) : '')}
+                            onChange={(e) => setSlDrafts((prev) => ({ ...prev, [String(t.symbol || '')]: e.target.value }))}
+                            className="ml-1 w-24 rounded border border-white/20 bg-black/30 px-1.5 py-0.5 text-[10px] text-slate-100"
+                            placeholder="New SL"
+                          />
+                          <button
+                            onClick={() => updateStopLoss(String(t.symbol || ''), Number(t.stop || 0))}
+                            className="rounded border border-amber-400/40 px-1.5 py-0.5 text-[10px] text-amber-200 hover:bg-amber-500/10"
+                          >
+                            Update SL
+                          </button>
                         </td>
                       </tr>
                     ))}
@@ -1282,22 +1723,80 @@ export default function Home() {
                 </div>
               </Panel>
 
-              <Panel className="xl:col-span-4" title="Recent Trades">
+              <div className="xl:col-span-5 space-y-4">
+                <Panel title={`Open Orders (${openOrders.length})`}>
+                  <div className="text-[11px] text-slate-400 mb-2">Pending limit/working orders can be canceled from here.</div>
+                  <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+                    <label className="text-slate-300">Filter</label>
+                    <select value={openOrderFilter} onChange={(e) => setOpenOrderFilter(e.target.value as 'ALL' | 'BTCUSDT' | 'ETHUSDT' | 'SOLUSDT')} className="rounded border border-white/20 bg-black/30 px-2 py-1 text-slate-100">
+                      <option value="ALL">ALL</option>
+                      <option value="BTCUSDT">BTCUSDT</option>
+                      <option value="ETHUSDT">ETHUSDT</option>
+                      <option value="SOLUSDT">SOLUSDT</option>
+                    </select>
+                    <button onClick={() => cancelAllOpenOrders('FILTERED')} className="rounded border border-amber-400/40 px-2 py-1 text-[10px] text-amber-200 hover:bg-amber-500/10">Cancel Filtered</button>
+                    <button onClick={() => cancelAllOpenOrders('ALL')} className="rounded border border-red-400/40 px-2 py-1 text-[10px] text-red-200 hover:bg-red-500/10">Cancel All</button>
+                  </div>
+                  {ordersFeedback && (
+                    <div className={`mb-2 rounded border px-2 py-1.5 text-xs ${ordersFeedback.kind === 'success' ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200' : 'border-red-400/40 bg-red-500/10 text-red-200'}`}>
+                      {ordersFeedback.text}
+                    </div>
+                  )}
+                  <div className="overflow-x-auto -mx-1 px-1">
+                    <table className="w-full min-w-[420px] text-xs">
+                      <thead className="text-slate-400">
+                        <tr>
+                          <th className="text-left py-2">Symbol</th>
+                          <th className="text-left py-2">Side</th>
+                          <th className="text-right py-2">Price</th>
+                          <th className="text-right py-2">Qty</th>
+                          <th className="text-right py-2">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {visibleOpenOrders.length === 0 ? (
+                          <tr><td colSpan={5} className="py-3 text-slate-400">No open orders for this filter</td></tr>
+                        ) : visibleOpenOrders.map((o) => (
+                          <tr key={`${o.symbol}-${o.orderId}`} className="border-t border-white/10">
+                            <td className="py-2 font-semibold">{o.symbol}</td>
+                            <td className={`py-2 ${o.side === 'BUY' ? 'text-emerald-300' : 'text-red-300'}`}>{o.side}</td>
+                            <td className="py-2 text-right">{Number(o.price || 0) > 0 ? Number(o.price).toFixed(2) : 'MKT'}</td>
+                            <td className="py-2 text-right">{Number(o.origQty || 0).toFixed(4)}</td>
+                            <td className="py-2 text-right">
+                              <button onClick={() => cancelOpenOrder({ symbol: o.symbol, orderId: o.orderId })} className="rounded border border-red-400/40 px-2 py-1 text-[10px] text-red-200 hover:bg-red-500/10">Cancel</button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </Panel>
+
+              </div>
+
+            </section>
+
+            <section className="grid grid-cols-1 xl:grid-cols-12 gap-2 items-start">
+              <Panel className="xl:col-span-12" title="Recent Trades">
                 <div className="overflow-x-auto -mx-1 px-1">
-                <table className="w-full min-w-[320px] text-sm">
+                <table className={`w-full min-w-[900px] ${tableTextClass}`}>
                   <thead className="text-slate-400">
                     <tr>
+                      <th className="text-left py-2">Date / Time (AST)</th>
                       <th className="text-left py-2">Pair</th>
+                      <th className="text-left py-2">Direction</th>
                       <th className="text-left py-2">Side</th>
                       <th className="text-right py-2">PnL</th>
                     </tr>
                   </thead>
                   <tbody>
                     {recentTradeRows.length === 0 ? (
-                      <tr><td colSpan={3} className="py-3 text-slate-400">No closed trades yet</td></tr>
+                      <tr><td colSpan={5} className="py-3 text-slate-400">No closed trades yet</td></tr>
                     ) : recentTradeRows.map((t, i) => (
                       <tr key={`${t.ts}-${i}`} className="border-t border-white/10">
+                        <td className="py-2 text-slate-300">{formatDateTime(t.ts)}</td>
                         <td className="py-2 font-semibold">{t.symbol || '—'}</td>
+                        <td className={`py-2 ${String(t.direction).toUpperCase() === 'LONG' ? 'text-emerald-300' : String(t.direction).toUpperCase() === 'SHORT' ? 'text-red-300' : 'text-slate-300'}`}>{String(t.direction || '—').toUpperCase()}</td>
                         <td className={`py-2 ${String(t.side).toUpperCase() === 'BUY' ? 'text-emerald-300' : 'text-red-300'}`}>{String(t.side || '—').toUpperCase()}</td>
                         <td className={`py-2 text-right font-semibold ${Number(t.pnl || 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>{signedMoney(Number(t.pnl || 0))}</td>
                       </tr>
@@ -1306,72 +1805,19 @@ export default function Home() {
                 </table>
                 </div>
               </Panel>
-
             </section>
 
             {richExpanded && (
-            <section className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-              <Panel className="xl:col-span-5" title="Post-Trade Quality Panel">
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <MiniMetric label="Sample Size" value={`${postTradeQuality.sample}`} />
-                  <MiniMetric label="Win Rate" value={`${postTradeQuality.winRate}%`} />
-                  <MiniMetric label="Avg PnL" value={signedMoney(postTradeQuality.avgPnl)} />
-                  <MiniMetric label="Loss Count" value={`${postTradeQuality.losses}`} />
-                  <MiniMetric label="RR Achieved" value={postTradeQuality.rrAchieved} />
-                  <MiniMetric label="Rule Adherence" value={`${postTradeQuality.ruleAdherence}%`} />
-                </div>
-                <div className="mt-3 text-xs text-slate-300 rounded border border-white/10 bg-black/20 p-2">
-                  Slippage: {postTradeQuality.slippage} (wire in exchange fill audit for exact value).
-                </div>
-              </Panel>
-
-              <Panel className="xl:col-span-7" title="Session Replay (Recent Cycles)">
-                {timelineEvents.length === 0 ? (
-                  <div className="text-slate-400 text-sm">No replay events yet.</div>
-                ) : (
-                  <>
-                    <input
-                      type="range"
-                      min={0}
-                      max={Math.max(0, timelineEvents.length - 1)}
-                      value={Math.min(replayIndex, Math.max(0, timelineEvents.length - 1))}
-                      onChange={(e) => setReplayIndex(Number(e.target.value || 0))}
-                      className="w-full"
-                    />
-                    {replayCursor && (
-                      <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.03] p-3 text-sm">
-                        <div className="flex items-center justify-between">
-                          <div className={`font-semibold ${replayCursor.tone}`}>{replayCursor.label}</div>
-                          <div className="text-slate-400 text-xs">{new Date(replayCursor.ts).toLocaleTimeString()}</div>
-                        </div>
-                        <div className="mt-1 text-slate-200">{replayCursor.detail}</div>
-                      </div>
-                    )}
-                    <div className="mt-2 space-y-1 text-xs max-h-28 overflow-auto pr-1">
-                      {timelineEvents.slice(0, 8).map((evt, i) => (
-                        <div key={`${evt.ts}-${i}`} className="rounded border border-white/10 bg-black/20 px-2 py-1">
-                          <span className={evt.tone}>{evt.label}</span>
-                          <span className="text-slate-400"> • {new Date(evt.ts).toLocaleTimeString()}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </Panel>
-            </section>
-            )}
-
-            {richExpanded && (
-            <section className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+            <section className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
               <Panel className="xl:col-span-12" title="AI Trace + News">
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2.5">
                   <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2">
                     <div className="text-[10px] uppercase tracking-wide text-slate-400 mb-1">DeepSeek AI Decision Trace</div>
                     <div className="text-[11px] text-slate-400 mb-2">
                       Heartbeat: {workerStatus?.aiLastHeartbeatAt ? new Date(workerStatus.aiLastHeartbeatAt).toLocaleTimeString() : '—'}
                       {workerStatus?.fallbackMode ? <span className="ml-2 text-amber-300">(STALE/FALLBACK)</span> : <span className="ml-2 text-emerald-300">(LIVE)</span>}
                     </div>
-                    <div className="space-y-1 text-xs max-h-64 overflow-auto pr-1">
+                    <div className="space-y-1 text-xs max-h-56 overflow-auto pr-1">
                       {aiDecisionRows.length === 0 ? (
                         <div className="text-slate-400">No AI decision logs yet.</div>
                       ) : aiDecisionRows.map((r, i) => (
@@ -1389,7 +1835,7 @@ export default function Home() {
 
                   <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2">
                     <div className="text-[10px] uppercase tracking-wide text-slate-400 mb-1">DeepSeek Position Monitor</div>
-                    <div className="space-y-1 text-xs max-h-64 overflow-auto pr-1">
+                    <div className="space-y-1 text-xs max-h-56 overflow-auto pr-1">
                       {aiPositionFeedbackRows.length === 0 ? (
                         <div className="text-slate-400">No active AI position feedback.</div>
                       ) : aiPositionFeedbackRows.map((r: any, i: number) => (
@@ -1407,7 +1853,7 @@ export default function Home() {
 
                   <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2">
                     <div className="text-[10px] uppercase tracking-wide text-slate-400 mb-1">AI Conversation Stream</div>
-                    <div className="space-y-1 text-xs max-h-64 overflow-auto pr-1">
+                    <div className="space-y-1 text-xs max-h-56 overflow-auto pr-1">
                       {aiConversationRows.length === 0 ? (
                         <div className="text-slate-400">No conversation cycles yet.</div>
                       ) : aiConversationRows.map((r: any, i: number) => (
@@ -1438,9 +1884,9 @@ export default function Home() {
                 <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
                     <div className="text-[10px] uppercase tracking-wide text-slate-400 mb-2">DeepSeek Operator Feed</div>
-                    <div className="space-y-2 text-xs max-h-48 overflow-auto pr-1">
+                    <div className="space-y-2 text-xs max-h-44 overflow-auto pr-1">
                       {deepseekOperatorFeed.map((row, i) => (
-                        <div key={`${row.ts}-${i}`} className="rounded border border-white/10 bg-black/20 px-2 py-1.5">
+                        <div key={`${row.ts}-${i}`} className="rounded border border-white/10 bg-white/[0.02] px-2 py-1.5">
                           <div className="text-slate-200">{row.text}</div>
                           <div className="text-cyan-300 text-[11px] mt-1">Δ {row.delta || 'no change'}</div>
                         </div>
@@ -1450,9 +1896,9 @@ export default function Home() {
 
                   <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
                     <div className="text-[10px] uppercase tracking-wide text-slate-400 mb-2">DeepSeek Learning Loop</div>
-                    <div className="space-y-2 text-xs max-h-48 overflow-auto pr-1">
+                    <div className="space-y-2 text-xs max-h-44 overflow-auto pr-1">
                       {deepseekLearningLoop.map((row, i) => (
-                        <div key={`${row.lesson}-${i}`} className="rounded border border-white/10 bg-black/20 px-2 py-1.5">
+                        <div key={`${row.lesson}-${i}`} className="rounded border border-white/10 bg-white/[0.02] px-2 py-1.5">
                           <div className="text-slate-200">{row.lesson}</div>
                           <div className="text-amber-200 mt-1">Next tweak: {row.tweak}</div>
                         </div>
@@ -1465,7 +1911,7 @@ export default function Home() {
             )}
           </main>
 
-          <footer className="mt-8 border-t border-white/10 pt-5 text-center text-sm text-slate-400">
+          <footer className="mt-3 border-t border-white/10 pt-2.5 text-center text-sm text-slate-400">
             <p>© 2024 Helix.One - All rights reserved.</p>
             <p className="mt-1">Powered by the Helix Engine • Real-time algorithmic trading</p>
             <p className="mt-1">Built by Darren Headley</p>
@@ -1511,7 +1957,7 @@ function LiveBlock({ title, items, tone }: { title: string; items: string[]; ton
 
 function Panel({ title, className = '', children }: { title: string; className?: string; children: React.ReactNode }) {
   return (
-    <section className={`rounded-2xl border border-white/10 bg-slate-900/60 backdrop-blur-md p-3 sm:p-4 shadow-xl shadow-black/30 ${className}`}>
+    <section className={`self-start h-auto rounded-2xl border border-white/10 bg-slate-900/60 backdrop-blur-md p-3 sm:p-4 shadow-xl shadow-black/30 ${className}`}>
       <h2 className="text-lg sm:text-xl font-semibold mb-3" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{title}</h2>
       {children}
     </section>
@@ -1521,7 +1967,7 @@ function Panel({ title, className = '', children }: { title: string; className?:
 function TopMetric({ label, value, tone = 'default' }: { label: string; value: string; tone?: 'default' | 'green' | 'red' }) {
   const toneClass = tone === 'green' ? 'text-emerald-300' : tone === 'red' ? 'text-red-300' : 'text-slate-100';
   return (
-    <div className="rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-md px-3 sm:px-4 py-3">
+    <div className="rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-md px-2.5 sm:px-3 py-2">
       <div className="text-[11px] uppercase tracking-wider text-slate-400">{label}</div>
       <div className={`text-2xl sm:text-3xl font-semibold mt-1 ${toneClass}`} style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{value}</div>
     </div>
@@ -1583,4 +2029,17 @@ function money(v: number) {
 
 function signedMoney(v: number) {
   return `${v >= 0 ? '+' : '-'}$${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+}
+
+function formatDateTime(ts: string | undefined) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return '—';
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mi = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
 }

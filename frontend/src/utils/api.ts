@@ -1,4 +1,4 @@
-const DEFAULT_LOCAL_TRADING_API = 'http://localhost:3001/api/trading';
+const DEFAULT_LOCAL_TRADING_API = 'http://127.0.0.1:3001/api/trading';
 
 function stripTrailingSlashes(value: string): string {
   return value.replace(/\/+$/, '');

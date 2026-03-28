@@ -110,6 +110,28 @@ class TradingApiService {
     });
   }
 
+  async submitManualTrade(
+    payload: {
+      symbol: string;
+      side: 'BUY' | 'SELL';
+      type?: 'MARKET' | 'LIMIT';
+      quantity?: number;
+      price?: number;
+      stopLoss?: number;
+      takeProfit?: number;
+      leverage?: number;
+      confidence: number;
+      reason: string;
+    },
+    adminKey: string
+  ) {
+    return this.request('/manual-trade', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-admin-key': adminKey },
+      body: JSON.stringify(payload),
+    });
+  }
+
   async helixEvaluate(payload: any, adminKey: string) {
     return this.request('/helix/evaluate', {
       method: 'POST',

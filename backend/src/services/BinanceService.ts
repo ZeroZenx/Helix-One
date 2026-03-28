@@ -65,6 +65,8 @@ export class BinanceService {
   private client: AxiosInstance;
   private config: BinanceConfig;
   private symbolFiltersCache: Map<string, { stepSize?: number; tickSize?: number; minQty?: number; minNotional?: number }> = new Map();
+  private timeOffsetMs = 0;
+  private lastTimeSyncAt = 0;
 
   constructor(config: BinanceConfig) {
     this.config = {
@@ -83,7 +85,7 @@ export class BinanceService {
     // Add request interceptor for signed/private endpoints.
     this.client.interceptors.request.use((config) => {
       if (this.requiresAuth(config.url || '')) {
-        const timestamp = Date.now();
+        const timestamp = Date.now() + this.timeOffsetMs;
         const method = String(config.method || 'get').toLowerCase();
 
         // Binance signed futures endpoints expect signed query params.
@@ -97,6 +99,7 @@ export class BinanceService {
           ...(config.params || {}),
           ...dataParams,
           timestamp,
+          recvWindow: 60000,
         } as Record<string, any>;
 
         const params = Object.fromEntries(
@@ -149,14 +152,52 @@ export class BinanceService {
       .digest('hex');
   }
 
+  private isTimestampError(error: any): boolean {
+    const code = Number(error?.response?.data?.code);
+    const msg = String(error?.response?.data?.msg || error?.message || '').toLowerCase();
+    return code === -1021 || msg.includes('recvwindow') || msg.includes('timestamp');
+  }
+
+  private async syncServerTime(force = false): Promise<void> {
+    const now = Date.now();
+    if (!force && now - this.lastTimeSyncAt < 60_000) return;
+
+    try {
+      const response = await this.client.get('/fapi/v1/time');
+      const serverTime = Number(response?.data?.serverTime);
+      if (Number.isFinite(serverTime)) {
+        this.timeOffsetMs = serverTime - Date.now();
+        this.lastTimeSyncAt = now;
+      }
+    } catch {
+      // keep existing offset if sync fails
+    }
+  }
+
+  private async withAuthRetry<T>(op: () => Promise<T>): Promise<T> {
+    try {
+      return await op();
+    } catch (error: any) {
+      if (this.isTimestampError(error)) {
+        await this.syncServerTime(true);
+        return await op();
+      }
+      throw error;
+    }
+  }
+
+  private errorMessage(error: any, fallback: string): string {
+    return String(error?.response?.data?.msg || error?.message || fallback);
+  }
+
   // Get account information
   async getAccountInfo(): Promise<AccountInfo> {
     try {
-      const response = await this.client.get('/fapi/v2/account');
+      const response = await this.withAuthRetry(() => this.client.get('/fapi/v2/account'));
       return response.data;
     } catch (error: any) {
-      console.error('Error fetching account info:', error);
-      const detail = error?.response?.data?.msg || error?.message || 'Failed to fetch account information';
+      const detail = this.errorMessage(error, 'Failed to fetch account information');
+      console.error('Error fetching account info:', detail);
       throw new Error(detail);
     }
   }
@@ -165,11 +206,12 @@ export class BinanceService {
   async getPositions(symbol?: string): Promise<PositionInfo[]> {
     try {
       const params = symbol ? { symbol } : {};
-      const response = await this.client.get('/fapi/v2/positionRisk', { params });
+      const response = await this.withAuthRetry(() => this.client.get('/fapi/v2/positionRisk', { params }));
       return response.data;
-    } catch (error) {
-      console.error('Error fetching positions:', error);
-      throw new Error('Failed to fetch positions');
+    } catch (error: any) {
+      const detail = this.errorMessage(error, 'Failed to fetch positions');
+      console.error('Error fetching positions:', detail);
+      throw new Error(detail);
     }
   }
 
@@ -207,13 +249,27 @@ export class BinanceService {
   // Cancel an order
   async cancelOrder(symbol: string, orderId: number): Promise<any> {
     try {
-      const response = await this.client.delete('/fapi/v1/order', {
+      const response = await this.withAuthRetry(() => this.client.delete('/fapi/v1/order', {
         params: { symbol, orderId }
-      });
+      }));
       return response.data;
-    } catch (error) {
-      console.error('Error canceling order:', error);
-      throw new Error('Failed to cancel order');
+    } catch (error: any) {
+      const detail = this.errorMessage(error, 'Failed to cancel order');
+      console.error('Error canceling order:', detail);
+      throw new Error(detail);
+    }
+  }
+
+  // Get open orders
+  async getOpenOrders(symbol?: string): Promise<any[]> {
+    try {
+      const params = symbol ? { symbol } : {};
+      const response = await this.withAuthRetry(() => this.client.get('/fapi/v1/openOrders', { params }));
+      return Array.isArray(response.data) ? response.data : [];
+    } catch (error: any) {
+      const detail = this.errorMessage(error, 'Failed to fetch open orders');
+      console.error('Error fetching open orders:', detail);
+      throw new Error(detail);
     }
   }
 
@@ -236,9 +292,10 @@ export class BinanceService {
         params: { symbol }
       });
       return parseFloat(response.data.price);
-    } catch (error) {
-      console.error('Error fetching current price:', error);
-      throw new Error('Failed to fetch current price');
+    } catch (error: any) {
+      const detail = this.errorMessage(error, 'Failed to fetch current price');
+      console.error('Error fetching current price:', detail);
+      throw new Error(detail);
     }
   }
 

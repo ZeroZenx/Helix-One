@@ -718,6 +718,97 @@ export class LiveTradingService extends EventEmitter {
     return this.binance.getAccountInfo();
   }
 
+  async getOpenOrders(symbol?: string) {
+    return this.binance.getOpenOrders(symbol);
+  }
+
+  async cancelOpenOrder(symbol: string, orderId: number) {
+    return this.binance.cancelOrder(symbol, orderId);
+  }
+
+  async updateStopLoss(modelId: string, symbol: string, stopLoss: number) {
+    const account = this.modelAccounts.get(modelId);
+    if (!account) throw new Error('model_not_found');
+
+    const pos = account.positions.find((p) => String(p.symbol).toUpperCase() === String(symbol).toUpperCase());
+    if (!pos) throw new Error('position_not_found');
+    if (!Number.isFinite(stopLoss) || stopLoss <= 0) throw new Error('invalid_stop_loss');
+
+    const binanceSymbol = pos.symbol.endsWith('USDT') ? pos.symbol : `${pos.symbol}USDT`;
+    const closeSide: 'BUY' | 'SELL' = pos.side === 'LONG' ? 'SELL' : 'BUY';
+    const qty = Number(pos.size || 0);
+
+    try {
+      const orders = await this.binance.getOpenOrders(binanceSymbol);
+      for (const o of orders) {
+        const t = String(o?.type || '').toUpperCase();
+        const s = String(o?.side || '').toUpperCase();
+        const status = String(o?.status || '').toUpperCase();
+        const orderId = Number(o?.orderId);
+        if (status !== 'NEW' || !Number.isFinite(orderId) || orderId <= 0) continue;
+        if (!t.includes('STOP') || s !== closeSide) continue;
+        try { await this.binance.cancelOrder(binanceSymbol, orderId); } catch {}
+      }
+    } catch {}
+
+    const retries = Math.max(1, this.config.stopPlacementRetries ?? 2);
+    const ladder: Array<{ endpoint: string; make: (i: number) => OrderParams }> = [
+      {
+        endpoint: '/papi/v1/um/order',
+        make: (i) => ({
+          symbol: binanceSymbol,
+          side: closeSide,
+          type: 'STOP_MARKET',
+          stopPrice: stopLoss,
+          closePosition: true,
+          workingType: 'MARK_PRICE',
+          newClientOrderId: `${modelId}_manualsl_papi_${Date.now()}_${i}`,
+        } as OrderParams),
+      },
+      {
+        endpoint: '/papi/v1/um/order',
+        make: (i) => ({
+          symbol: binanceSymbol,
+          side: closeSide,
+          type: 'STOP_MARKET',
+          stopPrice: stopLoss,
+          quantity: qty > 0 ? qty : undefined,
+          reduceOnly: true,
+          workingType: 'MARK_PRICE',
+          newClientOrderId: `${modelId}_manualsl_ro_${Date.now()}_${i}`,
+        } as OrderParams),
+      },
+    ];
+
+    let placed = false;
+    for (const variant of ladder) {
+      for (let i = 0; i < retries; i += 1) {
+        try {
+          await this.binance.placeOrderAt(variant.endpoint, variant.make(i));
+          placed = true;
+          break;
+        } catch {
+          // try next variant/retry
+        }
+      }
+      if (placed) break;
+    }
+
+    if (!placed) throw new Error('stop_update_exchange_failed');
+
+    pos.stopLoss = stopLoss;
+
+    this.journal.append({
+      ts: new Date().toISOString(),
+      type: 'manual_stop_update',
+      modelId,
+      symbol: pos.symbol,
+      stopLoss,
+    });
+
+    return { success: true, symbol: pos.symbol, stopLoss };
+  }
+
   getAllModelAccounts(): ModelTradingAccount[] {
     return Array.from(this.modelAccounts.values());
   }
