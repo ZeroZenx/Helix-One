@@ -17,6 +17,9 @@ export interface TradingConfig {
   minConfidence?: number;
   maxUnprotectedPositionSeconds?: number;
   stopPlacementRetries?: number;
+  breakEvenEnabled?: boolean;
+  breakEvenTriggerR?: number;
+  breakEvenBufferPct?: number;
 }
 
 export interface TradeSignal {
@@ -40,6 +43,8 @@ export interface ModelTradingAccount {
   allocatedBalance: number;
   currentBalance: number;
   lastTradeDay?: string;
+  realizedPnL: number;
+  dailyRealizedPnL: number;
   positions: Array<{
     symbol: string;
     side: 'LONG' | 'SHORT';
@@ -97,6 +102,8 @@ export class LiveTradingService extends EventEmitter {
       modelName,
       allocatedBalance,
       currentBalance: allocatedBalance,
+      realizedPnL: 0,
+      dailyRealizedPnL: 0,
       positions: [],
       totalPnL: 0,
       winRate: 0,
@@ -208,6 +215,7 @@ export class LiveTradingService extends EventEmitter {
     if (account.lastTradeDay !== utcDay) {
       account.tradesToday = 0;
       account.dailyPnl = 0;
+      account.dailyRealizedPnL = 0;
       account.lastTradeDay = utcDay;
     }
 
@@ -240,7 +248,7 @@ export class LiveTradingService extends EventEmitter {
     }
 
     const dailyLossLimit = account.allocatedBalance * this.config.maxDailyLoss;
-    if (Math.abs(account.dailyPnl) >= dailyLossLimit) {
+    if (Math.abs(Math.min(account.dailyPnl, 0)) >= dailyLossLimit) {
       return { ok: false, reason: 'daily_loss_limit' };
     }
 
@@ -495,6 +503,29 @@ export class LiveTradingService extends EventEmitter {
           position.pnl = priceDiff * position.size * position.leverage;
 
           // hard stop-loss / take-profit auto close
+          const riskPerUnit = position.stopLoss ? Math.abs(position.entryPrice - position.stopLoss) : 0;
+          const breakEvenTriggerR = this.config.breakEvenTriggerR ?? 1;
+          const breakEvenBufferPct = this.config.breakEvenBufferPct ?? 0;
+          const breakEvenEnabled = Boolean(this.config.breakEvenEnabled);
+          if (breakEvenEnabled && riskPerUnit > 0) {
+            const favorableMove = position.side === 'LONG'
+              ? currentPrice - position.entryPrice
+              : position.entryPrice - currentPrice;
+            const achievedR = favorableMove / riskPerUnit;
+            const breakEvenStop = position.side === 'LONG'
+              ? position.entryPrice * (1 + breakEvenBufferPct)
+              : position.entryPrice * (1 - breakEvenBufferPct);
+            const shouldAdvance = achievedR >= breakEvenTriggerR;
+            const improvesStop = !position.stopLoss || (
+              position.side === 'LONG'
+                ? breakEvenStop > position.stopLoss
+                : breakEvenStop < position.stopLoss
+            );
+            if (shouldAdvance && improvesStop) {
+              position.stopLoss = breakEvenStop;
+            }
+          }
+
           const stopHit = position.stopLoss ? ((position.side === 'LONG' && currentPrice <= position.stopLoss) || (position.side === 'SHORT' && currentPrice >= position.stopLoss)) : false;
           const tpHit = position.takeProfit ? ((position.side === 'LONG' && currentPrice >= position.takeProfit) || (position.side === 'SHORT' && currentPrice <= position.takeProfit)) : false;
 
@@ -636,8 +667,9 @@ export class LiveTradingService extends EventEmitter {
         }
       }
 
-      account.totalPnL = account.positions.reduce((sum, pos) => sum + pos.pnl, 0);
-      account.dailyPnl = account.totalPnL;
+      const openPnL = account.positions.reduce((sum, pos) => sum + pos.pnl, 0);
+      account.totalPnL = account.realizedPnL + openPnL;
+      account.dailyPnl = account.dailyRealizedPnL + openPnL;
       account.currentBalance = account.allocatedBalance + account.totalPnL;
 
       const drawdownPct = (account.allocatedBalance - account.currentBalance) / account.allocatedBalance;
@@ -669,6 +701,8 @@ export class LiveTradingService extends EventEmitter {
 
     const pnl = position.pnl;
     account.positions.splice(index, 1);
+    account.realizedPnL += pnl;
+    account.dailyRealizedPnL += pnl;
 
     if (pnl <= 0) {
       account.consecutiveLosses += 1;
@@ -679,6 +713,10 @@ export class LiveTradingService extends EventEmitter {
       account.cooldownUntil = undefined;
     }
     account.lastTradeDay = new Date().toISOString().slice(0, 10);
+    const openPnL = account.positions.reduce((sum, pos) => sum + pos.pnl, 0);
+    account.totalPnL = account.realizedPnL + openPnL;
+    account.dailyPnl = account.dailyRealizedPnL + openPnL;
+    account.currentBalance = account.allocatedBalance + account.totalPnL;
 
     this.journal.append({
       ts: new Date().toISOString(),

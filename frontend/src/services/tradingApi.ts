@@ -21,6 +21,8 @@ export interface ModelAccount {
   modelName: string;
   allocatedBalance: number;
   currentBalance: number;
+  realizedPnL?: number;
+  dailyPnl?: number;
   positions: Array<{
     symbol: string;
     side: 'LONG' | 'SHORT';
@@ -42,6 +44,19 @@ export interface TradingStatus {
   connected: boolean;
   enabled: boolean;
   accounts: number;
+}
+
+export interface SymbolExecutionProfile {
+  symbol: string;
+  minConfidencePct: number;
+  maxLeverage: number;
+  stopDistancePct: number;
+  targetR: number;
+  sizeMultiplier: number;
+  spreadCeilingBps: number;
+  notes: string[];
+  tradable: boolean;
+  watchlistOnly: boolean;
 }
 
 class TradingApiService {
@@ -66,6 +81,10 @@ class TradingApiService {
 
   async getModelAccounts(): Promise<ModelAccount[]> {
     return this.request('/accounts');
+  }
+
+  async getSymbolProfiles(): Promise<{ success: boolean; executionSymbols: string[]; profiles: SymbolExecutionProfile[]; watchlist: Array<{ symbol: string; tradable: boolean; watchlistOnly: boolean }> }> {
+    return this.request('/symbol-profiles');
   }
 
   async getModelAccount(modelId: string): Promise<ModelAccount> {

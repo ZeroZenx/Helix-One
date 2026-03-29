@@ -36,7 +36,7 @@ let lastWorkerReason: string = 'not_started';
 let lastWorkerReasonHuman: string = 'Worker has not started yet.';
 let armedTrigger: { key: string; cyclesWithoutFill: number; armedAt: number } | null = null;
 const STALE_TRIGGER_MAX_CYCLES = 5;
-const EXECUTION_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
+const DEFAULT_EXECUTION_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'DOGEUSDT', 'BNBUSDT'];
 const AI_FRESHNESS_MAX_MS = Math.max(60_000, Number(process.env.AI_FRESHNESS_MAX_MS || 5 * 60_000));
 let lastAiDecisionAt: string | null = null;
 let lastExecutionSource: 'RULES' | 'AI' | 'HYBRID' = 'HYBRID';
@@ -50,6 +50,97 @@ let lastAiGateDecision: 'TRADE' | 'NO_TRADE' | 'N/A' = 'N/A';
 let lastFinalExecutionDecision: 'TRADE' | 'NO_TRADE' = 'NO_TRADE';
 let lastAiConversations: Array<{ ts: string; symbol: string; promptSummary: string; responseSummary: string; confidence: number; delta: string }> = [];
 const prevAiBySymbol = new Map<string, { decision: string; confidence: number; reason: string }>();
+
+function getExecutionSymbols() {
+  const configured = (settingsStore.get().riskSettings as any)?.tradeSymbols;
+  if (Array.isArray(configured) && configured.length > 0) {
+    return configured
+      .map((s: any) => String(s || '').trim().toUpperCase())
+      .filter((s: string) => Boolean(s));
+  }
+  return DEFAULT_EXECUTION_SYMBOLS;
+}
+
+function getSymbolExecutionProfile(symbol: string) {
+  const key = String(symbol || '').toUpperCase();
+  const profiles: Record<string, {
+    minConfidencePct: number;
+    maxLeverage: number;
+    stopDistancePct: number;
+    targetR: number;
+    sizeMultiplier: number;
+    spreadCeilingBps: number;
+    notes: string[];
+  }> = {
+    BTCUSDT: {
+      minConfidencePct: 70,
+      maxLeverage: 5,
+      stopDistancePct: 0.005,
+      targetR: 2.2,
+      sizeMultiplier: 1,
+      spreadCeilingBps: 8,
+      notes: ['primary_symbol', 'allows_full_risk_budget'],
+    },
+    ETHUSDT: {
+      minConfidencePct: 72,
+      maxLeverage: 4,
+      stopDistancePct: 0.0055,
+      targetR: 2.0,
+      sizeMultiplier: 0.85,
+      spreadCeilingBps: 9,
+      notes: ['secondary_symbol', 'slightly_reduced_size'],
+    },
+    XRPUSDT: {
+      minConfidencePct: 75,
+      maxLeverage: 3,
+      stopDistancePct: 0.007,
+      targetR: 2.0,
+      sizeMultiplier: 0.65,
+      spreadCeilingBps: 10,
+      notes: ['alt_symbol_stricter_gate', 'reduced_size'],
+    },
+    DOGEUSDT: {
+      minConfidencePct: 78,
+      maxLeverage: 2,
+      stopDistancePct: 0.009,
+      targetR: 2.2,
+      sizeMultiplier: 0.5,
+      spreadCeilingBps: 12,
+      notes: ['meme_symbol_high_noise', 'smallest_size'],
+    },
+    BNBUSDT: {
+      minConfidencePct: 74,
+      maxLeverage: 3,
+      stopDistancePct: 0.006,
+      targetR: 2.0,
+      sizeMultiplier: 0.7,
+      spreadCeilingBps: 8,
+      notes: ['exchange_beta_symbol', 'moderate_size'],
+    },
+  };
+  return profiles[key] || {
+    minConfidencePct: 75,
+    maxLeverage: 2,
+    stopDistancePct: 0.006,
+    targetR: 2,
+    sizeMultiplier: 0.5,
+    spreadCeilingBps: 8,
+    notes: ['fallback_profile'],
+  };
+}
+
+function getExecutionSymbolProfiles() {
+  return getExecutionSymbols().map((symbol) => ({
+    symbol,
+    ...getSymbolExecutionProfile(symbol),
+    tradable: true,
+    watchlistOnly: false,
+  }));
+}
+
+function getWatchlistSymbols() {
+  return ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB'];
+}
 
 function keepOrUpdateSecret(currentValue: string, nextValue: unknown): string {
   if (typeof nextValue !== 'string') return currentValue;
@@ -275,6 +366,9 @@ function buildTradingConfigFromSettings(): TradingConfig {
     minConfidence: s.riskSettings.minConfidence,
     maxUnprotectedPositionSeconds: 15,
     stopPlacementRetries: 4,
+    breakEvenEnabled: Boolean((s.riskSettings as any).breakEvenEnabled),
+    breakEvenTriggerR: Number((s.riskSettings as any).breakEvenTriggerR || 1),
+    breakEvenBufferPct: Number((s.riskSettings as any).breakEvenBufferPct || 0),
   };
 }
 
@@ -334,7 +428,8 @@ function startExecutionWorker() {
       const availableMargin = Number(exchangeAccount?.availableBalance || 0);
       const portfolio = svc.getModelAccount('1');
 
-      const snapshot = await riskIntel.getSnapshot(EXECUTION_SYMBOLS);
+      const executionSymbols = getExecutionSymbols();
+      const snapshot = await riskIntel.getSnapshot(executionSymbols);
       const runtimeContext = {
         generatedAt: snapshot.generatedAt,
         account: {
@@ -375,9 +470,9 @@ function startExecutionWorker() {
       };
 
       const symbolRejects: Array<{ symbol: string; reason: string }> = [];
-      const selectedCandidates: Array<{ plan: any; confidence: number; sideSource: 'AI' | 'RULES'; side: 'BUY' | 'SELL' }> = [];
+      const selectedCandidates: Array<{ plan: any; confidence: number; sideSource: 'AI' | 'RULES'; side: 'BUY' | 'SELL'; profile: ReturnType<typeof getSymbolExecutionProfile> }> = [];
 
-      for (const symbol of EXECUTION_SYMBOLS) {
+      for (const symbol of executionSymbols) {
         const symbolFunding = snapshot.funding.find((x) => x.symbol === symbol) || snapshot.funding[0];
         const currentPrice = Number(symbolFunding?.markPrice || 0);
         if (currentPrice <= 0) {
@@ -385,8 +480,13 @@ function startExecutionWorker() {
           continue;
         }
 
-        const stopDistance = currentPrice * 0.005;
+        const profile = getSymbolExecutionProfile(symbol);
+        const stopDistance = currentPrice * profile.stopDistancePct;
         const micro = (snapshot as any).microstructure?.find((m: any) => m.symbol === symbol) || {};
+        if (Number(micro.spreadBps || 0) > profile.spreadCeilingBps) {
+          symbolRejects.push({ symbol, reason: `spread_above_symbol_limit:${Number(micro.spreadBps || 0).toFixed(2)}>${profile.spreadCeilingBps}` });
+          continue;
+        }
         const aiDecision = await aiService.getStructuredTradingDecision(
           symbol,
           { current: currentPrice, change: Number(micro.change24hPct || 0) },
@@ -406,6 +506,16 @@ function startExecutionWorker() {
             ...runtimeContext,
             notes: [
               ...(runtimeContext.notes || []),
+              `symbol_profile=${JSON.stringify({
+                symbol,
+                minConfidencePct: profile.minConfidencePct,
+                maxLeverage: profile.maxLeverage,
+                stopDistancePct: profile.stopDistancePct,
+                targetR: profile.targetR,
+                sizeMultiplier: profile.sizeMultiplier,
+                spreadCeilingBps: profile.spreadCeilingBps,
+                notes: profile.notes,
+              })}`,
               `symbol_microstructure=${JSON.stringify({
                 symbol,
                 spreadBps: Number(micro.spreadBps || 0),
@@ -464,7 +574,7 @@ function startExecutionWorker() {
           ? (aiDecision.side === 'SHORT' ? 'SELL' : aiDecision.side === 'LONG' ? 'BUY' : ruleSide)
           : ruleSide;
         const sideSource: 'AI' | 'RULES' = aiDecision.side ? 'AI' : 'RULES';
-        const trendStrength = Math.max(35, Math.min(95, Number(aiDecision.confidence || snapshot.regimeConfidence || 50)));
+        const trendStrength = Math.max(profile.minConfidencePct - 5, Math.min(95, Number(aiDecision.confidence || snapshot.regimeConfidence || 50)));
         const volatilityPct = snapshot.volatilityState === 'high' ? 2.6 : snapshot.volatilityState === 'low' ? 1.0 : 1.8;
         const spreadBps = snapshot.liquidityState === 'poor' ? 15 : snapshot.liquidityState === 'acceptable' ? 8 : 4;
         const volumeScore = snapshot.liquidityState === 'good' ? 75 : snapshot.liquidityState === 'acceptable' ? 55 : 30;
@@ -474,9 +584,9 @@ function startExecutionWorker() {
           side,
           entry: aiDecision.entry ?? currentPrice,
           stopLoss: aiDecision.stop_loss ?? (side === 'BUY' ? currentPrice - stopDistance : currentPrice + stopDistance),
-          takeProfit: aiDecision.take_profit ?? (side === 'BUY' ? currentPrice + stopDistance * 2 : currentPrice - stopDistance * 2),
+          takeProfit: aiDecision.take_profit ?? (side === 'BUY' ? currentPrice + stopDistance * profile.targetR : currentPrice - stopDistance * profile.targetR),
           confidence: trendStrength,
-          thesis: `ai=${aiDecision.decision} regime=${snapshot.marketRegime} confidence=${aiDecision.confidence} side=${side} side_source=${aiDecision.side ? 'ai' : 'rules'}`,
+          thesis: `ai=${aiDecision.decision} regime=${snapshot.marketRegime} confidence=${aiDecision.confidence} side=${side} side_source=${aiDecision.side ? 'ai' : 'rules'} profile=${symbol}`,
           style: snapshot.marketRegime === 'range' ? 'mean_reversion' : 'momentum',
         };
 
@@ -495,7 +605,10 @@ function startExecutionWorker() {
           baseConstraints
         );
 
-        const reasons = [...(aiDecision.reasons || []), ...(plan.reasons || [])];
+        const reasons = [...(aiDecision.reasons || []), ...(plan.reasons || []), ...profile.notes];
+        if (Number(aiDecision.confidence || 0) < profile.minConfidencePct) {
+          reasons.push(`below_symbol_confidence_floor:${Number(aiDecision.confidence || 0)}<${profile.minConfidencePct}`);
+        }
         logger.info('ai_decision_trace', {
           model: selectedProvider,
           symbol,
@@ -525,16 +638,15 @@ function startExecutionWorker() {
           expectedNetEdgeBps: Number(plan.expectedNetEdgeBps || 0),
         });
 
-        const softProbeEligible = (
-          aiDecision.decision !== 'TRADE' &&
-          snapshot.marketRegime === 'range' &&
-          Number(snapshot.regimeConfidence || 0) >= 60 &&
-          snapshot.liquidityState === 'good' &&
-          snapshot.volatilityState !== 'high'
-        );
+        const softProbeEligible = false;
 
         if (aiDecision.decision !== 'TRADE' && !softProbeEligible) {
           symbolRejects.push({ symbol, reason: `ai_no_trade:${(aiDecision.reasons || [])[0] || 'model_blocked'}` });
+          continue;
+        }
+
+        if (Number(aiDecision.confidence || 0) < profile.minConfidencePct) {
+          symbolRejects.push({ symbol, reason: `symbol_confidence_gate:${Number(aiDecision.confidence || 0)}<${profile.minConfidencePct}` });
           continue;
         }
 
@@ -555,6 +667,7 @@ function startExecutionWorker() {
             confidence: Number(aiDecision.confidence || snapshot.regimeConfidence || 0),
             sideSource: 'RULES',
             side,
+            profile,
           });
         } else {
           selectedCandidates.push({
@@ -562,6 +675,7 @@ function startExecutionWorker() {
             confidence: Number(aiDecision.confidence || snapshot.regimeConfidence || 0),
             sideSource,
             side,
+            profile,
           });
         }
       }
@@ -625,6 +739,7 @@ function startExecutionWorker() {
         }
 
         const probeMode = Boolean((plan as any).probeMode);
+        const profile = candidate.profile;
         const probeQty = probeMode
           ? (() => {
               const currentPrice = Number(plan.entry || 0);
@@ -636,17 +751,28 @@ function startExecutionWorker() {
             })()
           : undefined;
 
+        const adaptiveQty = !probeMode
+          ? (() => {
+              const currentPrice = Number(plan.entry || 0);
+              const accountBal = Number(portfolio?.currentBalance || portfolio?.allocatedBalance || balance || 0);
+              if (!(currentPrice > 0) || !(accountBal > 0)) return undefined;
+              const baseUsd = accountBal * (Number(s.riskSettings.maxPositionSizePct || 5) / 100);
+              const symbolUsd = Math.max(10, baseUsd * Number(profile.sizeMultiplier || 1));
+              return symbolUsd / currentPrice;
+            })()
+          : undefined;
+
         const signal: TradeSignal = {
           modelId: '1',
           symbol: plan.symbol,
           side: plan.side,
           type: 'MARKET',
-          quantity: probeQty,
+          quantity: probeQty ?? adaptiveQty,
           confidence: Math.max(0, Math.min(1, Number(candidate.confidence || 0) / 100)),
           reason: `auto_worker_unified regime=${snapshot.marketRegime} rr=${Number(plan.expectedRMultiple || 0).toFixed(2)} edge=${Number(plan.expectedNetEdgeBps || 0).toFixed(1)}bps${probeMode ? ' soft_probe=1' : ''}`,
           stopLoss: plan.stopLoss,
           takeProfit: plan.takeProfit,
-          leverage: probeMode ? 1 : Math.min(s.riskSettings.maxLeverage || 2, 2),
+          leverage: probeMode ? 1 : Math.min(Number(s.riskSettings.maxLeverage || 2), profile.maxLeverage),
           timestamp: new Date(),
         };
 
@@ -849,6 +975,27 @@ router.get('/status', async (req, res) => {
   } catch (error: any) {
     logger.error('status_failed', { error: error?.message || 'unknown' });
     res.status(500).json({ error: error?.message || 'status_failed' });
+  }
+});
+
+router.get('/symbol-profiles', async (_req, res) => {
+  try {
+    const profiles = getExecutionSymbolProfiles();
+    const watchlist = getWatchlistSymbols().map((symbol) => ({
+      symbol,
+      tradable: profiles.some((p) => p.symbol === `${symbol}USDT`),
+      watchlistOnly: !profiles.some((p) => p.symbol === `${symbol}USDT`),
+    }));
+
+    res.json({
+      success: true,
+      executionSymbols: getExecutionSymbols(),
+      profiles,
+      watchlist,
+    });
+  } catch (error: any) {
+    logger.error('symbol_profiles_failed', { error: error?.message || 'unknown' });
+    res.status(500).json({ success: false, error: error?.message || 'symbol_profiles_failed' });
   }
 });
 

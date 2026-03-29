@@ -150,7 +150,7 @@ const TRACKED_SYMBOLS = [
   { id: 'binancecoin', symbol: 'BNB' },
 ];
 
-const EXEC_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
+const EXEC_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'DOGEUSDT', 'BNBUSDT'];
 
 export default function Home() {
   const [error, setError] = useState('');
@@ -170,7 +170,7 @@ export default function Home() {
   const [density, setDensity] = useState<'comfortable' | 'compact'>('compact');
 
   const [manualAdminKey, setManualAdminKey] = useState('');
-  const [manualSymbol, setManualSymbol] = useState<'BTCUSDT' | 'ETHUSDT' | 'SOLUSDT'>('BTCUSDT');
+  const [manualSymbol, setManualSymbol] = useState<'BTCUSDT' | 'ETHUSDT' | 'XRPUSDT' | 'DOGEUSDT' | 'BNBUSDT'>('BTCUSDT');
   const [manualSide, setManualSide] = useState<'BUY' | 'SELL'>('BUY');
   const [manualType, setManualType] = useState<'MARKET' | 'LIMIT'>('MARKET');
   const [manualQty, setManualQty] = useState('');
@@ -185,7 +185,7 @@ export default function Home() {
   const [slDrafts, setSlDrafts] = useState<Record<string, string>>({});
   const [openOrders, setOpenOrders] = useState<Array<{ orderId: number; symbol: string; side: string; type: string; price: number; origQty: number; executedQty: number; status: string; time: number }>>([]);
   const [ordersFeedback, setOrdersFeedback] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
-  const [openOrderFilter, setOpenOrderFilter] = useState<'ALL' | 'BTCUSDT' | 'ETHUSDT' | 'SOLUSDT'>('ALL');
+  const [openOrderFilter, setOpenOrderFilter] = useState<'ALL' | 'BTCUSDT' | 'ETHUSDT' | 'XRPUSDT' | 'DOGEUSDT' | 'BNBUSDT'>('ALL');
   const previousCycleRef = useRef<{ regimeConfidence: number; volatility: string; fundingRatePct: number } | null>(null);
 
   const liveConnected = Boolean(status?.engineConnected || workerStatus);
@@ -475,7 +475,7 @@ export default function Home() {
         fetchWithTimeout(`${API}/status`, {}, 20000),
         fetchWithTimeout(`${API}/settings`),
         fetchWithTimeout(`${API}/daily-briefing`),
-        fetchWithTimeout(`${API}/risk-context?symbols=BTCUSDT,ETHUSDT,SOLUSDT`),
+        fetchWithTimeout(`${API}/risk-context?symbols=${EXEC_SYMBOLS.join(',')}`),
         fetchWithTimeout(`${API}/journal?limit=300&tradeCloseLimit=50&tradeCloseScanLimit=5000`),
         fetchWithTimeout(`${API}/worker-status`),
         fetchWithTimeout(`${API}/open-orders`),
@@ -829,6 +829,8 @@ export default function Home() {
     const entry = Number(p.entryPrice || 0);
     const size = Number(p.size || 0);
     const side = String((p as any).side || 'LONG');
+    const mark = Number((p as any).currentPrice || 0);
+    const unrealized = Number((p as any).pnl || 0);
     const secured = stop > 0
       ? side === 'LONG'
         ? (stop - entry) * size
@@ -841,15 +843,19 @@ export default function Home() {
         : Math.abs(stop - entry) / Math.max(1, entry) < 0.002
           ? 'Break-even'
           : 'Initial';
+    const pnlState = unrealized > 0.000001 ? 'profit' : unrealized < -0.000001 ? 'loss' : 'flat';
     return {
       ts: p.openedAt,
       symbol: p.symbol,
       side,
       qty: p.size,
       entry: p.entryPrice,
+      mark,
       stop,
       slStatus,
       secured,
+      unrealized,
+      pnlState,
     };
   });
   const recentTradeRows = journal
@@ -1298,6 +1304,59 @@ export default function Home() {
                   </table>
                 </div>
 
+                <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-xs uppercase tracking-wide text-slate-400">Open Orders ({openOrders.length})</div>
+                  </div>
+                  <div className="text-[11px] text-slate-400 mb-2">Pending limit/working orders can be canceled from here.</div>
+                  <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+                    <label className="text-slate-300">Filter</label>
+                    <select value={openOrderFilter} onChange={(e) => setOpenOrderFilter(e.target.value as 'ALL' | 'BTCUSDT' | 'ETHUSDT' | 'XRPUSDT' | 'DOGEUSDT' | 'BNBUSDT')} className="rounded border border-white/20 bg-black/30 px-2 py-1 text-slate-100">
+                      <option value="ALL">ALL</option>
+                      <option value="BTCUSDT">BTCUSDT</option>
+                      <option value="ETHUSDT">ETHUSDT</option>
+                      <option value="XRPUSDT">XRPUSDT</option>
+                      <option value="DOGEUSDT">DOGEUSDT</option>
+                      <option value="BNBUSDT">BNBUSDT</option>
+                    </select>
+                    <button onClick={() => cancelAllOpenOrders('FILTERED')} className="rounded border border-amber-400/40 px-2 py-1 text-[10px] text-amber-200 hover:bg-amber-500/10">Cancel Filtered</button>
+                    <button onClick={() => cancelAllOpenOrders('ALL')} className="rounded border border-red-400/40 px-2 py-1 text-[10px] text-red-200 hover:bg-red-500/10">Cancel All</button>
+                  </div>
+                  {ordersFeedback && (
+                    <div className={`mb-2 rounded border px-2 py-1.5 text-xs ${ordersFeedback.kind === 'success' ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200' : 'border-red-400/40 bg-red-500/10 text-red-200'}`}>
+                      {ordersFeedback.text}
+                    </div>
+                  )}
+                  <div className="-mx-1 px-1">
+                    <table className="w-full table-fixed text-[11px]">
+                      <thead className="text-slate-400">
+                        <tr>
+                          <th className="text-left py-1.5 w-[28%]">Symbol</th>
+                          <th className="text-left py-1.5 w-[16%]">Side</th>
+                          <th className="text-right py-1.5 w-[24%]">Price</th>
+                          <th className="text-right py-1.5 w-[16%]">Qty</th>
+                          <th className="text-right py-1.5 w-[16%]">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {visibleOpenOrders.length === 0 ? (
+                          <tr><td colSpan={5} className="py-2 text-slate-400">No open orders for this filter</td></tr>
+                        ) : visibleOpenOrders.map((o) => (
+                          <tr key={`${o.symbol}-${o.orderId}`} className="border-t border-white/10">
+                            <td className="py-1.5 font-semibold truncate pr-2">{o.symbol}</td>
+                            <td className={`py-1.5 ${o.side === 'BUY' ? 'text-emerald-300' : 'text-red-300'}`}>{o.side}</td>
+                            <td className="py-1.5 text-right whitespace-nowrap">{Number(o.price || 0) > 0 ? Number(o.price).toFixed(2) : 'MKT'}</td>
+                            <td className="py-1.5 text-right whitespace-nowrap">{Number(o.origQty || 0).toFixed(4)}</td>
+                            <td className="py-1.5 text-right">
+                              <button onClick={() => cancelOpenOrder({ symbol: o.symbol, orderId: o.orderId })} className="rounded border border-red-400/40 px-1.5 py-0.5 text-[10px] text-red-200 hover:bg-red-500/10">Cancel</button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
                 {richExpanded && (
                   <div className="mt-2 grid grid-cols-1 gap-2">
                     <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2.5">
@@ -1594,10 +1653,12 @@ export default function Home() {
 
                     <label>
                       <div className="mb-1 text-slate-300">Symbol</div>
-                      <select value={manualSymbol} onChange={(e) => setManualSymbol(e.target.value as 'BTCUSDT' | 'ETHUSDT' | 'SOLUSDT')} className="w-full rounded border border-white/20 bg-black/30 px-2 py-1.5 text-slate-100">
+                      <select value={manualSymbol} onChange={(e) => setManualSymbol(e.target.value as 'BTCUSDT' | 'ETHUSDT' | 'XRPUSDT' | 'DOGEUSDT' | 'BNBUSDT')} className="w-full rounded border border-white/20 bg-black/30 px-2 py-1.5 text-slate-100">
                         <option value="BTCUSDT">BTCUSDT</option>
                         <option value="ETHUSDT">ETHUSDT</option>
-                        <option value="SOLUSDT">SOLUSDT</option>
+                        <option value="XRPUSDT">XRPUSDT</option>
+                        <option value="DOGEUSDT">DOGEUSDT</option>
+                        <option value="BNBUSDT">BNBUSDT</option>
                       </select>
                     </label>
 
@@ -1671,15 +1732,18 @@ export default function Home() {
             </section>
 
             <section className="grid grid-cols-1 xl:grid-cols-12 gap-2 items-start">
-              <Panel className="xl:col-span-7" title="Active Positions">
+              <Panel className="xl:col-span-12" title="Active Positions">
+                <div className="text-[11px] text-slate-400 mb-2">Unrealized P&L shows which positions are currently in profit or loss right now.</div>
                 <div className="overflow-x-auto -mx-1 px-1">
-                <table className="w-full min-w-[760px] text-sm">
+                <table className="w-full min-w-[980px] text-sm">
                   <thead className="text-slate-400">
                     <tr>
                       <th className={`text-left ${headerPyClass}`}>Pair</th>
                       <th className={`text-left ${headerPyClass}`}>Side</th>
                       <th className={`text-right ${headerPyClass}`}>Size</th>
                       <th className={`text-right ${headerPyClass}`}>Entry</th>
+                      <th className={`text-right ${headerPyClass}`}>Mark</th>
+                      <th className={`text-right ${headerPyClass}`}>Unrealized P&L</th>
                       <th className={`text-right ${headerPyClass}`}>Stop</th>
                       <th className={`text-left ${headerPyClass}`}>SL Status</th>
                       <th className={`text-right ${headerPyClass}`}>Secured (est)</th>
@@ -1688,13 +1752,15 @@ export default function Home() {
                   </thead>
                   <tbody>
                     {activeTradeRows.length === 0 ? (
-                      <tr><td colSpan={8} className="py-3 text-slate-400">No active positions</td></tr>
+                      <tr><td colSpan={10} className="py-3 text-slate-400">No active positions</td></tr>
                     ) : activeTradeRows.map((t, i) => (
                       <tr key={`${t.ts}-${i}`} className="border-t border-white/10">
                         <td className="py-1.5 font-semibold">{t.symbol || '—'}</td>
                         <td className={`py-1.5 ${String(t.side || '').toUpperCase() === 'LONG' ? 'text-emerald-300' : 'text-red-300'}`}>{String(t.side || '—').toUpperCase()}</td>
                         <td className="py-1.5 text-right">{typeof t.qty === 'number' ? t.qty.toFixed(6) : '—'}</td>
                         <td className="py-1.5 text-right">{typeof t.entry === 'number' ? t.entry.toFixed(2) : '—'}</td>
+                        <td className="py-1.5 text-right">{typeof t.mark === 'number' && t.mark > 0 ? t.mark.toFixed(2) : '—'}</td>
+                        <td className={`py-1.5 text-right font-semibold ${t.pnlState === 'profit' ? 'text-emerald-300' : t.pnlState === 'loss' ? 'text-red-300' : 'text-slate-300'}`}>{signedMoney(Number(t.unrealized || 0))}</td>
                         <td className="py-1.5 text-right">{t.stop > 0 ? t.stop.toFixed(2) : '—'}</td>
                         <td className={`py-1.5 ${t.slStatus === 'Locked Profit' ? 'text-emerald-300' : t.slStatus === 'Break-even' ? 'text-cyan-300' : 'text-slate-300'}`}>{t.slStatus}</td>
                         <td className={`py-1.5 text-right font-semibold ${Number(t.secured || 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>{signedMoney(Number(t.secured || 0))}</td>
@@ -1723,56 +1789,6 @@ export default function Home() {
                 </div>
               </Panel>
 
-              <div className="xl:col-span-5 space-y-4">
-                <Panel title={`Open Orders (${openOrders.length})`}>
-                  <div className="text-[11px] text-slate-400 mb-2">Pending limit/working orders can be canceled from here.</div>
-                  <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
-                    <label className="text-slate-300">Filter</label>
-                    <select value={openOrderFilter} onChange={(e) => setOpenOrderFilter(e.target.value as 'ALL' | 'BTCUSDT' | 'ETHUSDT' | 'SOLUSDT')} className="rounded border border-white/20 bg-black/30 px-2 py-1 text-slate-100">
-                      <option value="ALL">ALL</option>
-                      <option value="BTCUSDT">BTCUSDT</option>
-                      <option value="ETHUSDT">ETHUSDT</option>
-                      <option value="SOLUSDT">SOLUSDT</option>
-                    </select>
-                    <button onClick={() => cancelAllOpenOrders('FILTERED')} className="rounded border border-amber-400/40 px-2 py-1 text-[10px] text-amber-200 hover:bg-amber-500/10">Cancel Filtered</button>
-                    <button onClick={() => cancelAllOpenOrders('ALL')} className="rounded border border-red-400/40 px-2 py-1 text-[10px] text-red-200 hover:bg-red-500/10">Cancel All</button>
-                  </div>
-                  {ordersFeedback && (
-                    <div className={`mb-2 rounded border px-2 py-1.5 text-xs ${ordersFeedback.kind === 'success' ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200' : 'border-red-400/40 bg-red-500/10 text-red-200'}`}>
-                      {ordersFeedback.text}
-                    </div>
-                  )}
-                  <div className="overflow-x-auto -mx-1 px-1">
-                    <table className="w-full min-w-[420px] text-xs">
-                      <thead className="text-slate-400">
-                        <tr>
-                          <th className="text-left py-2">Symbol</th>
-                          <th className="text-left py-2">Side</th>
-                          <th className="text-right py-2">Price</th>
-                          <th className="text-right py-2">Qty</th>
-                          <th className="text-right py-2">Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {visibleOpenOrders.length === 0 ? (
-                          <tr><td colSpan={5} className="py-3 text-slate-400">No open orders for this filter</td></tr>
-                        ) : visibleOpenOrders.map((o) => (
-                          <tr key={`${o.symbol}-${o.orderId}`} className="border-t border-white/10">
-                            <td className="py-2 font-semibold">{o.symbol}</td>
-                            <td className={`py-2 ${o.side === 'BUY' ? 'text-emerald-300' : 'text-red-300'}`}>{o.side}</td>
-                            <td className="py-2 text-right">{Number(o.price || 0) > 0 ? Number(o.price).toFixed(2) : 'MKT'}</td>
-                            <td className="py-2 text-right">{Number(o.origQty || 0).toFixed(4)}</td>
-                            <td className="py-2 text-right">
-                              <button onClick={() => cancelOpenOrder({ symbol: o.symbol, orderId: o.orderId })} className="rounded border border-red-400/40 px-2 py-1 text-[10px] text-red-200 hover:bg-red-500/10">Cancel</button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </Panel>
-
-              </div>
 
             </section>
 
