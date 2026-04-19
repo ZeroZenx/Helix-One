@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.darren.helixone.backend</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>/Users/darrenheadley/.openclaw/workspace/Helix-One/backend/run-backend.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/darrenheadley/.openclaw/workspace/Helix-One/backend</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/darrenheadley/.openclaw/workspace/Helix-One/logs/backend.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/darrenheadley/.openclaw/workspace/Helix-One/logs/backend.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>

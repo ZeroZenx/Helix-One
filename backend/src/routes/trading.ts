@@ -12,6 +12,9 @@ import { WalkForwardService } from '../services/WalkForwardService';
 import { PromotionAuditService } from '../services/PromotionAuditService';
 import { ExperimentGovernanceService } from '../services/ExperimentGovernanceService';
 import { JournalService } from '../services/JournalService';
+import { SettingsAuditService } from '../services/SettingsAuditService';
+import { TradeIntelligenceService } from '../services/TradeIntelligenceService';
+import { OperatorIntelligenceService } from '../services/OperatorIntelligenceService';
 import { AIService } from '../services/ai.service';
 
 const router = Router();
@@ -24,6 +27,9 @@ const walkForward = new WalkForwardService();
 const promotionAudit = new PromotionAuditService();
 const experimentGovernance = new ExperimentGovernanceService();
 const journalService = new JournalService();
+const settingsAudit = new SettingsAuditService();
+const tradeIntelligence = new TradeIntelligenceService();
+const operatorIntelligence = new OperatorIntelligenceService();
 const aiService = new AIService();
 let tradingService: LiveTradingService | null = null;
 let lastExchangeAuthDownAlerted = false;
@@ -50,6 +56,13 @@ let lastAiGateDecision: 'TRADE' | 'NO_TRADE' | 'N/A' = 'N/A';
 let lastFinalExecutionDecision: 'TRADE' | 'NO_TRADE' = 'NO_TRADE';
 let lastAiConversations: Array<{ ts: string; symbol: string; promptSummary: string; responseSummary: string; confidence: number; delta: string }> = [];
 const prevAiBySymbol = new Map<string, { decision: string; confidence: number; reason: string }>();
+let selfLearningSchedulerStarted = false;
+let selfLearningTimer: NodeJS.Timeout | null = null;
+let selfLearningRunning = false;
+let lastSelfLearningRunAt: string | null = null;
+let nextSelfLearningRunAt: string | null = null;
+let lastSelfLearningResult: any = null;
+let lastSelfLearningError: string | null = null;
 
 function getExecutionSymbols() {
   const configured = (settingsStore.get().riskSettings as any)?.tradeSymbols;
@@ -73,7 +86,7 @@ function getSymbolExecutionProfile(symbol: string) {
     notes: string[];
   }> = {
     BTCUSDT: {
-      minConfidencePct: 70,
+      minConfidencePct: 62,
       maxLeverage: 5,
       stopDistancePct: 0.005,
       targetR: 2.2,
@@ -82,7 +95,7 @@ function getSymbolExecutionProfile(symbol: string) {
       notes: ['primary_symbol', 'allows_full_risk_budget'],
     },
     ETHUSDT: {
-      minConfidencePct: 72,
+      minConfidencePct: 64,
       maxLeverage: 4,
       stopDistancePct: 0.0055,
       targetR: 2.0,
@@ -91,25 +104,25 @@ function getSymbolExecutionProfile(symbol: string) {
       notes: ['secondary_symbol', 'slightly_reduced_size'],
     },
     XRPUSDT: {
-      minConfidencePct: 75,
+      minConfidencePct: 66,
       maxLeverage: 3,
       stopDistancePct: 0.007,
       targetR: 2.0,
       sizeMultiplier: 0.65,
       spreadCeilingBps: 10,
-      notes: ['alt_symbol_stricter_gate', 'reduced_size'],
+      notes: ['alt_symbol_relaxed_gate', 'reduced_size'],
     },
     DOGEUSDT: {
-      minConfidencePct: 78,
+      minConfidencePct: 68,
       maxLeverage: 2,
       stopDistancePct: 0.009,
       targetR: 2.2,
       sizeMultiplier: 0.5,
       spreadCeilingBps: 12,
-      notes: ['meme_symbol_high_noise', 'smallest_size'],
+      notes: ['meme_symbol_relaxed_gate', 'smallest_size'],
     },
     BNBUSDT: {
-      minConfidencePct: 74,
+      minConfidencePct: 65,
       maxLeverage: 3,
       stopDistancePct: 0.006,
       targetR: 2.0,
@@ -148,6 +161,48 @@ function keepOrUpdateSecret(currentValue: string, nextValue: unknown): string {
   if (!candidate) return currentValue;
   if (/^\*+$/.test(candidate)) return currentValue;
   return candidate;
+}
+
+function summarizeRiskSettingsForAudit(riskSettings: any) {
+  return {
+    maxDailyLossPct: Number(riskSettings?.maxDailyLossPct ?? 0),
+    maxPositionSizePct: Number(riskSettings?.maxPositionSizePct ?? 0),
+    maxLeverage: Number(riskSettings?.maxLeverage ?? 0),
+    minLeverage: Number(riskSettings?.minLeverage ?? 0),
+    maxOpenPositions: Number(riskSettings?.maxOpenPositions ?? 0),
+    cooldownMinutes: Number(riskSettings?.cooldownMinutes ?? 0),
+    maxTradesPerDay: Number(riskSettings?.maxTradesPerDay ?? 0),
+    maxConsecutiveLosses: Number(riskSettings?.maxConsecutiveLosses ?? 0),
+    minConfidence: Number(riskSettings?.minConfidence ?? 0),
+    paperTrading: Boolean(riskSettings?.paperTrading),
+  };
+}
+
+function buildSettingsAuditChanges(before: any, after: any) {
+  const changes: Record<string, { before: unknown; after: unknown }> = {};
+  const beforeRisk = summarizeRiskSettingsForAudit(before?.riskSettings || {});
+  const afterRisk = summarizeRiskSettingsForAudit(after?.riskSettings || {});
+
+  for (const key of Object.keys(afterRisk)) {
+    if (JSON.stringify((beforeRisk as any)[key]) !== JSON.stringify((afterRisk as any)[key])) {
+      changes[`riskSettings.${key}`] = {
+        before: (beforeRisk as any)[key],
+        after: (afterRisk as any)[key],
+      };
+    }
+  }
+
+  if (Boolean(before?.tradingEnabled) !== Boolean(after?.tradingEnabled)) {
+    changes['tradingEnabled'] = { before: Boolean(before?.tradingEnabled), after: Boolean(after?.tradingEnabled) };
+  }
+
+  const beforePortfolio = Boolean(before?.modelAccounts?.[0]?.tradingEnabled);
+  const afterPortfolio = Boolean(after?.modelAccounts?.[0]?.tradingEnabled);
+  if (beforePortfolio !== afterPortfolio) {
+    changes['modelAccounts[0].tradingEnabled'] = { before: beforePortfolio, after: afterPortfolio };
+  }
+
+  return changes;
 }
 
 function toNumber(v: any, fallback = 0): number {
@@ -325,6 +380,302 @@ function buildMetricsFromJournal(entries: any[], allocatedBalance = 10000) {
   };
 }
 
+function buildJournalWalkForward(entries: any[], allocatedBalance = 10000) {
+  const closes = entries
+    .filter((e) => e?.type === 'trade_close')
+    .sort((a, b) => new Date(String(a.ts || 0)).getTime() - new Date(String(b.ts || 0)).getTime());
+
+  if (closes.length < 4) {
+    return {
+      success: false,
+      reason: 'insufficient_closed_trades_for_walk_forward',
+      sampleSize: closes.length,
+      windows: [],
+    };
+  }
+
+  const mid = Math.max(1, Math.floor(closes.length / 2));
+  const train = closes.slice(0, mid);
+  const test = closes.slice(mid);
+  return {
+    success: true,
+    sampleSize: closes.length,
+    windows: [{
+      window: {
+        trainStart: train[0]?.ts || null,
+        trainEnd: train[train.length - 1]?.ts || null,
+        testStart: test[0]?.ts || null,
+        testEnd: test[test.length - 1]?.ts || null,
+      },
+      leakageDetected: false,
+      trainMetrics: buildMetricsFromJournal(train, allocatedBalance),
+      testMetrics: buildMetricsFromJournal(test, allocatedBalance),
+    }],
+  };
+}
+
+async function getLearningJournalEntries(limit = 1000, tradeCloseLimit = 500) {
+  const fileEntries = journalService.list(limit) || [];
+  const fileTradeCloses = journalService.listByType('trade_close', tradeCloseLimit, Math.max(100000, limit * 20)) || [];
+  let liveEntries: any[] = [];
+  try {
+    const svc = await ensureTradingService();
+    liveEntries = svc?.getJournalEntries(limit) || [];
+  } catch {
+    liveEntries = [];
+  }
+
+  const dedup = new Map<string, any>();
+  [...liveEntries, ...fileEntries, ...fileTradeCloses].forEach((entry: any) => {
+    const key = [
+      entry?.ts || '',
+      entry?.type || '',
+      entry?.modelId || '',
+      entry?.symbol || '',
+      entry?.pnl ?? '',
+      entry?.reason || '',
+    ].join('|');
+    if (!dedup.has(key)) dedup.set(key, entry);
+  });
+
+  const merged = Array.from(dedup.values())
+    .sort((a: any, b: any) => new Date(String(a?.ts || 0)).getTime() - new Date(String(b?.ts || 0)).getTime());
+  const tradeCloses = merged.filter((entry: any) => entry?.type === 'trade_close');
+  const otherEntries = merged.filter((entry: any) => entry?.type !== 'trade_close');
+  const otherBudget = Math.max(0, limit - tradeCloses.length);
+
+  return [...otherEntries.slice(-otherBudget), ...tradeCloses]
+    .sort((a: any, b: any) => new Date(String(a?.ts || 0)).getTime() - new Date(String(b?.ts || 0)).getTime());
+}
+
+function getSelfLearningSettings() {
+  const s = settingsStore.get();
+  const raw = (s as any).selfLearningSettings || {};
+  return {
+    enabled: raw.enabled !== false,
+    intervalHours: Math.max(1, Math.min(168, Number(raw.intervalHours || 6))),
+    minClosedTrades: Math.max(5, Math.min(500, Number(raw.minClosedTrades || 30))),
+    autoRiskTightening: raw.autoRiskTightening !== false,
+    allowLivePromotion: raw.allowLivePromotion === true,
+    notifyOnReview: raw.notifyOnReview !== false,
+  };
+}
+
+function buildSelfLearningContract(settings: any, minClosedTrades: number) {
+  return {
+    objective: 'slippageAdjustedExpectancyR',
+    window: {
+      trainStart: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString(),
+      trainEnd: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+      testStart: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+      testEnd: new Date().toISOString(),
+    },
+    minSamples: minClosedTrades,
+    hardRiskGates: {
+      maxDrawdownPct: Number(settings.riskSettings?.killSwitchDrawdownPct || 5),
+      maxTurnover: Number(settings.riskSettings?.maxTradesPerDay || 8) * 14,
+      requirePositiveEdge: true,
+      minExpectedNetEdgeBps: 0,
+    },
+    rollbackTarget: 'prompts/system_trading_brain.md@main',
+    atomicChange: { type: 'risk_template' as const, changedKeys: ['self_learning.review'] },
+    improvementDelta: 0,
+    regimeSpecialized: false,
+  };
+}
+
+async function runSelfLearningReview(reason: 'scheduled' | 'manual' | 'startup' = 'scheduled') {
+  if (selfLearningRunning) {
+    return {
+      success: false,
+      skipped: true,
+      reason: 'self_learning_review_already_running',
+      lastRunAt: lastSelfLearningRunAt,
+    };
+  }
+
+  selfLearningRunning = true;
+  lastSelfLearningError = null;
+  const startedAt = new Date().toISOString();
+
+  try {
+    const settings = settingsStore.get();
+    const cfg = getSelfLearningSettings();
+    const allocatedBalance = Number(settings.modelAccounts?.[0]?.balance || 10000);
+    const entries = await getLearningJournalEntries(10_000);
+    const closes = entries.filter((e: any) => e?.type === 'trade_close');
+    const mid = Math.max(1, Math.floor(closes.length / 2));
+    const baselineEntries = entries.filter((e: any) => e?.type !== 'trade_close' || closes.slice(0, mid).includes(e));
+    const candidateEntries = entries.filter((e: any) => e?.type !== 'trade_close' || closes.slice(mid).includes(e));
+
+    const baselineMetrics = buildMetricsFromJournal(baselineEntries, allocatedBalance);
+    const candidateMetrics = buildMetricsFromJournal(candidateEntries, allocatedBalance);
+    const snapshot = await riskIntel.getSnapshot(getExecutionSymbols().slice(0, 2));
+    const regime = (snapshot.marketRegime === 'trend' || snapshot.marketRegime === 'range' || snapshot.marketRegime === 'event_driven')
+      ? snapshot.marketRegime
+      : 'unknown';
+    const regimeSlices = [{
+      regime,
+      sampleSize: candidateMetrics.sampleSize,
+      slippageAdjustedExpectancyR: candidateMetrics.slippageAdjustedExpectancyR,
+      maxDrawdownPct: candidateMetrics.maxDrawdownPct,
+      turnover: candidateMetrics.turnover,
+    }];
+    const contract = buildSelfLearningContract(settings, cfg.minClosedTrades);
+    const check = experimentGovernance.validateContract(contract as any);
+    if (!check.valid) throw new Error(`self_learning_contract_invalid:${check.errors.join(',')}`);
+
+    const record = experimentGovernance.recordRun({
+      contract: contract as any,
+      baselineMetrics: baselineMetrics as any,
+      candidateMetrics: candidateMetrics as any,
+      regimeSlices: regimeSlices as any,
+    });
+
+    const walkForwardResult = buildJournalWalkForward(entries, allocatedBalance);
+    const hasEnoughEvidence = closes.length >= cfg.minClosedTrades;
+    const decision = hasEnoughEvidence ? record.result.decision : 'insufficient_evidence';
+    const reasons = hasEnoughEvidence
+      ? (record.result.reasons || [])
+      : Array.from(new Set([...(record.result.reasons || []), 'scheduler_evidence_gate_not_met']));
+    const shouldTightenRisk = cfg.autoRiskTightening
+      && hasEnoughEvidence
+      && (decision === 'reverted' || reasons.includes('non_positive_edge_after_costs') || reasons.includes('drawdown_above_threshold'));
+    let riskAdjustment: any = null;
+
+    if (shouldTightenRisk) {
+      const before = settingsStore.get();
+      const currentRisk = before.riskSettings || {};
+      const nextMaxPositionSizePct = Math.max(1, Number(currentRisk.maxPositionSizePct || 5) * 0.8);
+      const nextCooldownMinutes = Math.min(240, Math.max(Number(currentRisk.cooldownMinutes || 30), Number(currentRisk.cooldownMinutes || 30) + 10));
+      const after = {
+        ...before,
+        riskSettings: {
+          ...currentRisk,
+          maxPositionSizePct: Number(nextMaxPositionSizePct.toFixed(2)),
+          cooldownMinutes: nextCooldownMinutes,
+        },
+      };
+      settingsStore.set(after);
+      tradingService = null;
+      riskAdjustment = {
+        applied: true,
+        reason: 'protective_tightening_after_negative_learning_review',
+        before: {
+          maxPositionSizePct: currentRisk.maxPositionSizePct,
+          cooldownMinutes: currentRisk.cooldownMinutes,
+        },
+        after: {
+          maxPositionSizePct: after.riskSettings.maxPositionSizePct,
+          cooldownMinutes: after.riskSettings.cooldownMinutes,
+        },
+      };
+      settingsAudit.append({
+        ts: new Date().toISOString(),
+        actor: 'self_learning_scheduler',
+        type: 'risk_auto_tightened',
+        summary: 'Self-learning review tightened risk after weak/unsafe evidence',
+        changes: riskAdjustment,
+      });
+    }
+
+    const promotionAllowed = cfg.allowLivePromotion && decision === 'kept';
+    const result = {
+      success: true,
+      mode: reason,
+      startedAt,
+      completedAt: new Date().toISOString(),
+      enabled: cfg.enabled,
+      evidence: {
+        closedTrades: closes.length,
+        requiredClosedTrades: cfg.minClosedTrades,
+        readinessPct: cfg.minClosedTrades > 0 ? Math.min(100, Math.round((closes.length / cfg.minClosedTrades) * 100)) : 0,
+      },
+      promotionAllowed,
+      livePromotionSubmitted: false,
+      record,
+      walkForwardResult,
+      riskAdjustment,
+      nextAction: promotionAllowed
+        ? 'candidate_passed_gates_but_live_promotion_requires_explicit_signal_path'
+        : decision === 'kept'
+          ? 'candidate_kept_in_shadow_review_no_live_promotion'
+          : decision === 'insufficient_evidence'
+            ? 'collect_more_closed_trades_before_strategy_changes'
+            : 'baseline_kept_risk_protection_active',
+    };
+
+    lastSelfLearningRunAt = result.completedAt;
+    lastSelfLearningResult = result;
+    promotionAudit.append({
+      ts: result.completedAt,
+      type: 'self_learning_review',
+      mode: reason,
+      decision,
+      reasons,
+      candidateMetrics,
+      baselineMetrics,
+      riskAdjustment,
+      walkForward: walkForwardResult,
+      nextAction: result.nextAction,
+    });
+
+    if (cfg.notifyOnReview) {
+      await sendTelegramAlert(
+        decision === 'reverted' ? 'warning' : 'info',
+        'Self-Learning Review Complete',
+        [
+          `Decision: ${decision}`,
+          `Reasons: ${reasons.slice(0, 4).join(', ') || 'none'}`,
+          `Closed trades: ${closes.length}/${cfg.minClosedTrades}`,
+          riskAdjustment?.applied ? `Risk tightened: max position ${riskAdjustment.before.maxPositionSizePct}% -> ${riskAdjustment.after.maxPositionSizePct}%` : 'Risk change: none',
+        ],
+        `self_learning_review_${decision}_${new Date().toISOString().slice(0, 13)}`
+      );
+    }
+
+    return result;
+  } catch (error: any) {
+    const msg = error?.message || 'self_learning_review_failed';
+    lastSelfLearningError = msg;
+    lastSelfLearningRunAt = new Date().toISOString();
+    lastSelfLearningResult = { success: false, mode: reason, startedAt, completedAt: lastSelfLearningRunAt, error: msg };
+    promotionAudit.append({
+      ts: lastSelfLearningRunAt,
+      type: 'self_learning_review_failed',
+      mode: reason,
+      error: msg,
+    });
+    logger.error('self_learning_review_failed', { error: msg });
+    return lastSelfLearningResult;
+  } finally {
+    selfLearningRunning = false;
+  }
+}
+
+function scheduleNextSelfLearningRun(immediate = false) {
+  if (selfLearningTimer) clearTimeout(selfLearningTimer);
+  const cfg = getSelfLearningSettings();
+  if (!cfg.enabled) {
+    nextSelfLearningRunAt = null;
+    return;
+  }
+  const delayMs = immediate ? 30_000 : cfg.intervalHours * 60 * 60 * 1000;
+  nextSelfLearningRunAt = new Date(Date.now() + delayMs).toISOString();
+  selfLearningTimer = setTimeout(async () => {
+    await runSelfLearningReview('scheduled');
+    scheduleNextSelfLearningRun(false);
+  }, delayMs);
+  selfLearningTimer.unref?.();
+}
+
+function startSelfLearningScheduler() {
+  if (selfLearningSchedulerStarted) return;
+  selfLearningSchedulerStarted = true;
+  scheduleNextSelfLearningRun(true);
+  logger.info('self_learning_scheduler_started', { nextRunAt: nextSelfLearningRunAt });
+}
+
 async function sendTelegramAlert(
   severity: AlertSeverity,
   title: string,
@@ -364,11 +715,20 @@ function buildTradingConfigFromSettings(): TradingConfig {
     maxTradesPerDay: s.riskSettings.maxTradesPerDay,
     maxConsecutiveLosses: s.riskSettings.maxConsecutiveLosses,
     minConfidence: s.riskSettings.minConfidence,
+    minLeverage: Number((s.riskSettings as any).minLeverage || 10),
+    maxOpenPositions: Number((s.riskSettings as any).maxOpenPositions || 4),
+    paperTrading: Boolean((s.riskSettings as any).paperTrading),
     maxUnprotectedPositionSeconds: 15,
     stopPlacementRetries: 4,
     breakEvenEnabled: Boolean((s.riskSettings as any).breakEvenEnabled),
     breakEvenTriggerR: Number((s.riskSettings as any).breakEvenTriggerR || 1),
     breakEvenBufferPct: Number((s.riskSettings as any).breakEvenBufferPct || 0),
+    breakEvenFeeBps: Number((s.riskSettings as any).breakEvenFeeBps ?? 8),
+    breakEvenSlippageBps: Number((s.riskSettings as any).breakEvenSlippageBps ?? 5),
+    letWinnersRunEnabled: (s.riskSettings as any).letWinnersRunEnabled !== false,
+    runnerActivationR: Number((s.riskSettings as any).runnerActivationR ?? 2),
+    runnerPartialTakeProfitPct: Number((s.riskSettings as any).runnerPartialTakeProfitPct ?? 30),
+    runnerTrailPct: Number((s.riskSettings as any).runnerTrailPct ?? 0.006),
   };
 }
 
@@ -627,6 +987,7 @@ function startExecutionWorker() {
           type: 'ai_decision',
           model: 'deepseek',
           symbol,
+          side,
           decision: aiDecision.decision === 'TRADE' && plan.decision === 'TRADE' ? 'TRADE' : 'NO_TRADE',
           confidence: Number(aiDecision.confidence || snapshot.regimeConfidence || 0),
           reasons,
@@ -634,18 +995,28 @@ function startExecutionWorker() {
           regime: snapshot.marketRegime,
           liquidityState: snapshot.liquidityState,
           volatilityState: snapshot.volatilityState,
+          entry: Number(plan.entry || aiDecision.entry || currentPrice || 0),
+          stopLoss: Number(plan.stopLoss || aiDecision.stop_loss || 0),
+          takeProfit: Number(plan.takeProfit || aiDecision.take_profit || 0),
           expectedRMultiple: Number(plan.expectedRMultiple || aiDecision.expected_rr || 0),
           expectedNetEdgeBps: Number(plan.expectedNetEdgeBps || 0),
         });
 
-        const softProbeEligible = false;
+        const softProbeEligible = (
+          aiDecision.decision !== 'TRADE' &&
+          String(snapshot.marketRegime || '').toLowerCase() === 'range' &&
+          String(snapshot.liquidityState || '').toLowerCase() === 'good' &&
+          String(snapshot.volatilityState || '').toLowerCase() === 'low' &&
+          Number(snapshot.regimeConfidence || 0) >= 58 &&
+          !Array.isArray(snapshot.riskFlags) ? false : (snapshot.riskFlags || []).length === 0
+        );
 
         if (aiDecision.decision !== 'TRADE' && !softProbeEligible) {
           symbolRejects.push({ symbol, reason: `ai_no_trade:${(aiDecision.reasons || [])[0] || 'model_blocked'}` });
           continue;
         }
 
-        if (Number(aiDecision.confidence || 0) < profile.minConfidencePct) {
+        if (Number(aiDecision.confidence || 0) < profile.minConfidencePct && !softProbeEligible) {
           symbolRejects.push({ symbol, reason: `symbol_confidence_gate:${Number(aiDecision.confidence || 0)}<${profile.minConfidencePct}` });
           continue;
         }
@@ -762,6 +1133,14 @@ function startExecutionWorker() {
             })()
           : undefined;
 
+        const minLeverage = Math.max(10, Number((s.riskSettings as any).minLeverage || 10));
+        const maxLeverage = Math.max(minLeverage, Number(s.riskSettings.maxLeverage || 20));
+        const preferredLeverage = probeMode
+          ? minLeverage
+          : Number(candidate.confidence || 0) >= 75
+            ? maxLeverage
+            : minLeverage;
+
         const signal: TradeSignal = {
           modelId: '1',
           symbol: plan.symbol,
@@ -772,7 +1151,7 @@ function startExecutionWorker() {
           reason: `auto_worker_unified regime=${snapshot.marketRegime} rr=${Number(plan.expectedRMultiple || 0).toFixed(2)} edge=${Number(plan.expectedNetEdgeBps || 0).toFixed(1)}bps${probeMode ? ' soft_probe=1' : ''}`,
           stopLoss: plan.stopLoss,
           takeProfit: plan.takeProfit,
-          leverage: probeMode ? 1 : Math.min(Number(s.riskSettings.maxLeverage || 2), profile.maxLeverage),
+          leverage: preferredLeverage,
           timestamp: new Date(),
         };
 
@@ -1122,8 +1501,13 @@ router.post('/settings', authenticateAdmin, async (req, res) => {
           payload.notificationSettings?.telegramBotToken
         ),
       },
+      selfLearningSettings: {
+        ...(current as any).selfLearningSettings,
+        ...(payload.selfLearningSettings || {}),
+      },
     };
 
+    const auditChanges = buildSettingsAuditChanges(current, next);
     settingsStore.set(next);
     tradingService = null; // force re-init with new settings
     await ensureTradingService();
@@ -1134,6 +1518,18 @@ router.post('/settings', authenticateAdmin, async (req, res) => {
       aiProvider: next.aiProvider,
       portfolioEnabled: next.modelAccounts?.[0]?.tradingEnabled ?? false,
     });
+
+    if (Object.keys(auditChanges).length > 0) {
+      settingsAudit.append({
+        ts: new Date().toISOString(),
+        actor: 'dashboard_admin',
+        type: 'settings_saved',
+        summary: `Updated ${Object.keys(auditChanges).length} settings field(s)`,
+        changes: auditChanges,
+      });
+    }
+
+    scheduleNextSelfLearningRun(false);
 
     res.json({ success: true, settings: next, providerMode: 'multi_provider' });
   } catch (error: any) {
@@ -1448,6 +1844,65 @@ router.post('/update-stop-loss', authenticateAdmin, async (req, res) => {
   }
 });
 
+router.post('/positions/secure-break-even', authenticateAdmin, async (req, res) => {
+  try {
+    const svc = await ensureTradingService();
+    if (!svc) return res.status(400).json({ success: false, error: 'Trading service not initialized' });
+
+    const symbols = Array.isArray(req.body?.symbols) ? req.body.symbols : [];
+    const symbol = String(symbols[0] || req.body?.symbol || '').trim().toUpperCase();
+    const bufferPct = Number(req.body?.bufferPct);
+    if (!symbol) {
+      return res.status(400).json({ success: false, error: 'symbol_required' });
+    }
+
+    const result = await svc.secureBreakEven('1', symbol, Number.isFinite(bufferPct) ? bufferPct : 0.001);
+    return res.json({ success: true, result });
+  } catch (error: any) {
+    logger.error('secure_break_even_failed', { error: error?.message || 'unknown' });
+    res.status(500).json({ success: false, error: error?.message || 'secure_break_even_failed' });
+  }
+});
+
+router.post('/positions/partial-close', authenticateAdmin, async (req, res) => {
+  try {
+    const svc = await ensureTradingService();
+    if (!svc) return res.status(400).json({ success: false, error: 'Trading service not initialized' });
+
+    const symbols = Array.isArray(req.body?.symbols) ? req.body.symbols : [];
+    const symbol = String(symbols[0] || req.body?.symbol || '').trim().toUpperCase();
+    const percent = Number(req.body?.percent);
+    if (!symbol || !Number.isFinite(percent) || percent <= 0 || percent >= 100) {
+      return res.status(400).json({ success: false, error: 'symbol_and_valid_percent_required' });
+    }
+
+    const result = await svc.partialClosePosition('1', symbol, percent);
+    return res.json({ success: true, result });
+  } catch (error: any) {
+    logger.error('partial_close_failed', { error: error?.message || 'unknown' });
+    res.status(500).json({ success: false, error: error?.message || 'partial_close_failed' });
+  }
+});
+
+router.post('/close-position', authenticateAdmin, async (req, res) => {
+  try {
+    const svc = await ensureTradingService();
+    if (!svc) return res.status(400).json({ success: false, error: 'Trading service not initialized' });
+
+    const symbol = String(req.body?.symbol || '').trim().toUpperCase();
+    if (!symbol) {
+      return res.status(400).json({ success: false, error: 'symbol_required' });
+    }
+
+    await svc.closePosition('1', symbol, 'manual_close');
+    logger.warn('position_closed_single', { modelId: 1, symbol });
+    res.json({ success: true, symbol, message: `${symbol} position closed` });
+  } catch (error: any) {
+    logger.error('close_position_failed', { error: error?.message || 'unknown' });
+    res.status(500).json({ success: false, error: error?.message || 'close_position_failed' });
+  }
+});
+
 router.post('/close-positions', authenticateAdmin, async (req, res) => {
   try {
     const svc = await ensureTradingService();
@@ -1514,6 +1969,69 @@ router.get('/risk-context', async (req, res) => {
   }
 });
 
+router.get('/trade-intelligence', async (req, res) => {
+  try {
+    const symbols = String(req.query.symbols || getExecutionSymbols().join(',')).split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
+    const svc = await ensureTradingService();
+    let positions: any[] = [];
+    if (svc) {
+      try {
+        await svc.updatePositions();
+        positions = svc.getModelAccount('1')?.positions || [];
+      } catch {
+        positions = svc.getModelAccount('1')?.positions || [];
+      }
+    }
+    const [snapshot, entries] = await Promise.all([
+      riskIntel.getSnapshot(symbols),
+      getLearningJournalEntries(5000, 500),
+    ]);
+    const intelligence = tradeIntelligence.build(snapshot, positions, entries);
+    res.json({ success: true, ...intelligence });
+  } catch (error: any) {
+    logger.error('trade_intelligence_failed', { error: error?.message || 'unknown' });
+    res.status(500).json({ success: false, error: error?.message || 'trade_intelligence_failed' });
+  }
+});
+
+router.get('/operator-intelligence', async (req, res) => {
+  try {
+    const symbols = String(req.query.symbols || getExecutionSymbols().join(',')).split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
+    const svc = await ensureTradingService();
+    let positions: any[] = [];
+    if (svc) {
+      try {
+        await svc.updatePositions();
+        positions = svc.getModelAccount('1')?.positions || [];
+      } catch {
+        positions = svc.getModelAccount('1')?.positions || [];
+      }
+    }
+
+    const [snapshot, entries] = await Promise.all([
+      riskIntel.getSnapshot(symbols),
+      getLearningJournalEntries(5000, 500),
+    ]);
+    const tradePayload = tradeIntelligence.build(snapshot, positions, entries);
+    const payload = await operatorIntelligence.build({
+      symbols,
+      snapshot,
+      tradeIntelligence: tradePayload,
+      journalEntries: entries,
+      worker: {
+        aiGateDecision: lastAiGateDecision,
+        finalExecutionDecision: lastFinalExecutionDecision,
+        lastReason: lastWorkerReason,
+        lastReasonHuman: humanizeWorkerReason(lastWorkerReason),
+      },
+    });
+    res.json({ success: true, ...payload });
+  } catch (error: any) {
+    logger.error('operator_intelligence_failed', { error: error?.message || 'unknown' });
+    res.status(500).json({ success: false, error: error?.message || 'operator_intelligence_failed' });
+  }
+});
+
 router.get('/journal', async (req, res) => {
   try {
     const svc = await ensureTradingService();
@@ -1545,9 +2063,21 @@ router.get('/journal', async (req, res) => {
         })()
       : baseWindow;
 
+    const review = svc.getJournalReview(lastN);
+    const paperTrading = Boolean((settingsStore.get().riskSettings as any)?.paperTrading);
+
     res.json({
       entries,
-      review: svc.getJournalReview(lastN),
+      review,
+      executionMode: paperTrading ? 'paper' : 'live',
+      policy: {
+        minLeverage: Number((settingsStore.get().riskSettings as any)?.minLeverage || 10),
+        maxLeverage: Number(settingsStore.get().riskSettings.maxLeverage || 20),
+        maxOpenPositions: Number((settingsStore.get().riskSettings as any)?.maxOpenPositions || 4),
+        maxTradesPerDay: Number(settingsStore.get().riskSettings.maxTradesPerDay || 8),
+        maxConsecutiveLosses: Number(settingsStore.get().riskSettings.maxConsecutiveLosses || 3),
+        minConfidence: Number(settingsStore.get().riskSettings.minConfidence || 0.6),
+      },
     });
   } catch (error: any) {
     res.status(500).json({ error: error?.message || 'journal_failed' });
@@ -1758,6 +2288,62 @@ router.post('/helix/experiment-contract/live-evaluate', authenticateAdmin, async
   }
 });
 
+router.get('/helix/self-learning/status', async (_req, res) => {
+  try {
+    const cfg = getSelfLearningSettings();
+    const entries = await getLearningJournalEntries(10_000);
+    const closedTrades = entries.filter((e: any) => e?.type === 'trade_close').length;
+    const latestAuditReview = promotionAudit.list(50).find((entry: any) => entry?.type === 'self_learning_review');
+    const fallbackLastResult = latestAuditReview
+      ? {
+          success: true,
+          completedAt: latestAuditReview.ts,
+          mode: latestAuditReview.mode || 'scheduled',
+          evidence: {
+            closedTrades,
+            requiredClosedTrades: cfg.minClosedTrades,
+            readinessPct: cfg.minClosedTrades > 0 ? Math.min(100, Math.round((closedTrades / cfg.minClosedTrades) * 100)) : 0,
+          },
+          record: {
+            result: {
+              decision: latestAuditReview.decision || 'n/a',
+              reasons: latestAuditReview.reasons || [],
+            },
+          },
+          riskAdjustment: latestAuditReview.riskAdjustment || null,
+          nextAction: latestAuditReview.nextAction || null,
+        }
+      : null;
+    res.json({
+      success: true,
+      running: selfLearningRunning,
+      schedulerStarted: selfLearningSchedulerStarted,
+      settings: cfg,
+      evidence: {
+        closedTrades,
+        requiredClosedTrades: cfg.minClosedTrades,
+        readinessPct: cfg.minClosedTrades > 0 ? Math.min(100, Math.round((closedTrades / cfg.minClosedTrades) * 100)) : 0,
+      },
+      lastRunAt: lastSelfLearningRunAt || fallbackLastResult?.completedAt || null,
+      nextRunAt: nextSelfLearningRunAt,
+      lastError: lastSelfLearningError,
+      lastResult: lastSelfLearningResult || fallbackLastResult,
+    });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || 'self_learning_status_failed' });
+  }
+});
+
+router.post('/helix/self-learning/run', authenticateAdmin, async (_req, res) => {
+  try {
+    const result = await runSelfLearningReview('manual');
+    scheduleNextSelfLearningRun(false);
+    res.json(result);
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || 'self_learning_run_failed' });
+  }
+});
+
 router.get('/helix/promotion-audit', authenticateAdmin, async (req, res) => {
   try {
     const limit = Number(req.query.limit || 30);
@@ -1780,5 +2366,16 @@ router.post('/helix/promotion-audit', authenticateAdmin, async (req, res) => {
     res.status(400).json({ success: false, error: error?.message || 'promotion_audit_append_failed' });
   }
 });
+
+router.get('/settings-audit', authenticateAdmin, async (req, res) => {
+  try {
+    const limit = Number(req.query.limit || 50);
+    res.json({ success: true, entries: settingsAudit.list(limit) });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || 'settings_audit_list_failed' });
+  }
+});
+
+startSelfLearningScheduler();
 
 export default router;

@@ -10,14 +10,14 @@ import { authenticateAdmin } from '../middleware/auth';
 
 const router = Router();
 
-// Public endpoints (rate-limited in production)
-router.post('/chat/:modelId', chatWithModel);
+// Public endpoints (read-only)
 router.get('/market-analysis', getMarketAnalysis);
+router.get('/status', getAIStatus);
 
 // Admin-only endpoints
+router.post('/chat/:modelId', authenticateAdmin, chatWithModel);
 router.post('/trading-signal', authenticateAdmin, getTradingSignal);
 router.get('/analyze/:modelId', authenticateAdmin, analyzeModelPerformance);
-router.get('/status', getAIStatus);
 
 export default router;
 

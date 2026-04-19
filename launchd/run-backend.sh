@@ -15,8 +15,20 @@ s.close()
 raise SystemExit(0 if rc==0 else 1)
 PY
 then
-  echo "[helix-backend] Port 3001 already in use; skipping duplicate launch."
-  exit 0
+  echo "[helix-backend] Port 3001 already in use; monitoring existing backend."
+  while python3 - <<'PY'
+import socket
+s=socket.socket()
+s.settimeout(0.4)
+rc=s.connect_ex(('127.0.0.1',3001))
+s.close()
+raise SystemExit(0 if rc==0 else 1)
+PY
+  do
+    sleep 15
+  done
+  echo "[helix-backend] Existing backend disappeared; exiting non-zero so launchd restarts it."
+  exit 1
 fi
 
 if [ ! -f "dist/server.js" ]; then

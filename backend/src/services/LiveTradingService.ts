@@ -14,12 +14,21 @@ export interface TradingConfig {
   cooldownMinutes?: number;
   maxTradesPerDay?: number;
   maxConsecutiveLosses?: number;
+  maxOpenPositions?: number;
   minConfidence?: number;
+  minLeverage?: number;
+  paperTrading?: boolean;
   maxUnprotectedPositionSeconds?: number;
   stopPlacementRetries?: number;
   breakEvenEnabled?: boolean;
   breakEvenTriggerR?: number;
   breakEvenBufferPct?: number;
+  breakEvenFeeBps?: number;
+  breakEvenSlippageBps?: number;
+  letWinnersRunEnabled?: boolean;
+  runnerActivationR?: number;
+  runnerPartialTakeProfitPct?: number;
+  runnerTrailPct?: number;
 }
 
 export interface TradeSignal {
@@ -57,6 +66,9 @@ export interface ModelTradingAccount {
     takeProfit?: number;
     openedAt: string;
     source?: 'local' | 'exchange';
+    runnerMode?: boolean;
+    partialTakenPct?: number;
+    bestPrice?: number;
   }>;
   totalPnL: number;
   winRate: number;
@@ -91,6 +103,22 @@ export class LiveTradingService extends EventEmitter {
     if (!isConnected) throw new Error('Failed to connect to Binance API');
     this.isConnected = true;
     this.emit('initialized');
+  }
+
+  private breakEvenProtectionPct() {
+    const manualBufferPct = Math.max(0, this.config.breakEvenBufferPct ?? 0);
+    const feePct = Math.max(0, this.config.breakEvenFeeBps ?? 8) / 10000;
+    const slippagePct = Math.max(0, this.config.breakEvenSlippageBps ?? 5) / 10000;
+    return manualBufferPct + feePct + slippagePct;
+  }
+
+  private breakEvenStopFor(position: { side: 'LONG' | 'SHORT'; entryPrice: number }, extraBufferPct = 0) {
+    const entry = Number(position.entryPrice || 0);
+    if (!Number.isFinite(entry) || entry <= 0) throw new Error('invalid_entry_price');
+    const protectionPct = this.breakEvenProtectionPct() + Math.max(0, extraBufferPct);
+    return position.side === 'LONG'
+      ? entry * (1 + protectionPct)
+      : entry * (1 - protectionPct);
   }
 
   createModelAccount(modelId: string, modelName: string, allocatedBalance: number): ModelTradingAccount {
@@ -146,6 +174,8 @@ export class LiveTradingService extends EventEmitter {
       return false;
     }
 
+    signal.leverage = this.resolveSignalLeverage(signal);
+
     const positionSizeUsd = this.calculatePositionSizeUsd(signal, modelAccount);
     if (positionSizeUsd < this.config.minTradeAmount) {
       this.lastSignalRejectReason = 'min_trade_amount';
@@ -187,6 +217,14 @@ export class LiveTradingService extends EventEmitter {
       qty: Number(orderResult.quantity),
       confidence: signal.confidence,
       reason: signal.reason,
+      execution: {
+        orderId: orderResult.orderId,
+        requestedPrice: Number(orderResult.requestedPrice || signal.price || 0),
+        fillPrice: Number(orderResult.price || 0),
+        slippageBps: Number(orderResult.slippageBps || 0),
+        status: orderResult.status,
+        paper: Boolean(orderResult.paper),
+      },
       risk: {
         stopLoss: signal.stopLoss,
         takeProfit: signal.takeProfit,
@@ -232,7 +270,11 @@ export class LiveTradingService extends EventEmitter {
     const minConfidence = this.config.minConfidence ?? 0.7;
     if (signal.confidence < minConfidence) return { ok: false, reason: 'low_confidence' };
 
-    if (signal.leverage && signal.leverage > this.config.maxLeverage) return { ok: false, reason: 'leverage_limit' };
+    const requestedLeverage = Number(signal.leverage || 0);
+    const minLeverage = Math.max(1, Number(this.config.minLeverage || 1));
+    const maxLeverage = Math.max(minLeverage, Number(this.config.maxLeverage || minLeverage));
+    if (requestedLeverage > 0 && requestedLeverage < minLeverage) return { ok: false, reason: 'below_min_leverage' };
+    if (requestedLeverage > maxLeverage) return { ok: false, reason: 'leverage_limit' };
 
     const now = Date.now();
     if (account.cooldownUntil && new Date(account.cooldownUntil).getTime() > now) {
@@ -241,6 +283,10 @@ export class LiveTradingService extends EventEmitter {
 
     if (account.tradesToday >= (this.config.maxTradesPerDay ?? 5)) {
       return { ok: false, reason: 'max_trades_per_day' };
+    }
+
+    if (account.positions.length >= ((this.config as any).maxOpenPositions ?? 4)) {
+      return { ok: false, reason: 'max_open_positions_reached' };
     }
 
     if (account.consecutiveLosses >= (this.config.maxConsecutiveLosses ?? 3)) {
@@ -266,8 +312,16 @@ export class LiveTradingService extends EventEmitter {
 
   private calculatePositionSizeUsd(signal: TradeSignal, account: ModelTradingAccount): number {
     const maxPositionValue = account.currentBalance * this.config.maxPositionSize;
-    const leverage = signal.leverage || 1;
+    const leverage = this.resolveSignalLeverage(signal);
     return maxPositionValue * leverage;
+  }
+
+  private resolveSignalLeverage(signal: TradeSignal): number {
+    const minLeverage = Math.max(1, Number(this.config.minLeverage || 1));
+    const maxLeverage = Math.max(minLeverage, Number(this.config.maxLeverage || minLeverage));
+    const requested = Number(signal.leverage || minLeverage);
+    if (!Number.isFinite(requested) || requested <= 0) return minLeverage;
+    return Math.max(minLeverage, Math.min(maxLeverage, requested));
   }
 
   private async executeTrade(signal: TradeSignal, positionSizeUsd: number): Promise<any> {
@@ -275,6 +329,22 @@ export class LiveTradingService extends EventEmitter {
       const symbol = signal.symbol.endsWith('USDT') ? signal.symbol : `${signal.symbol}USDT`;
       const currentPrice = await this.binance.getCurrentPrice(symbol);
       const quantity = (signal.quantity && signal.quantity > 0) ? signal.quantity : positionSizeUsd / currentPrice;
+
+      if (this.config.paperTrading) {
+        const syntheticPrice = Number(currentPrice);
+        return {
+          success: true,
+          orderId: Number(`9${Date.now()}`),
+          symbol,
+          side: signal.side,
+          quantity,
+          price: syntheticPrice,
+          requestedPrice: Number(signal.price || currentPrice),
+          slippageBps: 0,
+          status: 'FILLED',
+          paper: true,
+        };
+      }
 
       if (signal.leverage && signal.leverage > 1) {
         try {
@@ -307,6 +377,11 @@ export class LiveTradingService extends EventEmitter {
       const avgPrice = Number(orderResult.avgPrice || 0);
       const orderPrice = Number(orderResult.price || 0);
       const resolvedPrice = avgPrice > 0 ? avgPrice : (orderPrice > 0 ? orderPrice : Number(currentPrice));
+      const requestedPrice = Number(signal.price || currentPrice);
+      const sideMultiplier = signal.side === 'BUY' ? 1 : -1;
+      const slippageBps = requestedPrice > 0
+        ? ((resolvedPrice - requestedPrice) / requestedPrice) * 10000 * sideMultiplier
+        : 0;
 
       return {
         success: true,
@@ -315,6 +390,8 @@ export class LiveTradingService extends EventEmitter {
         side: orderResult.side,
         quantity: resolvedQty,
         price: resolvedPrice,
+        requestedPrice,
+        slippageBps,
         status: orderResult.status,
       };
     } catch (error: any) {
@@ -326,6 +403,16 @@ export class LiveTradingService extends EventEmitter {
     const side = signal.side;
     const entry = Number(orderResult.price || signal.price || 0);
     if (!(entry > 0)) return { ok: false, reason: 'missing_entry_price', stopLoss: 0 };
+
+    if (this.config.paperTrading) {
+      const stopLoss = signal.stopLoss ?? (side === 'BUY'
+        ? entry * (1 - this.config.stopLossPercentage)
+        : entry * (1 + this.config.stopLossPercentage));
+      const takeProfit = signal.takeProfit ?? (side === 'BUY'
+        ? entry * (1 + this.config.takeProfitPercentage)
+        : entry * (1 - this.config.takeProfitPercentage));
+      return { ok: true, stopLoss, takeProfit };
+    }
 
     const stopLoss = signal.stopLoss ?? (side === 'BUY'
       ? entry * (1 - this.config.stopLossPercentage)
@@ -444,6 +531,7 @@ export class LiveTradingService extends EventEmitter {
 
   private async forceCloseUnprotectedOrder(orderResult: any, signal: TradeSignal): Promise<void> {
     try {
+      if (this.config.paperTrading) return;
       const symbol = String(orderResult.symbol || signal.symbol).endsWith('USDT')
         ? String(orderResult.symbol || signal.symbol)
         : `${String(orderResult.symbol || signal.symbol)}USDT`;
@@ -504,17 +592,17 @@ export class LiveTradingService extends EventEmitter {
 
           // hard stop-loss / take-profit auto close
           const riskPerUnit = position.stopLoss ? Math.abs(position.entryPrice - position.stopLoss) : 0;
-          const breakEvenTriggerR = this.config.breakEvenTriggerR ?? 1;
-          const breakEvenBufferPct = this.config.breakEvenBufferPct ?? 0;
-          const breakEvenEnabled = Boolean(this.config.breakEvenEnabled);
-          if (breakEvenEnabled && riskPerUnit > 0) {
+          let achievedR = 0;
+          if (riskPerUnit > 0) {
             const favorableMove = position.side === 'LONG'
               ? currentPrice - position.entryPrice
               : position.entryPrice - currentPrice;
-            const achievedR = favorableMove / riskPerUnit;
-            const breakEvenStop = position.side === 'LONG'
-              ? position.entryPrice * (1 + breakEvenBufferPct)
-              : position.entryPrice * (1 - breakEvenBufferPct);
+            achievedR = favorableMove / riskPerUnit;
+          }
+          const breakEvenTriggerR = this.config.breakEvenTriggerR ?? 1;
+          const breakEvenEnabled = Boolean(this.config.breakEvenEnabled);
+          if (breakEvenEnabled && riskPerUnit > 0) {
+            const breakEvenStop = this.breakEvenStopFor(position);
             const shouldAdvance = achievedR >= breakEvenTriggerR;
             const improvesStop = !position.stopLoss || (
               position.side === 'LONG'
@@ -522,15 +610,101 @@ export class LiveTradingService extends EventEmitter {
                 : breakEvenStop < position.stopLoss
             );
             if (shouldAdvance && improvesStop) {
+              await this.updateStopLoss(account.modelId, position.symbol, breakEvenStop);
               position.stopLoss = breakEvenStop;
+              this.journal.append({
+                ts: new Date().toISOString(),
+                type: 'break_even_plus_armed',
+                modelId: account.modelId,
+                symbol: position.symbol,
+                stopLoss: breakEvenStop,
+                achievedR,
+                costProtectionPct: this.breakEvenProtectionPct(),
+                reason: 'winner_reached_r_threshold_stop_moved_to_cost_aware_be_plus',
+              });
             }
           }
+
+          const activateRunner = async (reason: string) => {
+            const pct = Math.max(5, Math.min(80, Number(this.config.runnerPartialTakeProfitPct || 30)));
+            await this.partialClosePosition(account.modelId, position.symbol, pct);
+            position.partialTakenPct = pct;
+            position.runnerMode = true;
+            position.takeProfit = undefined;
+            position.stopLoss = this.breakEvenStopFor(position);
+            await this.updateStopLoss(account.modelId, position.symbol, position.stopLoss);
+            this.journal.append({
+              ts: new Date().toISOString(),
+              type: 'winner_runner_activated',
+              modelId: account.modelId,
+              symbol: position.symbol,
+              partialTakenPct: pct,
+              stopLoss: position.stopLoss,
+              achievedR,
+              reason,
+            });
+          };
 
           const stopHit = position.stopLoss ? ((position.side === 'LONG' && currentPrice <= position.stopLoss) || (position.side === 'SHORT' && currentPrice >= position.stopLoss)) : false;
           const tpHit = position.takeProfit ? ((position.side === 'LONG' && currentPrice >= position.takeProfit) || (position.side === 'SHORT' && currentPrice <= position.takeProfit)) : false;
 
-          if (stopHit || tpHit) {
-            await this.closePosition(account.modelId, position.symbol, stopHit ? 'stop_loss' : 'take_profit');
+          if (stopHit) {
+            await this.closePosition(account.modelId, position.symbol, 'stop_loss');
+            continue;
+          }
+
+          if (tpHit) {
+            if (this.config.letWinnersRunEnabled) {
+              const alreadyPartial = Number(position.partialTakenPct || 0) > 0;
+              if (!alreadyPartial) {
+                await activateRunner('take_profit_hit_partial_taken_runner_left_open');
+              } else {
+                position.runnerMode = true;
+                position.takeProfit = undefined;
+              }
+            } else {
+              await this.closePosition(account.modelId, position.symbol, 'take_profit');
+              continue;
+            }
+          }
+
+          if (!tpHit && this.config.letWinnersRunEnabled && riskPerUnit > 0 && Number(position.partialTakenPct || 0) <= 0 && !position.runnerMode) {
+            const activationR = Math.max(1, Math.min(10, Number(this.config.runnerActivationR || 2)));
+            if (achievedR >= activationR) {
+              await activateRunner(`profit_reached_${activationR.toFixed(2)}r_partial_taken_runner_left_open`);
+            }
+          }
+
+          if (this.config.letWinnersRunEnabled && position.runnerMode) {
+            const trailPct = Math.max(0.001, Math.min(0.2, Number(this.config.runnerTrailPct || 0.006)));
+            position.bestPrice = position.bestPrice && position.bestPrice > 0
+              ? (position.side === 'LONG' ? Math.max(position.bestPrice, currentPrice) : Math.min(position.bestPrice, currentPrice))
+              : currentPrice;
+            const trailingStop = position.side === 'LONG'
+              ? position.bestPrice * (1 - trailPct)
+              : position.bestPrice * (1 + trailPct);
+            const costAwareFloor = this.breakEvenStopFor(position);
+            const candidateStop = position.side === 'LONG'
+              ? Math.max(trailingStop, costAwareFloor)
+              : Math.min(trailingStop, costAwareFloor);
+            const improvesStop = !position.stopLoss || (
+              position.side === 'LONG'
+                ? candidateStop > position.stopLoss
+                : candidateStop < position.stopLoss
+            );
+            if (improvesStop) {
+              await this.updateStopLoss(account.modelId, position.symbol, candidateStop);
+              position.stopLoss = candidateStop;
+              this.journal.append({
+                ts: new Date().toISOString(),
+                type: 'runner_stop_trailed',
+                modelId: account.modelId,
+                symbol: position.symbol,
+                stopLoss: candidateStop,
+                bestPrice: position.bestPrice,
+                trailPct,
+              });
+            }
           }
         } catch {
           // ignore one position fetch failure
@@ -540,6 +714,7 @@ export class LiveTradingService extends EventEmitter {
       // Reconcile with exchange positions for accurate display/state.
       try {
         const exchangePositions = await this.binance.getPositions();
+        const openOrders = await this.binance.getOpenOrders().catch(() => [] as any[]);
         const localBySymbol = new Map(account.positions.map((p) => [p.symbol, p]));
         const live = exchangePositions
           .map((p: any) => {
@@ -552,6 +727,12 @@ export class LiveTradingService extends EventEmitter {
             const side: 'LONG' | 'SHORT' = amt > 0 ? 'LONG' : 'SHORT';
             const symbol = String(p.symbol || '');
             const prior = localBySymbol.get(symbol);
+            const closeSide = side === 'LONG' ? 'SELL' : 'BUY';
+            const symbolOrders = openOrders.filter((o: any) => String(o?.symbol || '') === symbol && String(o?.status || '').toUpperCase() === 'NEW' && String(o?.side || '').toUpperCase() === closeSide);
+            const stopOrder = symbolOrders.find((o: any) => String(o?.type || '').toUpperCase().includes('STOP'));
+            const tpOrder = symbolOrders.find((o: any) => String(o?.type || '').toUpperCase().includes('TAKE_PROFIT'));
+            const stopFromOrder = Number(stopOrder?.stopPrice || stopOrder?.price || 0);
+            const tpFromOrder = Number(tpOrder?.stopPrice || tpOrder?.price || 0);
             return {
               symbol,
               side,
@@ -560,10 +741,13 @@ export class LiveTradingService extends EventEmitter {
               currentPrice: mark > 0 ? mark : entry,
               pnl: upnl,
               leverage: Number.isFinite(leverage) && leverage > 0 ? leverage : 1,
-              stopLoss: prior?.stopLoss,
-              takeProfit: prior?.takeProfit,
+              stopLoss: stopFromOrder > 0 ? stopFromOrder : prior?.stopLoss,
+              takeProfit: tpFromOrder > 0 ? tpFromOrder : prior?.takeProfit,
               openedAt: prior?.openedAt || new Date().toISOString(),
               source: 'exchange' as const,
+              runnerMode: prior?.runnerMode,
+              partialTakenPct: prior?.partialTakenPct,
+              bestPrice: prior?.bestPrice,
             };
           })
           .filter(Boolean) as any[];
@@ -692,12 +876,14 @@ export class LiveTradingService extends EventEmitter {
     const binanceSymbol = position.symbol.endsWith('USDT') ? position.symbol : `${position.symbol}USDT`;
     const oppositeSide: 'BUY' | 'SELL' = position.side === 'LONG' ? 'SELL' : 'BUY';
 
-    await this.binance.placeOrder({
-      symbol: binanceSymbol,
-      side: oppositeSide,
-      type: 'MARKET',
-      quantity: position.size,
-    });
+    if (!this.config.paperTrading) {
+      await this.binance.placeOrder({
+        symbol: binanceSymbol,
+        side: oppositeSide,
+        type: 'MARKET',
+        quantity: position.size,
+      });
+    }
 
     const pnl = position.pnl;
     account.positions.splice(index, 1);
@@ -845,6 +1031,98 @@ export class LiveTradingService extends EventEmitter {
     });
 
     return { success: true, symbol: pos.symbol, stopLoss };
+  }
+
+  async secureBreakEven(modelId: string, symbol: string, bufferPct = 0.001) {
+    const account = this.modelAccounts.get(modelId);
+    if (!account) throw new Error('model_not_found');
+
+    const pos = account.positions.find((p) => String(p.symbol).toUpperCase() === String(symbol).toUpperCase());
+    if (!pos) throw new Error('position_not_found');
+
+    const safeBuffer = Number.isFinite(bufferPct) && bufferPct >= 0 ? bufferPct : 0.001;
+    const stopLoss = this.breakEvenStopFor(pos, safeBuffer);
+
+    await this.updateStopLoss(modelId, symbol, stopLoss);
+    return {
+      success: true,
+      symbol: pos.symbol,
+      stopLoss,
+      bufferPct: safeBuffer,
+      costProtectionPct: this.breakEvenProtectionPct(),
+      feeBps: this.config.breakEvenFeeBps ?? 8,
+      slippageBps: this.config.breakEvenSlippageBps ?? 5,
+    };
+  }
+
+  async partialClosePosition(modelId: string, symbol: string, percent: number) {
+    const account = this.modelAccounts.get(modelId);
+    if (!account) throw new Error('model_not_found');
+
+    const pos = account.positions.find((p) => String(p.symbol).toUpperCase() === String(symbol).toUpperCase());
+    if (!pos) throw new Error('position_not_found');
+
+    const pct = Number(percent);
+    if (!Number.isFinite(pct) || pct <= 0 || pct >= 100) throw new Error('invalid_percent');
+
+    const currentSize = Number(pos.size || 0);
+    if (!Number.isFinite(currentSize) || currentSize <= 0) throw new Error('invalid_position_size');
+
+    const closeQty = Number((currentSize * (pct / 100)).toFixed(8));
+    if (!Number.isFinite(closeQty) || closeQty <= 0) throw new Error('partial_close_qty_too_small');
+
+    const binanceSymbol = pos.symbol.endsWith('USDT') ? pos.symbol : `${pos.symbol}USDT`;
+    const closeSide: 'BUY' | 'SELL' = pos.side === 'LONG' ? 'SELL' : 'BUY';
+
+    if (!this.config.paperTrading) {
+      await this.binance.placeOrder({
+        symbol: binanceSymbol,
+        side: closeSide,
+        type: 'MARKET',
+        quantity: closeQty,
+        reduceOnly: true,
+      });
+    }
+
+    const realizedPnlPortion = Number(pos.pnl || 0) * (pct / 100);
+    const remainingSize = Number((currentSize - closeQty).toFixed(8));
+
+    account.realizedPnL += realizedPnlPortion;
+    account.dailyRealizedPnL += realizedPnlPortion;
+
+    if (remainingSize <= 0) {
+      const idx = account.positions.findIndex((p) => String(p.symbol).toUpperCase() === String(symbol).toUpperCase());
+      if (idx >= 0) account.positions.splice(idx, 1);
+    } else {
+      pos.size = remainingSize;
+      pos.pnl = Number(pos.pnl || 0) - realizedPnlPortion;
+    }
+
+    account.lastTradeDay = new Date().toISOString().slice(0, 10);
+    const openPnL = account.positions.reduce((sum, openPos) => sum + openPos.pnl, 0);
+    account.totalPnL = account.realizedPnL + openPnL;
+    account.dailyPnl = account.dailyRealizedPnL + openPnL;
+    account.currentBalance = account.allocatedBalance + account.totalPnL;
+
+    this.journal.append({
+      ts: new Date().toISOString(),
+      type: 'partial_close',
+      modelId,
+      symbol: pos.symbol,
+      percent: pct,
+      qtyClosed: closeQty,
+      remainingQty: Math.max(remainingSize, 0),
+      pnl: realizedPnlPortion,
+    });
+
+    return {
+      success: true,
+      symbol: pos.symbol,
+      percent: pct,
+      qtyClosed: closeQty,
+      remainingQty: Math.max(remainingSize, 0),
+      realizedPnl: realizedPnlPortion,
+    };
   }
 
   getAllModelAccounts(): ModelTradingAccount[] {

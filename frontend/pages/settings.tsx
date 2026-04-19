@@ -30,6 +30,7 @@ export default function Settings() {
   const [testing, setTesting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string>('');
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
 
   const [banner, setBanner] = useState<Banner>(null);
   const [lastSavedAt, setLastSavedAt] = useState<string>('');
@@ -47,14 +48,24 @@ export default function Settings() {
   const [deepseekBalance, setDeepseekBalance] = useState(10000);
 
   const [maxDailyLossPct, setMaxDailyLossPct] = useState(3);
-  const [maxPositionSizePct, setMaxPositionSizePct] = useState(10);
-  const [maxLeverage, setMaxLeverage] = useState(5);
+  const [maxPositionSizePct, setMaxPositionSizePct] = useState(8);
+  const [maxLeverage, setMaxLeverage] = useState(20);
+  const [minLeverage, setMinLeverage] = useState(10);
+  const [maxOpenPositions, setMaxOpenPositions] = useState(4);
   const [killSwitchDrawdownPct, setKillSwitchDrawdownPct] = useState(5);
-  const [cooldownMinutes, setCooldownMinutes] = useState(30);
-  const [maxTradesPerDay, setMaxTradesPerDay] = useState(5);
+  const [cooldownMinutes, setCooldownMinutes] = useState(45);
+  const [maxTradesPerDay, setMaxTradesPerDay] = useState(8);
   const [maxConsecutiveLosses, setMaxConsecutiveLosses] = useState(3);
-  const [minConfidence, setMinConfidence] = useState(0.7);
+  const [minConfidence, setMinConfidence] = useState(0.60);
+  const [paperTrading, setPaperTrading] = useState(false);
   const [deepseekDecisionEnabled, setDeepseekDecisionEnabled] = useState(true);
+  const [breakEvenBufferPct, setBreakEvenBufferPct] = useState(0.001);
+  const [breakEvenFeeBps, setBreakEvenFeeBps] = useState(8);
+  const [breakEvenSlippageBps, setBreakEvenSlippageBps] = useState(5);
+  const [letWinnersRunEnabled, setLetWinnersRunEnabled] = useState(true);
+  const [runnerActivationR, setRunnerActivationR] = useState(2);
+  const [runnerPartialTakeProfitPct, setRunnerPartialTakeProfitPct] = useState(30);
+  const [runnerTrailPct, setRunnerTrailPct] = useState(0.006);
   const [tradeConfirmation, setTradeConfirmation] = useState(false);
   const [notificationsPush, setNotificationsPush] = useState(true);
   const [notificationsEmail, setNotificationsEmail] = useState(false);
@@ -92,7 +103,16 @@ export default function Settings() {
   const [promotionDryRun, setPromotionDryRun] = useState(true);
   const [promotionConfirmText, setPromotionConfirmText] = useState('');
   const [executionAudit, setExecutionAudit] = useState<any[]>([]);
+  const [settingsAudit, setSettingsAudit] = useState<any[]>([]);
   const [workerStatus, setWorkerStatus] = useState<any>(null);
+  const [learningReviewRunning, setLearningReviewRunning] = useState(false);
+  const [selfLearningStatus, setSelfLearningStatus] = useState<any>(null);
+  const [selfLearningEnabled, setSelfLearningEnabled] = useState(true);
+  const [selfLearningIntervalHours, setSelfLearningIntervalHours] = useState(6);
+  const [selfLearningMinClosedTrades, setSelfLearningMinClosedTrades] = useState(30);
+  const [selfLearningAutoRiskTightening, setSelfLearningAutoRiskTightening] = useState(true);
+  const [selfLearningAllowLivePromotion, setSelfLearningAllowLivePromotion] = useState(false);
+  const [selfLearningNotifyOnReview, setSelfLearningNotifyOnReview] = useState(true);
 
   const authHeaders = useMemo(() => (adminKey ? { 'x-admin-key': adminKey } : {}), [adminKey]);
 
@@ -102,12 +122,26 @@ export default function Settings() {
     if (maxPositionSizePct <= 0 || maxPositionSizePct > 100) errors.push('Max position size must be 0-100%.');
     if (killSwitchDrawdownPct <= 0 || killSwitchDrawdownPct > 100) errors.push('Kill-switch drawdown must be 0-100%.');
     if (maxLeverage < 1 || maxLeverage > 125) errors.push('Max leverage must be between 1 and 125.');
+    if (minLeverage < 1 || minLeverage > 125) errors.push('Min leverage must be between 1 and 125.');
+    if (minLeverage > maxLeverage) errors.push('Min leverage cannot exceed max leverage.');
+    if (maxOpenPositions < 1 || maxOpenPositions > 20) errors.push('Max open positions must be 1-20.');
     if (cooldownMinutes < 0 || cooldownMinutes > 1440) errors.push('Cooldown must be 0-1440 minutes.');
     if (maxTradesPerDay < 1 || maxTradesPerDay > 100) errors.push('Max trades/day must be 1-100.');
     if (maxConsecutiveLosses < 1 || maxConsecutiveLosses > 20) errors.push('Max consecutive losses must be 1-20.');
     if (minConfidence < 0 || minConfidence > 1) errors.push('Min confidence must be 0.00-1.00.');
+    if (breakEvenBufferPct < 0 || breakEvenBufferPct > 0.05) errors.push('BE+ safety buffer must be 0-5%.');
+    if (breakEvenFeeBps < 0 || breakEvenFeeBps > 100) errors.push('BE+ fee buffer must be 0-100 bps.');
+    if (breakEvenSlippageBps < 0 || breakEvenSlippageBps > 200) errors.push('BE+ slippage buffer must be 0-200 bps.');
+    if (runnerActivationR < 1 || runnerActivationR > 10) errors.push('Runner activation must be 1-10R.');
+    if (runnerPartialTakeProfitPct < 5 || runnerPartialTakeProfitPct > 80) errors.push('Runner partial take-profit must be 5-80%.');
+    if (runnerTrailPct < 0.001 || runnerTrailPct > 0.2) errors.push('Runner trailing stop must be 0.10-20%.');
     return errors;
-  }, [maxDailyLossPct, maxPositionSizePct, killSwitchDrawdownPct, maxLeverage, cooldownMinutes, maxTradesPerDay, maxConsecutiveLosses, minConfidence]);
+  }, [maxDailyLossPct, maxPositionSizePct, killSwitchDrawdownPct, maxLeverage, minLeverage, maxOpenPositions, cooldownMinutes, maxTradesPerDay, maxConsecutiveLosses, minConfidence, breakEvenBufferPct, breakEvenFeeBps, breakEvenSlippageBps, runnerActivationR, runnerPartialTakeProfitPct, runnerTrailPct]);
+
+  const credentialStatus = (saved: boolean): 'Saved' | 'Not set' | 'Unknown' => {
+    if (!settingsLoaded) return 'Unknown';
+    return saved ? 'Saved' : 'Not set';
+  };
 
   function applySettings(s: any) {
     const isMasked = (v: string) => /^\*+$/.test(v || '');
@@ -160,14 +194,24 @@ export default function Settings() {
 
     const r = s.riskSettings || {};
     setMaxDailyLossPct(Number(r.maxDailyLossPct ?? 3));
-    setMaxPositionSizePct(Number(r.maxPositionSizePct ?? 10));
-    setMaxLeverage(Number(r.maxLeverage ?? 5));
+    setMaxPositionSizePct(Number(r.maxPositionSizePct ?? 8));
+    setMaxLeverage(Number(r.maxLeverage ?? 20));
+    setMinLeverage(Number((r as any).minLeverage ?? 10));
+    setMaxOpenPositions(Number((r as any).maxOpenPositions ?? 4));
     setKillSwitchDrawdownPct(Number(r.killSwitchDrawdownPct ?? 5));
-    setCooldownMinutes(Number(r.cooldownMinutes ?? 30));
-    setMaxTradesPerDay(Number(r.maxTradesPerDay ?? 5));
+    setCooldownMinutes(Number(r.cooldownMinutes ?? 45));
+    setMaxTradesPerDay(Number(r.maxTradesPerDay ?? 8));
     setMaxConsecutiveLosses(Number(r.maxConsecutiveLosses ?? 3));
-    setMinConfidence(Number(r.minConfidence ?? 0.7));
+    setMinConfidence(Number(r.minConfidence ?? 0.60));
+    setPaperTrading(Boolean((r as any).paperTrading ?? true));
     setDeepseekDecisionEnabled(r.deepseekDecisionEnabled !== false);
+    setBreakEvenBufferPct(Number((r as any).breakEvenBufferPct ?? 0.001));
+    setBreakEvenFeeBps(Number((r as any).breakEvenFeeBps ?? 8));
+    setBreakEvenSlippageBps(Number((r as any).breakEvenSlippageBps ?? 5));
+    setLetWinnersRunEnabled((r as any).letWinnersRunEnabled !== false);
+    setRunnerActivationR(Number((r as any).runnerActivationR ?? 2));
+    setRunnerPartialTakeProfitPct(Number((r as any).runnerPartialTakeProfitPct ?? 30));
+    setRunnerTrailPct(Number((r as any).runnerTrailPct ?? 0.006));
 
     const n = s.notificationSettings || {};
     setNotificationsPush(Boolean(n.pushEnabled ?? true));
@@ -183,6 +227,14 @@ export default function Settings() {
     setTelegramPairingCode(String(n.telegramPairingCode || ''));
     setTelegramMinSeverity((n.telegramMinSeverity || 'info') as 'info' | 'warning' | 'critical');
     setTelegramRateLimitSec(Number(n.telegramRateLimitSec ?? 120));
+
+    const sl = s.selfLearningSettings || {};
+    setSelfLearningEnabled(sl.enabled !== false);
+    setSelfLearningIntervalHours(Number(sl.intervalHours ?? 6));
+    setSelfLearningMinClosedTrades(Number(sl.minClosedTrades ?? 30));
+    setSelfLearningAutoRiskTightening(sl.autoRiskTightening !== false);
+    setSelfLearningAllowLivePromotion(sl.allowLivePromotion === true);
+    setSelfLearningNotifyOnReview(sl.notifyOnReview !== false);
   }
 
   async function load(silent = false) {
@@ -196,13 +248,15 @@ export default function Settings() {
       const settingsData = await settingsRes.json();
       applySettings(settingsData);
       loadedCore = true;
+      setSettingsLoaded(true);
       setLastUpdated(new Date().toLocaleTimeString());
     } catch (error: any) {
+      if (!silent) setSettingsLoaded(false);
       if (!silent) {
         const isTimeout = error?.name === 'AbortError';
         setBanner({
           type: 'error',
-          text: isTimeout ? 'Settings request timed out. Check API availability.' : 'Failed to refresh trading settings.',
+          text: isTimeout ? 'Settings request timed out. Backend API may be offline.' : 'Load failed: backend API is not reachable.',
         });
       }
     } finally {
@@ -210,10 +264,11 @@ export default function Settings() {
     }
 
     try {
-      const [statusResult, briefingResult, workerResult] = await Promise.allSettled([
+      const [statusResult, briefingResult, workerResult, selfLearningStatusResult] = await Promise.allSettled([
         fetchWithTimeout(`${API}/status`, {}, 2500),
         fetchWithTimeout(`${API}/daily-briefing`, {}, 2500),
         fetchWithTimeout(`${API}/worker-status`, {}, 2500),
+        fetchWithTimeout(`${API}/helix/self-learning/status`, {}, 2500),
       ]);
 
       if (statusResult.status === 'fulfilled' && statusResult.value.ok) {
@@ -228,12 +283,23 @@ export default function Settings() {
         setWorkerStatus(await workerResult.value.json());
       }
 
+      if (selfLearningStatusResult.status === 'fulfilled' && selfLearningStatusResult.value.ok) {
+        setSelfLearningStatus(await selfLearningStatusResult.value.json());
+      }
+
       if (adminKey) {
         try {
-          const auditRes = await fetchWithTimeout(`${API}/helix/promotion-audit?limit=30`, { headers: { ...authHeaders } }, 2500);
+          const [auditRes, settingsAuditRes] = await Promise.all([
+            fetchWithTimeout(`${API}/helix/promotion-audit?limit=30`, { headers: { ...authHeaders } }, 2500),
+            fetchWithTimeout(`${API}/settings-audit?limit=30`, { headers: { ...authHeaders } }, 2500),
+          ]);
           if (auditRes.ok) {
             const audit = await auditRes.json();
             if (Array.isArray(audit?.entries)) setExecutionAudit(audit.entries);
+          }
+          if (settingsAuditRes.ok) {
+            const audit = await settingsAuditRes.json();
+            if (Array.isArray(audit?.entries)) setSettingsAudit(audit.entries);
           }
         } catch {
           // ignore audit fetch failures
@@ -254,36 +320,28 @@ export default function Settings() {
     return () => clearInterval(id);
   }, []);
 
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem('helix_ui_prefs_v1');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        setUiPrefs({ ...defaultUiPrefs, ...parsed });
-      }
-    } catch {
-      // ignore local preference parse errors
-    }
-  }, []);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('helix_ui_prefs_v1', JSON.stringify(uiPrefs));
-    } catch {
-      // ignore local preference save errors
-    }
-  }, [uiPrefs]);
 
   useEffect(() => {
     if (!adminKey) return;
-    fetchWithTimeout(`${API}/helix/promotion-audit?limit=30`, { headers: { ...authHeaders } }, 2500)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (Array.isArray(data?.entries)) setExecutionAudit(data.entries);
-      })
-      .catch(() => {
-        // ignore initial audit fetch failure
-      });
+    Promise.all([
+      fetchWithTimeout(`${API}/helix/promotion-audit?limit=30`, { headers: { ...authHeaders } }, 2500)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (Array.isArray(data?.entries)) setExecutionAudit(data.entries);
+        }),
+      fetchWithTimeout(`${API}/settings-audit?limit=30`, { headers: { ...authHeaders } }, 2500)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (Array.isArray(data?.entries)) setSettingsAudit(data.entries);
+        }),
+      fetchWithTimeout(`${API}/helix/self-learning/status`, {}, 2500)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data?.success) setSelfLearningStatus(data);
+        }),
+    ]).catch(() => {
+      // ignore initial audit fetch failure
+    });
   }, [adminKey]);
 
   async function saveSettings() {
@@ -317,12 +375,24 @@ export default function Settings() {
           maxDailyLossPct,
           maxPositionSizePct,
           maxLeverage,
+          minLeverage,
+          maxOpenPositions,
           killSwitchDrawdownPct,
           cooldownMinutes,
           maxTradesPerDay,
           maxConsecutiveLosses,
           minConfidence,
+          paperTrading,
           deepseekDecisionEnabled,
+          breakEvenEnabled: true,
+          breakEvenTriggerR: 1,
+          breakEvenBufferPct,
+          breakEvenFeeBps,
+          breakEvenSlippageBps,
+          letWinnersRunEnabled,
+          runnerActivationR,
+          runnerPartialTakeProfitPct,
+          runnerTrailPct,
         },
         notificationSettings: {
           pushEnabled: notificationsPush,
@@ -333,6 +403,14 @@ export default function Settings() {
           telegramPairingCode,
           telegramMinSeverity,
           telegramRateLimitSec,
+        },
+        selfLearningSettings: {
+          enabled: selfLearningEnabled,
+          intervalHours: selfLearningIntervalHours,
+          minClosedTrades: selfLearningMinClosedTrades,
+          autoRiskTightening: selfLearningAutoRiskTightening,
+          allowLivePromotion: selfLearningAllowLivePromotion,
+          notifyOnReview: selfLearningNotifyOnReview,
         },
       };
 
@@ -456,11 +534,15 @@ export default function Settings() {
           maxDailyLossPct,
           maxPositionSizePct,
           maxLeverage,
+          minLeverage,
+          maxOpenPositions,
           killSwitchDrawdownPct,
           cooldownMinutes,
           maxTradesPerDay,
           maxConsecutiveLosses,
           minConfidence,
+          paperTrading,
+          deepseekDecisionEnabled,
         },
         notificationSettings: {
           pushEnabled: notificationsPush,
@@ -603,7 +685,7 @@ export default function Settings() {
             : 0),
           maxDrawdownPct: killSwitchDrawdownPct,
           perTradeRiskPct: Math.min(1.5, Math.max(0.25, maxPositionSizePct / 20)),
-          maxOpenPositions: Math.max(1, Math.min(10, maxTradesPerDay)),
+          maxOpenPositions: Math.max(1, Math.min(10, maxOpenPositions)),
           openPositions: Number(status?.activePortfolios?.[0]?.positionsCount || 0),
           slippageBps: Number(uiPrefs.slippageTolerancePct || 0.25) * 100,
           feesBps: testnet ? 2 : 6,
@@ -939,6 +1021,44 @@ export default function Settings() {
     }
   }
 
+  async function runSelfLearningReview() {
+    if (!adminKey.trim()) {
+      setBanner({ type: 'error', text: 'Admin key is required to run the guarded learning review.' });
+      return;
+    }
+    setLearningReviewRunning(true);
+    setBanner(null);
+    try {
+      const res = await fetchWithTimeout(`${API}/helix/self-learning/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+      }, 30000);
+      const data = await res.json();
+      if (!res.ok || data?.success === false) throw new Error(data?.error || data?.reason || 'self_learning_review_failed');
+      setSelfLearningStatus({
+        success: true,
+        running: false,
+        settings: {
+          enabled: selfLearningEnabled,
+          intervalHours: selfLearningIntervalHours,
+          minClosedTrades: selfLearningMinClosedTrades,
+          autoRiskTightening: selfLearningAutoRiskTightening,
+          allowLivePromotion: selfLearningAllowLivePromotion,
+          notifyOnReview: selfLearningNotifyOnReview,
+        },
+        lastRunAt: data.completedAt,
+        nextRunAt: null,
+        lastResult: data,
+      });
+      setLiveGovernanceOutput(data);
+      setBanner({ type: 'success', text: 'Guarded self-learning review completed and audit was written.' });
+    } catch (e: any) {
+      setBanner({ type: 'error', text: e?.message || 'Self-learning review failed.' });
+    } finally {
+      setLearningReviewRunning(false);
+    }
+  }
+
   const appendAudit = async (entry: any) => {
     const normalized = { ts: new Date().toISOString(), ...entry };
     setExecutionAudit((prev) => [normalized, ...prev].slice(0, 30));
@@ -966,12 +1086,26 @@ export default function Settings() {
   const market = briefing?.market || {};
 
   const livePlan = helixEvalOutput?.response?.plan;
-  const governanceRecord = liveGovernanceOutput?.record;
+  const latestLearningResult = selfLearningStatus?.lastResult || liveGovernanceOutput;
+  const governanceRecord = latestLearningResult?.record || liveGovernanceOutput?.record;
   const governanceResult = governanceRecord?.result;
-  const governanceEvidenceCount = Number(liveGovernanceOutput?.inputs?.candidateMetrics?.sampleSize || 0);
+  const statusEvidence = selfLearningStatus?.evidence || latestLearningResult?.evidence || {};
+  const governanceEvidenceCount = Number(
+    statusEvidence.closedTrades
+    ?? latestLearningResult?.inputs?.candidateMetrics?.sampleSize
+    ?? liveGovernanceOutput?.inputs?.candidateMetrics?.sampleSize
+    ?? 0
+  );
   const journalEvidenceCount = executionAudit.filter((row) => String(row?.type || '').toLowerCase() === 'trade_close').length;
   const evidenceCount = Math.max(governanceEvidenceCount, journalEvidenceCount);
-  const evidenceTarget = Number(liveGovernanceOutput?.inputs?.contract?.minSamples || 30);
+  const evidenceTarget = Number(
+    statusEvidence.requiredClosedTrades
+    ?? selfLearningStatus?.settings?.minClosedTrades
+    ?? latestLearningResult?.inputs?.contract?.minSamples
+    ?? liveGovernanceOutput?.inputs?.contract?.minSamples
+    ?? selfLearningMinClosedTrades
+    ?? 30
+  );
 
   const fallbackAction = workerStatus?.lastAction === 'trade_opened'
     ? 'TRADE OPENED'
@@ -1001,6 +1135,75 @@ export default function Settings() {
     ? 'No action needed now. Let auto-trading continue and collect more closed trades.'
     : 'Weekly checks ready: run Governance LIVE Auto-Feed and Walk-Forward, then review.';
 
+  const learningEvidencePct = evidenceTarget > 0 ? Math.min(100, Math.round((evidenceCount / evidenceTarget) * 100)) : 0;
+  const selfLearningOverview = {
+    mode: deepseekDecisionEnabled ? 'Learning guard active' : 'Learning paused',
+    phase: evidenceCount >= evidenceTarget ? 'Ready for review' : 'Collecting evidence',
+    confidence: `${learningEvidencePct}%`,
+    promotion: String(governanceResult?.decision || 'No promotion decision yet').toUpperCase(),
+    summary: evidenceCount >= evidenceTarget
+      ? 'The system has enough closed-trade evidence to run governance checks before changing strategy behavior.'
+      : 'The system is collecting trade outcomes, market regimes, and execution results before trusting strategy changes.',
+    nextBestAction: evidenceCount >= evidenceTarget
+      ? 'Run a guarded self-learning review. Promote nothing unless governance, walk-forward, and risk gates agree.'
+      : 'Let live trading continue and avoid manual strategy changes until the evidence bar is filled.',
+  };
+
+  const settingsHealthCards = [
+    {
+      label: 'Execution Mode',
+      value: !settingsLoaded ? 'LOADING' : paperTrading ? 'PAPER' : testnet ? 'TESTNET' : 'LIVE',
+      tone: !settingsLoaded ? 'cyan' : paperTrading || testnet ? 'amber' : 'green',
+      detail: !settingsLoaded ? 'Waiting for backend settings' : paperTrading ? 'Simulated orders' : testnet ? 'Binance testnet' : 'Real Binance execution',
+    },
+    {
+      label: 'Trading Gate',
+      value: globalTradingEnabled && portfolioTradingEnabled ? 'ARMED' : 'LOCKED',
+      tone: globalTradingEnabled && portfolioTradingEnabled ? 'green' : 'red',
+      detail: `Global ${globalTradingEnabled ? 'on' : 'off'} • Portfolio ${portfolioTradingEnabled ? 'on' : 'off'}`,
+    },
+    {
+      label: 'AI Brain',
+      value: aiProvider.toUpperCase(),
+      tone: deepseekDecisionEnabled ? 'cyan' : 'amber',
+      detail: deepseekDecisionEnabled ? 'Decision gate enabled' : 'Decision gate disabled',
+    },
+    {
+      label: 'Learning',
+      value: `${evidenceCount}/${evidenceTarget}`,
+      tone: evidenceCount >= evidenceTarget ? 'green' : 'cyan',
+      detail: `${learningEvidencePct}% readiness`,
+    },
+  ];
+
+  const tabDetails: Record<SettingsTab, { eyebrow: string; title: string; summary: string }> = {
+    General: {
+      eyebrow: 'Credential Core',
+      title: 'Secure connection and AI brain routing',
+      summary: 'Manage exchange credentials, provider keys, and the live/testnet boundary from one guarded control surface.',
+    },
+    Trading: {
+      eyebrow: 'Execution Console',
+      title: 'Order behavior and operator controls',
+      summary: 'Tune order handling, confirmations, engine toggles, and live account operations without touching strategy code.',
+    },
+    'Risk Management': {
+      eyebrow: 'Risk Shield',
+      title: 'Capital preservation and winner management',
+      summary: 'Hard caps, BE+ protection, partial profit-taking, and trailing runner rules live here.',
+    },
+    Notifications: {
+      eyebrow: 'Signal Relay',
+      title: 'Telegram, email, and alert delivery',
+      summary: 'Route the messages that matter: trade events, risk changes, API health, and learning review outcomes.',
+    },
+    Advanced: {
+      eyebrow: 'Evolution Lab',
+      title: 'Autonomous review and guarded improvement',
+      summary: 'Observe, evaluate, and promote system improvements only after evidence and governance checks agree.',
+    },
+  };
+
   return (
     <>
       <Head>
@@ -1008,69 +1211,110 @@ export default function Settings() {
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
 
-      <div className="min-h-screen text-slate-100" style={{ fontFamily: 'IBM Plex Sans, Space Grotesk, sans-serif', background: 'radial-gradient(1200px 800px at 20% 0%, #1a2438 0%, #0b101a 40%, #05070c 100%)' }}>
+      <div className="helix-shell min-h-screen text-slate-100" style={{ fontFamily: 'IBM Plex Sans, Space Grotesk, sans-serif' }}>
         <div className="mx-auto max-w-[1500px] px-4 md:px-8 py-5">
-          <header className="rounded-2xl border border-white/10 bg-slate-900/60 backdrop-blur-md p-4 md:p-5 shadow-2xl shadow-black/30">
+          <header className="helix-command-bar rounded-3xl border border-white/10 bg-slate-950/70 backdrop-blur-xl p-4 md:p-5 shadow-2xl shadow-black/40">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div className="flex items-center gap-4">
-                <div className="text-3xl font-bold tracking-wide" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
-                  <span className="text-emerald-300">HELIX</span>.ONE
+                <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-emerald-300/25 bg-emerald-400/[0.08] text-emerald-200 helix-orb">H</div>
+                <div>
+                  <div className="text-3xl font-bold tracking-[0.18em]" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
+                    <span className="text-emerald-300">HELIX</span>.ONE
+                  </div>
+                  <div className="mt-1 text-xs uppercase tracking-[0.24em] text-slate-500">Settings command center</div>
                 </div>
-                <span className="text-xl font-semibold">Settings</span>
               </div>
-              <div className="flex items-center gap-3">
-                <a href="/" className="rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 px-4 py-2 text-sm font-medium">Dashboard</a>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={`rounded-full border px-3 py-1 text-[11px] font-black uppercase tracking-wide ${status?.engineConnected ? 'border-emerald-300/35 bg-emerald-400/10 text-emerald-200' : 'border-amber-300/35 bg-amber-400/10 text-amber-200'}`}>
+                  {status?.engineConnected ? 'Backend Online' : 'Backend Checking'}
+                </span>
+                <span className={`rounded-full border px-3 py-1 text-[11px] font-black uppercase tracking-wide ${!settingsLoaded ? 'border-cyan-300/35 bg-cyan-400/10 text-cyan-200' : paperTrading || testnet ? 'border-amber-300/35 bg-amber-400/10 text-amber-200' : 'border-red-300/35 bg-red-400/10 text-red-200'}`}>
+                  {!settingsLoaded ? 'Loading Mode' : paperTrading ? 'Paper Guard' : testnet ? 'Testnet' : 'Live Execution'}
+                </span>
+                <a href="/" className="rounded-xl border border-cyan-300/25 bg-cyan-400/10 px-4 py-2 text-sm font-bold text-cyan-100 hover:bg-cyan-400/20">Dashboard</a>
               </div>
             </div>
           </header>
 
           <div className="mt-5 grid grid-cols-1 xl:grid-cols-12 gap-4">
-            <aside className="xl:col-span-2 rounded-2xl border border-white/10 bg-slate-900/60 backdrop-blur-md p-3">
+            <aside className="rounded-3xl border border-white/10 bg-slate-950/65 p-3 shadow-2xl shadow-black/30 backdrop-blur-xl xl:col-span-3">
+              <div className="mb-3 rounded-2xl border border-white/10 bg-white/[0.035] p-3">
+                <div className="text-[10px] uppercase tracking-[0.26em] text-cyan-200/70">{tabDetails[activeTab].eyebrow}</div>
+                <div className="mt-1 text-lg font-black text-slate-50">{tabDetails[activeTab].title}</div>
+                <div className="mt-2 text-xs leading-relaxed text-slate-400">{tabDetails[activeTab].summary}</div>
+              </div>
               <div className="space-y-1 text-sm">
                 {(['General', 'Trading', 'Risk Management', 'Notifications', 'Advanced'] as SettingsTab[]).map((item) => (
                   <button
                     key={item}
                     type="button"
                     onClick={() => setActiveTab(item)}
-                    className={`w-full text-left rounded-lg px-3 py-2 transition ${
+                    className={`group w-full rounded-2xl border px-3 py-3 text-left transition ${
                       activeTab === item
-                        ? 'bg-cyan-400/20 border border-cyan-300/40 text-cyan-100'
-                        : 'text-slate-300 hover:bg-white/5'
+                        ? 'border-cyan-300/40 bg-cyan-400/15 text-cyan-100 shadow-lg shadow-cyan-950/20'
+                        : 'border-transparent text-slate-300 hover:border-white/10 hover:bg-white/[0.04]'
                     }`}
                   >
-                    {item}
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-bold">{item}</span>
+                      <span className={`h-2 w-2 rounded-full ${activeTab === item ? 'bg-cyan-300 shadow-[0_0_14px_rgba(103,232,249,0.9)]' : 'bg-slate-700 group-hover:bg-slate-500'}`} />
+                    </div>
+                    <div className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-slate-500">{tabDetails[item].eyebrow}</div>
                   </button>
                 ))}
               </div>
             </aside>
 
-            <main className="xl:col-span-10 grid grid-cols-1 lg:grid-cols-12 gap-4">
+            <main className="grid grid-cols-1 gap-4 lg:grid-cols-12 xl:col-span-9">
               {banner && (
-                <div className={`lg:col-span-12 rounded-lg px-4 py-3 text-sm ${banner.type === 'success' ? 'bg-emerald-900/50 text-emerald-100 border border-emerald-500/40' : 'bg-red-900/50 text-red-100 border border-red-500/40'}`}>
+                <div className={`lg:col-span-12 rounded-2xl px-4 py-3 text-sm shadow-xl ${banner.type === 'success' ? 'bg-emerald-900/50 text-emerald-100 border border-emerald-500/40' : 'bg-red-900/50 text-red-100 border border-red-500/40'}`}>
                   {banner.text}
                 </div>
               )}
 
               {loading && !lastUpdated && <div className="lg:col-span-12 text-sm text-slate-300">Loading settings...</div>}
-              <div className="lg:col-span-12 text-xs text-slate-400">
-                {refreshing ? 'Refreshing…' : `Last updated: ${lastUpdated || '—'}`}
+              <div className="lg:col-span-12 rounded-3xl border border-white/10 bg-slate-950/55 p-4 shadow-xl shadow-black/30 backdrop-blur-xl">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <div className="text-[10px] uppercase tracking-[0.3em] text-cyan-200/70">{tabDetails[activeTab].eyebrow}</div>
+                    <div className="mt-1 text-2xl font-black text-slate-50">{activeTab}</div>
+                    <div className="mt-2 max-w-3xl text-sm leading-relaxed text-slate-400">{tabDetails[activeTab].summary}</div>
+                  </div>
+                  <div className="text-xs text-slate-500">{refreshing ? 'Refreshing...' : `Last updated: ${lastUpdated || '—'}`}</div>
+                </div>
+                <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4">
+                  {settingsHealthCards.map((card) => (
+                    <StatusTile key={card.label} {...card} />
+                  ))}
+                </div>
               </div>
+              {settingsLoaded && paperTrading && (
+                <div className="lg:col-span-12 rounded-2xl border border-amber-500/40 bg-amber-900/30 px-4 py-3 text-sm text-amber-100">
+                  Paper Trading Mode is ON. Strategy actions are simulated and should not place live exchange orders.
+                </div>
+              )}
               {lastSavedAt && <div className="lg:col-span-12 text-xs text-emerald-300">Last saved: {lastSavedAt}</div>}
 
               {activeTab === 'General' && (
-              <Panel className="lg:col-span-4" title="General">
+              <Panel className="lg:col-span-8" title="General">
+                <SectionIntro eyebrow="Access Layer" title="Keys stay masked, saves are intentional" text="Credentials are never persisted in browser storage. Masked values mean the backend already has a saved secret; leaving them unchanged will not wipe the stored key." />
                 <TextField label="Admin Key" type="password" value={adminKey} onChange={setAdminKey} />
-                <TextField label="Binance API Key" type="password" value={masterApiKey} onChange={setMasterApiKey} placeholder={hasMasterApiKey ? '********' : ''} status={hasMasterApiKey ? 'Saved' : 'Not set'} />
-                <TextField label="Binance API Secret" type="password" value={masterSecretKey} onChange={setMasterSecretKey} placeholder={hasMasterSecretKey ? '********' : ''} status={hasMasterSecretKey ? 'Saved' : 'Not set'} />
-                <SelectField
-                  label="AI Provider"
-                  value={aiProvider}
-                  options={['deepseek', 'openai', 'gemini']}
-                  onChange={(v) => setAiProvider((v === 'openai' || v === 'gemini' || v === 'deepseek') ? v : 'deepseek')}
-                />
-                <TextField label="DeepSeek API Key" type="password" value={deepseekApiKey} onChange={setDeepseekApiKey} placeholder={hasDeepseekApiKey ? '********' : ''} status={hasDeepseekApiKey ? 'Saved' : 'Not set'} />
-                <TextField label="OpenAI API Key" type="password" value={openaiApiKey} onChange={setOpenaiApiKey} placeholder={hasOpenaiApiKey ? '********' : ''} status={hasOpenaiApiKey ? 'Saved' : 'Not set'} />
-                <TextField label="Google Gemini API Key" type="password" value={geminiApiKey} onChange={setGeminiApiKey} placeholder={hasGeminiApiKey ? '********' : ''} status={hasGeminiApiKey ? 'Saved' : 'Not set'} />
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                  <TextField label="Binance API Key" type="password" value={masterApiKey} onChange={setMasterApiKey} placeholder={hasMasterApiKey ? '********' : ''} status={credentialStatus(hasMasterApiKey)} />
+                  <TextField label="Binance API Secret" type="password" value={masterSecretKey} onChange={setMasterSecretKey} placeholder={hasMasterSecretKey ? '********' : ''} status={credentialStatus(hasMasterSecretKey)} />
+                </div>
+                <SectionIntro eyebrow="AI Provider" title="Choose the reasoning engine" text="DeepSeek can remain the main trading brain while OpenAI/Gemini keys are available for future redundancy or analysis tasks." compact />
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                  <SelectField
+                    label="AI Provider"
+                    value={aiProvider}
+                    options={['deepseek', 'openai', 'gemini']}
+                    onChange={(v) => setAiProvider((v === 'openai' || v === 'gemini' || v === 'deepseek') ? v : 'deepseek')}
+                  />
+                  <TextField label="DeepSeek API Key" type="password" value={deepseekApiKey} onChange={setDeepseekApiKey} placeholder={hasDeepseekApiKey ? '********' : ''} status={credentialStatus(hasDeepseekApiKey)} />
+                  <TextField label="OpenAI API Key" type="password" value={openaiApiKey} onChange={setOpenaiApiKey} placeholder={hasOpenaiApiKey ? '********' : ''} status={credentialStatus(hasOpenaiApiKey)} />
+                  <TextField label="Google Gemini API Key" type="password" value={geminiApiKey} onChange={setGeminiApiKey} placeholder={hasGeminiApiKey ? '********' : ''} status={credentialStatus(hasGeminiApiKey)} />
+                </div>
 
                 <div className="pt-2">
                   <Toggle label="Trading Mode (Live/Testnet)" checked={!testnet} onChange={(v) => setTestnet(!v)} onLabel="Live" offLabel="Testnet" />
@@ -1084,16 +1328,18 @@ export default function Settings() {
               )}
 
               {activeTab === 'Trading' && (
-              <Panel className="lg:col-span-4" title="Trading">
-                <SelectField
-                  label="Default Base Currency"
-                  value={uiPrefs.baseCurrency}
-                  options={['USDT', 'USDC', 'BUSD']}
-                  onChange={(v) => setUiPrefs((p) => ({ ...p, baseCurrency: v as UiPrefs['baseCurrency'] }))}
-                />
-
-                <NumberField label="Slippage Tolerance (%)" value={uiPrefs.slippageTolerancePct} setValue={(v) => setUiPrefs((p) => ({ ...p, slippageTolerancePct: v }))} step="0.01" />
-                <NumberField label="Timeout for Orders (seconds)" value={uiPrefs.orderTimeoutSec} setValue={(v) => setUiPrefs((p) => ({ ...p, orderTimeoutSec: v }))} />
+              <Panel className="lg:col-span-6" title="Trading">
+                <SectionIntro eyebrow="Execution Behavior" title="How orders should behave" text="These settings control execution UX and basic order handling. Hard risk rules still live in Risk Management." />
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <SelectField
+                    label="Default Base Currency"
+                    value={uiPrefs.baseCurrency}
+                    options={['USDT', 'USDC', 'BUSD']}
+                    onChange={(v) => setUiPrefs((p) => ({ ...p, baseCurrency: v as UiPrefs['baseCurrency'] }))}
+                  />
+                  <NumberField label="Slippage Tolerance (%)" value={uiPrefs.slippageTolerancePct} setValue={(v) => setUiPrefs((p) => ({ ...p, slippageTolerancePct: v }))} step="0.01" />
+                  <NumberField label="Timeout for Orders (seconds)" value={uiPrefs.orderTimeoutSec} setValue={(v) => setUiPrefs((p) => ({ ...p, orderTimeoutSec: v }))} />
+                </div>
 
                 <div className="space-y-3 pt-1">
                   <Toggle label="Trade Confirmation" checked={tradeConfirmation} onChange={setTradeConfirmation} onLabel="Enabled" offLabel="Disabled" />
@@ -1105,16 +1351,28 @@ export default function Settings() {
               )}
 
               {activeTab === 'Risk Management' && (
-              <Panel className="lg:col-span-4" title="Risk Management">
-                <NumberField label="Max Daily Loss (%)" value={maxDailyLossPct} setValue={setMaxDailyLossPct} step="0.1" />
-                <NumberField label="Max Position Size (%)" value={maxPositionSizePct} setValue={setMaxPositionSizePct} />
-                <NumberField label="Max Leverage" value={maxLeverage} setValue={setMaxLeverage} />
-                <NumberField label="Kill-Switch Drawdown (%)" value={killSwitchDrawdownPct} setValue={setKillSwitchDrawdownPct} step="0.1" />
-                <NumberField label="Cooldown Period (minutes)" value={cooldownMinutes} setValue={setCooldownMinutes} />
-                <NumberField label="Max Trades Per Day" value={maxTradesPerDay} setValue={setMaxTradesPerDay} />
-                <NumberField label="Max Consecutive Losses" value={maxConsecutiveLosses} setValue={setMaxConsecutiveLosses} />
-                <NumberField label="Confidence Floor (0-1)" value={minConfidence} setValue={setMinConfidence} step="0.01" />
-                <div className="pt-1">
+              <Panel className="lg:col-span-8" title="Risk Management">
+                <SectionIntro eyebrow="Hard Guardrails" title="The system protects capital before seeking trades" text="These are backend-enforced limits. DeepSeek can recommend, but it cannot override these caps." />
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  <NumberField label="Max Daily Loss (%)" value={maxDailyLossPct} setValue={setMaxDailyLossPct} step="0.1" />
+                  <NumberField label="Max Position Size (%)" value={maxPositionSizePct} setValue={setMaxPositionSizePct} />
+                  <NumberField label="Max Leverage" value={maxLeverage} setValue={setMaxLeverage} />
+                  <NumberField label="Min Leverage" value={minLeverage} setValue={setMinLeverage} />
+                  <NumberField label="Simultaneous Trades / Max Open Positions" value={maxOpenPositions} setValue={setMaxOpenPositions} />
+                  <NumberField label="Kill-Switch Drawdown (%)" value={killSwitchDrawdownPct} setValue={setKillSwitchDrawdownPct} step="0.1" />
+                  <NumberField label="Cooldown Period (minutes)" value={cooldownMinutes} setValue={setCooldownMinutes} />
+                  <NumberField label="Max Trades Per Day" value={maxTradesPerDay} setValue={setMaxTradesPerDay} />
+                  <NumberField label="Max Consecutive Losses" value={maxConsecutiveLosses} setValue={setMaxConsecutiveLosses} />
+                  <NumberField label="Confidence Floor (0-1)" value={minConfidence} setValue={setMinConfidence} step="0.01" />
+                </div>
+                <div className="pt-1 space-y-2">
+                  <Toggle
+                    label="Paper Trading Mode"
+                    checked={paperTrading}
+                    onChange={setPaperTrading}
+                    onLabel="Enabled"
+                    offLabel="Disabled"
+                  />
                   <Toggle
                     label="DeepSeek AI Decision Gate"
                     checked={deepseekDecisionEnabled}
@@ -1122,6 +1380,27 @@ export default function Settings() {
                     onLabel="Enabled"
                     offLabel="Disabled"
                   />
+                  <Toggle
+                    label="Let Winners Run"
+                    checked={letWinnersRunEnabled}
+                    onChange={setLetWinnersRunEnabled}
+                    onLabel="Partial + Trail"
+                    offLabel="Close at TP"
+                  />
+                </div>
+                <div className="mt-4 rounded-2xl border border-emerald-300/15 bg-emerald-400/[0.04] p-3">
+                  <div className="text-sm font-semibold text-emerald-100">Profit Protection</div>
+                  <p className="mt-1 text-xs leading-relaxed text-slate-400">
+                    BE+ moves stops beyond raw entry by covering exchange fees, expected slippage, and a small safety buffer. Winner mode takes partial profit, leaves a runner open, and trails the stop so strong trades can keep paying.
+                  </p>
+                  <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                    <NumberField label="BE+ Safety Buffer (%)" value={breakEvenBufferPct * 100} setValue={(v) => setBreakEvenBufferPct(v / 100)} step="0.01" />
+                    <NumberField label="BE+ Fee Buffer (bps)" value={breakEvenFeeBps} setValue={setBreakEvenFeeBps} step="1" />
+                    <NumberField label="BE+ Slippage Buffer (bps)" value={breakEvenSlippageBps} setValue={setBreakEvenSlippageBps} step="1" />
+                    <NumberField label="Runner Activation (R)" value={runnerActivationR} setValue={setRunnerActivationR} step="0.1" />
+                    <NumberField label="Runner Partial Take Profit (%)" value={runnerPartialTakeProfitPct} setValue={setRunnerPartialTakeProfitPct} step="1" />
+                    <NumberField label="Runner Trailing Stop (%)" value={runnerTrailPct * 100} setValue={(v) => setRunnerTrailPct(v / 100)} step="0.05" />
+                  </div>
                 </div>
                 <NumberField label="Allocated Portfolio Balance" value={deepseekBalance} setValue={setDeepseekBalance} step="1" />
 
@@ -1132,7 +1411,8 @@ export default function Settings() {
               )}
 
               {(activeTab === 'Trading' || activeTab === 'Advanced') && (
-              <Panel className="lg:col-span-8" title="Operations">
+              <Panel className="lg:col-span-6" title="Operations">
+                <SectionIntro eyebrow="Live Ops" title="Manual operational controls" text="Use these for intervention, refresh, and API health checks. Close All Positions is intentionally visible and high-friction colored." />
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <button className="rounded-lg border border-red-400/40 bg-red-900/30 hover:bg-red-900/50 px-3 py-2 text-sm" onClick={closeAllPositions}>Close All Positions</button>
                   <button className="rounded-lg border border-white/20 bg-white/5 hover:bg-white/10 px-3 py-2 text-sm" onClick={() => load(true)}>{refreshing ? 'Refreshing...' : 'Refresh Data'}</button>
@@ -1151,13 +1431,14 @@ export default function Settings() {
               )}
 
               {activeTab === 'Notifications' && (
-              <Panel className="lg:col-span-4" title="Notifications">
+              <Panel className="lg:col-span-8" title="Notifications">
+                <SectionIntro eyebrow="Alert Routing" title="Keep only useful alerts loud" text="Telegram should carry trade opens/closes, kill switches, API disconnects, and self-learning reviews without spamming normal noise." />
                 <div className="space-y-3">
                   <Toggle label="Push Alerts" checked={notificationsPush} onChange={setNotificationsPush} onLabel="On" offLabel="Off" />
                   <Toggle label="Email Alerts" checked={notificationsEmail} onChange={setNotificationsEmail} onLabel="On" offLabel="Off" />
                   <Toggle label="Telegram Alerts" checked={notificationsTelegram} onChange={setNotificationsTelegram} onLabel="On" offLabel="Off" />
                   <TextField label="Email Address" type="text" value={notificationEmail} onChange={setNotificationEmail} />
-                  <TextField label="Telegram Bot Token" type="password" value={telegramBotToken} onChange={setTelegramBotToken} placeholder={hasTelegramBotToken ? '********' : ''} status={hasTelegramBotToken ? 'Saved' : 'Not set'} />
+                  <TextField label="Telegram Bot Token" type="password" value={telegramBotToken} onChange={setTelegramBotToken} placeholder={hasTelegramBotToken ? '********' : ''} status={credentialStatus(hasTelegramBotToken)} />
                   <TextField label="Telegram User ID" type="text" value={telegramUserId} onChange={setTelegramUserId} />
                   <TextField label="Telegram Pairing Code" type="text" value={telegramPairingCode} onChange={setTelegramPairingCode} />
                   <SelectField label="Telegram Min Severity" value={telegramMinSeverity} options={['info', 'warning', 'critical']} onChange={(v) => setTelegramMinSeverity(v as 'info' | 'warning' | 'critical')} />
@@ -1171,6 +1452,7 @@ export default function Settings() {
 
               {(activeTab === 'General' || activeTab === 'Advanced') && (
               <Panel className="lg:col-span-4" title="Active Services">
+                <SectionIntro eyebrow="Runtime" title="Service heartbeat" text="Quick local health readout for the running backend and frontend processes." compact />
                 <ServiceRow name="Backend Engine" state={status ? (Boolean(status?.engineConnected) ? 'running' : 'down') : 'unknown'} meta={`Last update ${lastUpdated || '—'}`} />
                 <ServiceRow name="Frontend Server" state={lastUpdated ? 'running' : 'unknown'} meta={`Auto-refresh ${refreshing ? 'active' : 'idle'}`} />
                 <button className="mt-4 w-full rounded-lg border border-white/20 bg-white/5 hover:bg-white/10 px-3 py-2 text-sm" onClick={() => load(true)}>
@@ -1180,32 +1462,67 @@ export default function Settings() {
               )}
 
               {activeTab === 'Advanced' && (
-              <Panel className="lg:col-span-8" title="Helix Evolution Lab (New)">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <button className="rounded-lg border border-cyan-300/30 bg-cyan-500/20 hover:bg-cyan-500/30 px-3 py-2 text-sm" onClick={runHelixEvaluateSample}>Run Layered Evaluate Sample</button>
-                  <button className="rounded-lg border border-sky-300/30 bg-sky-500/20 hover:bg-sky-500/30 px-3 py-2 text-sm" onClick={runHelixEvaluateLive}>Run Layered Evaluate LIVE</button>
-                  <button
-                    className="rounded-lg border border-red-300/30 bg-red-500/20 hover:bg-red-500/30 px-3 py-2 text-sm disabled:opacity-50"
-                    onClick={promoteLivePlanToTradeSignal}
-                    disabled={!helixEvalOutput?.response?.plan || helixEvalOutput?.mode !== 'live'}
-                  >
-                    Promote LIVE Plan → Executable Signal
-                  </button>
-                  <button className="rounded-lg border border-purple-300/30 bg-purple-500/20 hover:bg-purple-500/30 px-3 py-2 text-sm" onClick={runDarwinSample}>Run Darwin Weights Sample</button>
-                  <button className="rounded-lg border border-amber-300/30 bg-amber-500/20 hover:bg-amber-500/30 px-3 py-2 text-sm" onClick={runPromptExperimentSample}>Run Prompt Experiment Sample</button>
-                  <button className="rounded-lg border border-emerald-300/30 bg-emerald-500/20 hover:bg-emerald-500/30 px-3 py-2 text-sm" onClick={runWalkForwardSample}>Run Walk-Forward Sample</button>
-                  <button className="rounded-lg border border-fuchsia-300/30 bg-fuchsia-500/20 hover:bg-fuchsia-500/30 px-3 py-2 text-sm" onClick={runExperimentGovernanceSamples}>Run Experiment Governance Samples</button>
-                  <button className="rounded-lg border border-indigo-300/30 bg-indigo-500/20 hover:bg-indigo-500/30 px-3 py-2 text-sm" onClick={runExperimentGovernanceLive}>Run Experiment Governance LIVE Auto-Feed</button>
+              <Panel className="lg:col-span-8" title="Self-Learning Engine">
+                <div className="rounded-2xl border border-cyan-300/20 bg-cyan-500/[0.07] p-4">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-[0.28em] text-cyan-200/70">Autopilot status</div>
+                      <div className="mt-1 text-2xl font-black text-slate-50">{selfLearningOverview.mode}</div>
+                      <div className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-300">{selfLearningOverview.summary}</div>
+                    </div>
+                    <div className={`rounded-full border px-3 py-1 text-[11px] font-black uppercase tracking-wide ${evidenceCount >= evidenceTarget ? 'border-emerald-300/30 bg-emerald-400/10 text-emerald-200' : 'border-amber-300/30 bg-amber-400/10 text-amber-200'}`}>
+                      {selfLearningOverview.phase}
+                    </div>
+                  </div>
+                  <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10">
+                    <div className="h-full rounded-full bg-gradient-to-r from-cyan-300 via-emerald-300 to-lime-200" style={{ width: `${Math.max(4, learningEvidencePct)}%` }} />
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+                    <LearningMetric label="Evidence" value={`${evidenceCount}/${evidenceTarget}`} />
+                    <LearningMetric label="Readiness" value={selfLearningOverview.confidence} />
+                    <LearningMetric label="Regime" value={String(market.regime || '—').toUpperCase()} />
+                    <LearningMetric label="Promotion" value={selfLearningOverview.promotion} />
+                  </div>
+                  <div className="mt-3 grid grid-cols-1 gap-2 text-xs md:grid-cols-3">
+                    <LearningMetric label="Scheduler" value={selfLearningStatus?.running ? 'RUNNING NOW' : selfLearningEnabled ? 'ARMED' : 'PAUSED'} />
+                    <LearningMetric label="Last Review" value={selfLearningStatus?.lastRunAt ? new Date(selfLearningStatus.lastRunAt).toLocaleString() : '—'} />
+                    <LearningMetric label="Next Review" value={selfLearningStatus?.nextRunAt ? new Date(selfLearningStatus.nextRunAt).toLocaleString() : 'after restart/status refresh'} />
+                  </div>
                 </div>
 
-                <div className="mt-4 text-xs text-slate-400">These buttons call the new backend endpoints you requested and dump latest JSON below.</div>
+                <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-3">
+                  <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
+                    <div className="text-[10px] uppercase tracking-[0.24em] text-slate-400">Observe</div>
+                    <div className="mt-2 text-sm font-semibold text-slate-100">Collect live evidence</div>
+                    <div className="mt-1 text-xs leading-relaxed text-slate-400">Trades, P&L, drawdown, regime, execution quality, and risk-rule behavior are collected before strategy changes are trusted.</div>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
+                    <div className="text-[10px] uppercase tracking-[0.24em] text-slate-400">Evaluate</div>
+                    <div className="mt-2 text-sm font-semibold text-slate-100">Test candidate improvements</div>
+                    <div className="mt-1 text-xs leading-relaxed text-slate-400">Walk-forward and governance checks compare candidate behavior against baseline results instead of guessing.</div>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
+                    <div className="text-[10px] uppercase tracking-[0.24em] text-slate-400">Promote</div>
+                    <div className="mt-2 text-sm font-semibold text-slate-100">Guarded self-improvement</div>
+                    <div className="mt-1 text-xs leading-relaxed text-slate-400">Promotion stays dry-run by default. Live promotion requires evidence, risk gates, and your explicit confirmation.</div>
+                  </div>
+                </div>
 
-                <div className="mt-3 rounded-xl border border-cyan-300/30 bg-cyan-500/10 p-3 text-xs">
-                  <div className="text-cyan-100 font-semibold">Operator Playbook (Built-in)</div>
-                  <div className="mt-2 text-slate-200"><span className="text-slate-400">Default:</span> ignore this lab during normal auto-trading.</div>
-                  <div className="mt-1 text-slate-200"><span className="text-slate-400">Touch lab when:</span> performance drifts, regime shifts hard, or you are testing strategy changes.</div>
-                  <div className="mt-1 text-slate-200"><span className="text-slate-400">Weekly only:</span> Run <b>Experiment Governance LIVE Auto-Feed</b> + <b>Walk-Forward</b>.</div>
-                  <div className="mt-2 rounded-md border border-white/10 bg-white/5 p-2 text-emerald-200">Now: {labRecommendation}</div>
+                <div className="mt-3 rounded-2xl border border-emerald-300/20 bg-emerald-500/[0.06] p-4">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-[0.24em] text-emerald-200/80">Recommended next action</div>
+                      <div className="mt-1 text-sm leading-relaxed text-slate-200">{selfLearningOverview.nextBestAction}</div>
+                      <div className="mt-2 text-xs text-slate-400">Current playbook: {labRecommendation}</div>
+                    </div>
+                    <button
+                      className="rounded-xl border border-emerald-300/40 bg-emerald-500/15 px-4 py-3 text-sm font-bold text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-50"
+                      onClick={runSelfLearningReview}
+                      disabled={learningReviewRunning}
+                    >
+                      {learningReviewRunning ? 'Review Running...' : 'Run Guarded Learning Review'}
+                    </button>
+                  </div>
                 </div>
 
                 <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1213,21 +1530,75 @@ export default function Settings() {
                   <EvidenceCard evidenceCount={evidenceCount} evidenceTarget={evidenceTarget} marketRegime={String(market.regime || 'unknown')} />
                 </div>
 
-                <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <Toggle
-                    label="Promotion Dry-Run (recommended)"
-                    checked={promotionDryRun}
-                    onChange={setPromotionDryRun}
-                    onLabel="ON"
-                    offLabel="OFF"
-                  />
-                  <TextField
-                    label="Second Confirmation Phrase"
-                    value={promotionConfirmText}
-                    onChange={setPromotionConfirmText}
-                    placeholder="Type: PROMOTE LIVE"
-                  />
+                <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.035] p-3">
+                  <div className="mb-3 text-[10px] uppercase tracking-[0.24em] text-slate-400">Learning schedule & safety</div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <Toggle
+                      label="Autonomous Learning Scheduler"
+                      checked={selfLearningEnabled}
+                      onChange={setSelfLearningEnabled}
+                      onLabel="ON"
+                      offLabel="OFF"
+                    />
+                    <Toggle
+                      label="Auto Tighten Risk After Bad Evidence"
+                      checked={selfLearningAutoRiskTightening}
+                      onChange={setSelfLearningAutoRiskTightening}
+                      onLabel="ON"
+                      offLabel="OFF"
+                    />
+                    <Toggle
+                      label="Telegram Review Alerts"
+                      checked={selfLearningNotifyOnReview}
+                      onChange={setSelfLearningNotifyOnReview}
+                      onLabel="ON"
+                      offLabel="OFF"
+                    />
+                    <Toggle
+                      label="Allow Live Promotion"
+                      checked={selfLearningAllowLivePromotion}
+                      onChange={setSelfLearningAllowLivePromotion}
+                      onLabel="ON"
+                      offLabel="OFF"
+                    />
+                    <NumberField label="Review Interval (hours)" value={selfLearningIntervalHours} setValue={setSelfLearningIntervalHours} />
+                    <NumberField label="Evidence Required (closed trades)" value={selfLearningMinClosedTrades} setValue={setSelfLearningMinClosedTrades} />
+                    <Toggle
+                      label="Promotion Dry-Run (recommended)"
+                      checked={promotionDryRun}
+                      onChange={setPromotionDryRun}
+                      onLabel="ON"
+                      offLabel="OFF"
+                    />
+                    <TextField
+                      label="Second Confirmation Phrase"
+                      value={promotionConfirmText}
+                      onChange={setPromotionConfirmText}
+                      placeholder="Type: PROMOTE LIVE"
+                    />
+                  </div>
                 </div>
+
+                <details className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-4">
+                  <summary className="cursor-pointer list-none text-sm font-semibold text-cyan-100">Advanced Lab Controls</summary>
+                  <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <button className="rounded-lg border border-cyan-300/30 bg-cyan-500/20 hover:bg-cyan-500/30 px-3 py-2 text-sm" onClick={runHelixEvaluateSample}>Run Layered Evaluate Sample</button>
+                    <button className="rounded-lg border border-sky-300/30 bg-sky-500/20 hover:bg-sky-500/30 px-3 py-2 text-sm" onClick={runHelixEvaluateLive}>Run Layered Evaluate LIVE</button>
+                    <button
+                      className="rounded-lg border border-red-300/30 bg-red-500/20 hover:bg-red-500/30 px-3 py-2 text-sm disabled:opacity-50"
+                      onClick={promoteLivePlanToTradeSignal}
+                      disabled={!helixEvalOutput?.response?.plan || helixEvalOutput?.mode !== 'live'}
+                    >
+                      Promote LIVE Plan → Executable Signal
+                    </button>
+                    <button className="rounded-lg border border-purple-300/30 bg-purple-500/20 hover:bg-purple-500/30 px-3 py-2 text-sm" onClick={runDarwinSample}>Run Darwin Weights Sample</button>
+                    <button className="rounded-lg border border-amber-300/30 bg-amber-500/20 hover:bg-amber-500/30 px-3 py-2 text-sm" onClick={runPromptExperimentSample}>Run Prompt Experiment Sample</button>
+                    <button className="rounded-lg border border-emerald-300/30 bg-emerald-500/20 hover:bg-emerald-500/30 px-3 py-2 text-sm" onClick={runWalkForwardSample}>Run Walk-Forward Sample</button>
+                    <button className="rounded-lg border border-fuchsia-300/30 bg-fuchsia-500/20 hover:bg-fuchsia-500/30 px-3 py-2 text-sm" onClick={runExperimentGovernanceSamples}>Run Experiment Governance Samples</button>
+                    <button className="rounded-lg border border-indigo-300/30 bg-indigo-500/20 hover:bg-indigo-500/30 px-3 py-2 text-sm" onClick={runExperimentGovernanceLive}>Run Experiment Governance LIVE Auto-Feed</button>
+                  </div>
+                  <div className="mt-3 text-xs text-slate-400">These controls call backend learning endpoints and expose raw JSON below. Normal auto-trading does not require touching this section.</div>
+                </details>
 
                 <div className="mt-3 grid grid-cols-1 gap-3">
                   {helixEvalOutput && <JsonBlock title="Evaluate Output" value={helixEvalOutput} />}
@@ -1254,6 +1625,21 @@ export default function Settings() {
                       </div>
                     )}
                   </div>
+                  <div className="rounded-lg border border-white/10 bg-slate-950/70 p-3">
+                    <div className="text-xs text-slate-400 mb-2">Settings Audit Log (latest 30)</div>
+                    {settingsAudit.length === 0 ? (
+                      <div className="text-xs text-slate-500">No settings changes recorded yet.</div>
+                    ) : (
+                      <div className="space-y-2 max-h-64 overflow-auto">
+                        {settingsAudit.map((row, idx) => (
+                          <div key={idx} className="text-xs text-slate-200 border border-white/5 rounded p-2">
+                            <div className="text-slate-400">{row.ts} • {row.summary || row.type}</div>
+                            <pre className="whitespace-pre-wrap">{JSON.stringify(row, null, 2)}</pre>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </Panel>
               )}
@@ -1273,40 +1659,75 @@ export default function Settings() {
 
 function Panel({ title, className = '', children }: { title: string; className?: string; children: React.ReactNode }) {
   return (
-    <section className={`rounded-2xl border border-white/10 bg-slate-900/60 backdrop-blur-md p-4 shadow-xl shadow-black/30 ${className}`}>
-      <h2 className="text-2xl font-semibold mb-3" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{title}</h2>
+    <section className={`relative overflow-hidden rounded-3xl border border-white/10 bg-slate-950/65 p-4 shadow-2xl shadow-black/35 backdrop-blur-xl ${className}`}>
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-300/50 to-transparent" />
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h2 className="text-2xl font-black tracking-tight text-slate-50" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{title}</h2>
+        <span className="h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_18px_rgba(103,232,249,0.85)]" />
+      </div>
       {children}
     </section>
   );
 }
 
-function TextField({ label, value, onChange, type = 'text', placeholder = '', status }: { label: string; value: string; onChange: (v: string) => void; type?: string; placeholder?: string; status?: 'Saved' | 'Not set' }) {
-  const statusTone = status === 'Saved' ? 'bg-emerald-500/20 text-emerald-200 border-emerald-400/40' : 'bg-amber-500/20 text-amber-200 border-amber-400/40';
+function SectionIntro({ eyebrow, title, text, compact = false }: { eyebrow: string; title: string; text: string; compact?: boolean }) {
   return (
-    <label className="block space-y-1 mb-2">
-      <div className="text-sm text-slate-300 flex items-center justify-between">
-        <span>{label}</span>
+    <div className={`${compact ? 'mb-3' : 'mb-4'} rounded-2xl border border-white/10 bg-white/[0.035] p-3`}>
+      <div className="text-[10px] uppercase tracking-[0.24em] text-cyan-200/70">{eyebrow}</div>
+      <div className="mt-1 text-sm font-black text-slate-100">{title}</div>
+      <div className="mt-1 text-xs leading-relaxed text-slate-400">{text}</div>
+    </div>
+  );
+}
+
+function StatusTile({ label, value, detail, tone }: { label: string; value: string; detail: string; tone: string }) {
+  const toneClass = tone === 'green'
+    ? 'border-emerald-300/25 bg-emerald-400/[0.07] text-emerald-200'
+    : tone === 'red'
+      ? 'border-red-300/25 bg-red-400/[0.07] text-red-200'
+      : tone === 'amber'
+        ? 'border-amber-300/25 bg-amber-400/[0.07] text-amber-200'
+        : 'border-cyan-300/25 bg-cyan-400/[0.07] text-cyan-200';
+  return (
+    <div className={`rounded-2xl border p-3 ${toneClass}`}>
+      <div className="text-[10px] uppercase tracking-[0.2em] opacity-70">{label}</div>
+      <div className="mt-1 truncate text-lg font-black text-slate-50">{value}</div>
+      <div className="mt-1 truncate text-[11px] text-slate-400">{detail}</div>
+    </div>
+  );
+}
+
+function TextField({ label, value, onChange, type = 'text', placeholder = '', status }: { label: string; value: string; onChange: (v: string) => void; type?: string; placeholder?: string; status?: 'Saved' | 'Not set' | 'Unknown' }) {
+  const statusTone = status === 'Saved'
+    ? 'bg-emerald-500/20 text-emerald-200 border-emerald-400/40'
+    : status === 'Unknown'
+      ? 'bg-slate-500/20 text-slate-200 border-slate-400/40'
+      : 'bg-amber-500/20 text-amber-200 border-amber-400/40';
+  return (
+    <label className="mb-2 block rounded-2xl border border-white/10 bg-black/20 p-3 transition focus-within:border-cyan-300/40 focus-within:bg-cyan-400/[0.03]">
+      <div className="mb-2 flex items-center justify-between text-sm text-slate-300">
+        <span className="font-semibold">{label}</span>
         {status && <span className={`text-[10px] rounded-full border px-2 py-0.5 ${statusTone}`}>{status}</span>}
       </div>
-      <input type={type} autoComplete="off" placeholder={placeholder} className="w-full rounded-lg border border-white/15 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500" value={value} onChange={(e) => onChange(e.target.value)} />
+      <input type={type} autoComplete="off" placeholder={placeholder} className="w-full rounded-xl border border-white/15 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-cyan-300/50" value={value} onChange={(e) => onChange(e.target.value)} />
     </label>
   );
 }
 
 function NumberField({ label, value, setValue, step = '1' }: { label: string; value: number; setValue: (v: number) => void; step?: string }) {
   return (
-    <label className="block space-y-1 mb-2">
-      <div className="text-sm text-slate-300">{label}</div>
-      <input type="number" step={step} className="w-full rounded-lg border border-white/15 bg-slate-950/70 px-3 py-2 text-sm text-slate-100" value={value} onChange={(e) => setValue(Number(e.target.value))} />
+    <label className="mb-2 block rounded-2xl border border-white/10 bg-black/20 p-3 transition focus-within:border-cyan-300/40 focus-within:bg-cyan-400/[0.03]">
+      <div className="mb-2 text-sm font-semibold text-slate-300">{label}</div>
+      <input type="number" step={step} className="w-full rounded-xl border border-white/15 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-300/50" value={value} onChange={(e) => setValue(Number(e.target.value))} />
     </label>
   );
 }
 
 function SelectField({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (v: string) => void }) {
   return (
-    <label className="block space-y-1 mb-2">
-      <div className="text-sm text-slate-300">{label}</div>
-      <select className="w-full rounded-lg border border-white/15 bg-slate-950/70 px-3 py-2 text-sm text-slate-100" value={value} onChange={(e) => onChange(e.target.value)}>
+    <label className="mb-2 block rounded-2xl border border-white/10 bg-black/20 p-3 transition focus-within:border-cyan-300/40 focus-within:bg-cyan-400/[0.03]">
+      <div className="mb-2 text-sm font-semibold text-slate-300">{label}</div>
+      <select className="w-full rounded-xl border border-white/15 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-300/50" value={value} onChange={(e) => onChange(e.target.value)}>
         {options.map((o) => <option key={o} value={o}>{o}</option>)}
       </select>
     </label>
@@ -1315,14 +1736,14 @@ function SelectField({ label, value, options, onChange }: { label: string; value
 
 function Toggle({ label, checked, onChange, onLabel, offLabel }: { label: string; checked: boolean; onChange: (v: boolean) => void; onLabel: string; offLabel: string }) {
   return (
-    <div className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
-      <span className="text-sm text-slate-200">{label}</span>
+    <div className={`flex items-center justify-between rounded-2xl border px-3 py-3 transition ${checked ? 'border-emerald-300/20 bg-emerald-400/[0.055]' : 'border-white/10 bg-white/[0.03]'}`}>
+      <span className="text-sm font-semibold text-slate-200">{label}</span>
       <button
         type="button"
         onClick={() => onChange(!checked)}
-        className={`relative h-7 w-20 rounded-full border transition ${checked ? 'bg-emerald-500/30 border-emerald-400/60' : 'bg-slate-700/50 border-white/20'}`}
+        className={`relative h-8 w-24 rounded-full border transition ${checked ? 'bg-emerald-500/30 border-emerald-400/60 shadow-[0_0_20px_rgba(52,211,153,0.18)]' : 'bg-slate-800/80 border-white/20'}`}
       >
-        <span className={`absolute left-1 top-1 h-5 w-5 rounded-full bg-white transition ${checked ? 'translate-x-12' : 'translate-x-0'}`} />
+        <span className={`absolute left-1 top-1 h-6 w-6 rounded-full bg-white transition ${checked ? 'translate-x-16' : 'translate-x-0'}`} />
         <span className="absolute inset-0 flex items-center justify-center text-[11px] font-semibold text-slate-100">{checked ? onLabel : offLabel}</span>
       </button>
     </div>
@@ -1331,9 +1752,9 @@ function Toggle({ label, checked, onChange, onLabel, offLabel }: { label: string
 
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
-      <div className="text-xs text-slate-400">{label}</div>
-      <div className="text-sm font-semibold text-slate-100">{value}</div>
+    <div className="rounded-2xl border border-white/10 bg-white/[0.035] px-3 py-3">
+      <div className="text-[10px] uppercase tracking-[0.2em] text-slate-500">{label}</div>
+      <div className="mt-1 text-sm font-black text-slate-100">{value}</div>
     </div>
   );
 }
@@ -1346,12 +1767,21 @@ function ServiceRow({ name, state, meta }: { name: string; state: 'running' | 'd
       : 'bg-amber-500/30 text-amber-200';
   const label = state === 'running' ? 'Running' : state === 'down' ? 'Down' : 'Unknown';
   return (
-    <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 mb-2">
+    <div className="mb-2 rounded-2xl border border-white/10 bg-white/[0.035] px-3 py-3">
       <div className="flex items-center justify-between">
-        <span className="text-sm text-slate-200">{name}</span>
-        <span className={`text-xs rounded-full px-2 py-0.5 ${badge}`}>{label}</span>
+        <span className="text-sm font-semibold text-slate-200">{name}</span>
+        <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${badge}`}>{label}</span>
       </div>
       <div className="text-xs text-slate-400 mt-1">{meta}</div>
+    </div>
+  );
+}
+
+function LearningMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.035] p-3">
+      <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="mt-1 truncate text-sm font-black text-slate-100">{value}</div>
     </div>
   );
 }

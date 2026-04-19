@@ -5,7 +5,10 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "start:local": "HOST=127.0.0.1 PORT=3001 node dist/server.js"
+    "start:local": "HOST=127.0.0.1 PORT=3001 node dist/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@prisma/client": "^5.9.0",
@@ -22,6 +25,7 @@
     "@types/cors": "^2.8.17",
     "typescript": "^5.3.3",
     "tsx": "^4.7.0",
-    "prisma": "^5.9.0"
+    "prisma": "^5.9.0",
+    "vitest": "^2.1.8"
   }
 }

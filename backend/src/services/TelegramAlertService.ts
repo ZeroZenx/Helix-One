@@ -12,6 +12,7 @@ type SendParams = {
   title: string;
   lines: string[];
   dedupeKey: string;
+  parseMode?: 'Markdown' | 'HTML';
 };
 
 export class TelegramAlertService {
@@ -43,6 +44,7 @@ export class TelegramAlertService {
       chat_id: params.userId,
       text,
       disable_web_page_preview: true,
+      ...(params.parseMode ? { parse_mode: params.parseMode } : {}),
     }, { timeout: 10000 });
 
     this.lastSentByKey.set(params.dedupeKey, now);
