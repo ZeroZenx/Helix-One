@@ -2,3 +2,741 @@
 @tailwind components;
 @tailwind utilities;
 
+html,
+body,
+#__next {
+  min-height: 100%;
+  background:
+    radial-gradient(1200px 680px at 15% -10%, rgba(34, 211, 238, 0.18), transparent 52%),
+    radial-gradient(920px 620px at 100% 0%, rgba(16, 185, 129, 0.12), transparent 48%),
+    #05070c;
+  color: #e5e7eb;
+}
+
+body {
+  margin: 0;
+  font-family: 'IBM Plex Sans', 'Space Grotesk', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  letter-spacing: 0.01em;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+table,
+th,
+td,
+div,
+section,
+main,
+header,
+footer,
+span,
+p,
+button,
+input,
+select,
+textarea,
+label,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+li {
+  color: inherit;
+}
+
+.helix-widget-grid {
+  position: relative;
+}
+
+.helix-widget-grid .react-grid-item {
+  transition: transform 180ms ease, width 180ms ease, height 180ms ease, box-shadow 180ms ease;
+  min-width: 0;
+  min-height: 0;
+}
+
+.helix-widget-grid .react-grid-item > div {
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.helix-widget-grid.is-dragging .react-grid-item,
+.helix-widget-grid.is-resizing .react-grid-item {
+  transition: transform 90ms ease, width 90ms ease, height 90ms ease;
+}
+
+.helix-widget-grid .react-grid-item.react-grid-placeholder {
+  background: rgba(34, 211, 238, 0.16);
+  border: 1px dashed rgba(103, 232, 249, 0.7);
+  border-radius: 16px;
+  opacity: 1;
+  transition-duration: 80ms;
+  z-index: 1;
+}
+
+.helix-widget-grid .react-grid-item.react-draggable-dragging,
+.helix-widget-grid .react-grid-item.resizing {
+  z-index: 30;
+  filter: drop-shadow(0 20px 32px rgba(0, 0, 0, 0.35));
+}
+
+.helix-widget-grid .react-grid-item > .react-resizable-handle {
+  position: absolute;
+  z-index: 20;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 211, 252, 0.65);
+  background: rgba(15, 23, 42, 0.92);
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.12);
+  opacity: 0;
+  transition: opacity 140ms ease, background 140ms ease, transform 140ms ease;
+}
+
+.helix-widget-grid .react-grid-item:hover > .react-resizable-handle,
+.helix-widget-grid .react-grid-item.resizing > .react-resizable-handle {
+  opacity: 1;
+}
+
+.helix-widget-grid .react-grid-item > .react-resizable-handle::after {
+  display: none;
+}
+
+.helix-widget-grid .react-resizable-handle-se {
+  right: 6px;
+  bottom: 6px;
+  cursor: se-resize;
+}
+
+.helix-widget-grid .react-resizable-handle-sw {
+  left: 6px;
+  bottom: 6px;
+  cursor: sw-resize;
+}
+
+.helix-widget-grid .react-resizable-handle-ne {
+  right: 6px;
+  top: 6px;
+  cursor: ne-resize;
+}
+
+.helix-widget-grid .react-resizable-handle-nw {
+  left: 6px;
+  top: 6px;
+  cursor: nw-resize;
+}
+
+.helix-widget-grid .react-resizable-handle-e,
+.helix-widget-grid .react-resizable-handle-w {
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: ew-resize;
+}
+
+.helix-widget-grid .react-resizable-handle-e {
+  right: 6px;
+}
+
+.helix-widget-grid .react-resizable-handle-w {
+  left: 6px;
+}
+
+.helix-widget-grid .react-resizable-handle-n,
+.helix-widget-grid .react-resizable-handle-s {
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: ns-resize;
+}
+
+.helix-widget-grid .react-resizable-handle-n {
+  top: 6px;
+}
+
+.helix-widget-grid .react-resizable-handle-s {
+  bottom: 6px;
+}
+
+.helix-widget-grid .react-grid-item:hover > .react-resizable-handle:hover,
+.helix-widget-grid .react-grid-item.resizing > .react-resizable-handle {
+  background: rgba(34, 211, 238, 0.9);
+  transform: scale(1.08);
+}
+
+.helix-widget-grid .react-resizable-handle-e:hover,
+.helix-widget-grid .react-resizable-handle-w:hover {
+  transform: translateY(-50%) scale(1.08);
+}
+
+.helix-widget-grid .react-resizable-handle-n:hover,
+.helix-widget-grid .react-resizable-handle-s:hover {
+  transform: translateX(-50%) scale(1.08);
+}
+
+.widget-drag-handle {
+  touch-action: none;
+  user-select: none;
+}
+
+.helix-widget-grid section {
+  min-width: 0;
+}
+
+.helix-widget-grid table {
+  border-collapse: collapse;
+}
+
+.helix-widget-grid ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.helix-widget-grid ::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.45);
+  border-radius: 999px;
+}
+
+.helix-widget-grid ::-webkit-scrollbar-thumb {
+  background: rgba(125, 211, 252, 0.35);
+  border-radius: 999px;
+}
+
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.helix-shell {
+  background:
+    radial-gradient(1200px 640px at 12% -4%, rgba(34, 211, 238, 0.16), transparent 50%),
+    radial-gradient(980px 620px at 100% 0%, rgba(52, 211, 153, 0.12), transparent 48%),
+    radial-gradient(760px 540px at 50% 100%, rgba(59, 130, 246, 0.08), transparent 42%),
+    linear-gradient(180deg, #07101c 0%, #05070c 44%, #03050a 100%);
+  position: relative;
+  isolation: isolate;
+}
+
+.helix-shell::before {
+  content: '';
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(125, 211, 252, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(125, 211, 252, 0.045) 1px, transparent 1px);
+  background-size: 34px 34px;
+  mask-image: radial-gradient(circle at 50% 0%, black 0%, transparent 72%);
+}
+
+.helix-shell::after {
+  content: '';
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 12%, transparent 88%, rgba(255, 255, 255, 0.018)),
+    radial-gradient(circle at 50% 0%, rgba(103, 232, 249, 0.05), transparent 40%);
+  mix-blend-mode: screen;
+  opacity: 0.65;
+}
+
+.helix-command-bar,
+.helix-pulse-strip,
+.helix-widget-grid section {
+  position: relative;
+  overflow: hidden;
+}
+
+.helix-command-bar::after,
+.helix-pulse-strip::after,
+.helix-widget-grid section::after {
+  content: '';
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(115deg, transparent 0%, rgba(125, 211, 252, 0.08) 45%, transparent 64%);
+  opacity: 0.45;
+}
+
+.helix-command-bar::before,
+.helix-pulse-strip::before,
+.helix-widget-grid section::before {
+  content: '';
+  pointer-events: none;
+  position: absolute;
+  inset: 1px;
+  border-radius: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.025);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    inset 0 0 24px rgba(34, 211, 238, 0.03);
+}
+
+.helix-command-bar {
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.88), rgba(7, 13, 24, 0.76)),
+    radial-gradient(circle at 20% 0%, rgba(34, 211, 238, 0.12), transparent 38%);
+  box-shadow:
+    0 26px 80px rgba(2, 6, 23, 0.56),
+    0 0 0 1px rgba(125, 211, 252, 0.06);
+}
+
+.helix-header-action {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 12px 30px rgba(8, 47, 73, 0.22);
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+}
+
+.helix-header-action:hover {
+  transform: translateY(-1px);
+  border-color: rgba(103, 232, 249, 0.36);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 18px 34px rgba(8, 47, 73, 0.28);
+}
+
+.helix-pulse-card,
+.helix-targeting-hud,
+.helix-brain-core {
+  position: relative;
+  overflow: hidden;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 18px 40px rgba(2, 6, 23, 0.22);
+}
+
+.helix-pulse-card::before,
+.helix-targeting-hud::before,
+.helix-brain-core::before {
+  content: '';
+  pointer-events: none;
+  position: absolute;
+  inset: -60% -30%;
+  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.11), transparent);
+  transform: translateX(-35%) rotate(8deg);
+  animation: helix-scan 7s linear infinite;
+}
+
+.helix-orb,
+.helix-brain-orb {
+  box-shadow:
+    inset 0 0 22px rgba(34, 211, 238, 0.22),
+    0 0 30px rgba(34, 211, 238, 0.16),
+    0 14px 38px rgba(2, 6, 23, 0.36);
+  animation: helix-breathe 3.8s ease-in-out infinite;
+}
+
+.helix-node-pulse {
+  animation: helix-pulse 1.9s ease-in-out infinite;
+}
+
+.helix-brain-panel {
+  background:
+    radial-gradient(circle at 25% 20%, rgba(34, 211, 238, 0.09), transparent 34%),
+    linear-gradient(180deg, rgba(17, 24, 39, 0.82), rgba(9, 14, 24, 0.72));
+}
+
+.helix-market-panel {
+  background:
+    radial-gradient(circle at 18% 8%, rgba(16, 185, 129, 0.12), transparent 34%),
+    radial-gradient(circle at 90% 20%, rgba(34, 211, 238, 0.1), transparent 38%),
+    linear-gradient(180deg, rgba(17, 24, 39, 0.82), rgba(9, 14, 24, 0.72));
+}
+
+.helix-market-row {
+  position: relative;
+  overflow: hidden;
+}
+
+.helix-market-row::before {
+  content: '';
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, transparent, rgba(255, 255, 255, 0.055), transparent);
+  opacity: 0;
+  transform: translateX(-35%);
+  transition: opacity 180ms ease, transform 420ms ease;
+}
+
+.helix-market-row:hover::before {
+  opacity: 1;
+  transform: translateX(35%);
+}
+
+.helix-hud-panel {
+  background:
+    radial-gradient(circle at 70% 0%, rgba(34, 211, 238, 0.11), transparent 42%),
+    radial-gradient(circle at 0% 100%, rgba(56, 189, 248, 0.08), transparent 36%),
+    linear-gradient(180deg, rgba(17, 24, 39, 0.82), rgba(9, 14, 24, 0.72));
+}
+
+.helix-worker-panel {
+  background:
+    radial-gradient(circle at 0% 0%, rgba(52, 211, 153, 0.1), transparent 38%),
+    radial-gradient(circle at 100% 100%, rgba(34, 211, 238, 0.06), transparent 36%),
+    linear-gradient(180deg, rgba(17, 24, 39, 0.82), rgba(9, 14, 24, 0.72));
+}
+
+.helix-risk-panel {
+  background:
+    radial-gradient(circle at 0% 0%, rgba(245, 158, 11, 0.1), transparent 34%),
+    radial-gradient(circle at 100% 20%, rgba(34, 211, 238, 0.08), transparent 36%),
+    linear-gradient(180deg, rgba(17, 24, 39, 0.82), rgba(9, 14, 24, 0.72));
+}
+
+.helix-ticket-panel {
+  background:
+    radial-gradient(circle at 20% 0%, rgba(245, 158, 11, 0.11), transparent 34%),
+    radial-gradient(circle at 100% 28%, rgba(34, 211, 238, 0.1), transparent 36%),
+    linear-gradient(180deg, rgba(17, 24, 39, 0.82), rgba(9, 14, 24, 0.72));
+}
+
+.helix-position-panel {
+  background:
+    radial-gradient(circle at 0% 0%, rgba(34, 211, 238, 0.08), transparent 34%),
+    radial-gradient(circle at 100% 25%, rgba(16, 185, 129, 0.08), transparent 34%),
+    linear-gradient(180deg, rgba(17, 24, 39, 0.82), rgba(9, 14, 24, 0.72));
+}
+
+.helix-lifecycle-panel {
+  background:
+    radial-gradient(circle at 0% 18%, rgba(59, 130, 246, 0.12), transparent 36%),
+    radial-gradient(circle at 88% 0%, rgba(20, 184, 166, 0.1), transparent 34%),
+    linear-gradient(180deg, rgba(17, 24, 39, 0.82), rgba(9, 14, 24, 0.72));
+}
+
+.helix-performance-panel {
+  background:
+    radial-gradient(circle at 12% 0%, rgba(52, 211, 153, 0.12), transparent 34%),
+    radial-gradient(circle at 100% 28%, rgba(245, 158, 11, 0.08), transparent 36%),
+    linear-gradient(180deg, rgba(17, 24, 39, 0.82), rgba(9, 14, 24, 0.72));
+}
+
+.helix-panel-shell {
+  box-shadow:
+    0 24px 70px rgba(2, 6, 23, 0.42),
+    0 0 0 1px rgba(148, 163, 184, 0.03);
+  transition:
+    transform 220ms ease,
+    border-color 220ms ease,
+    box-shadow 220ms ease,
+    background-color 220ms ease;
+}
+
+.helix-widget-grid .react-grid-item:hover .helix-panel-shell {
+  transform: translateY(-2px);
+  border-color: rgba(103, 232, 249, 0.18);
+  box-shadow:
+    0 32px 80px rgba(2, 6, 23, 0.52),
+    0 0 0 1px rgba(34, 211, 238, 0.06);
+}
+
+.helix-panel-title {
+  letter-spacing: 0.015em;
+  text-shadow: 0 1px 16px rgba(34, 211, 238, 0.08);
+}
+
+.helix-panel-subtitle {
+  max-width: 44rem;
+}
+
+.helix-top-metric {
+  position: relative;
+  overflow: hidden;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.035),
+    0 16px 38px rgba(2, 6, 23, 0.28);
+}
+
+.helix-top-metric::before {
+  content: '';
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 0%, rgba(255, 255, 255, 0.04) 46%, transparent 68%);
+  opacity: 0.7;
+}
+
+.helix-pulse-strip {
+  background:
+    linear-gradient(180deg, rgba(8, 15, 28, 0.84), rgba(7, 11, 20, 0.76)),
+    radial-gradient(circle at 50% 0%, rgba(34, 211, 238, 0.08), transparent 45%);
+  box-shadow:
+    0 18px 50px rgba(2, 6, 23, 0.38),
+    0 0 0 1px rgba(125, 211, 252, 0.03);
+}
+
+.helix-pulse-card {
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+}
+
+.helix-pulse-card:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 16px 32px rgba(2, 6, 23, 0.34);
+}
+
+.helix-market-row,
+.helix-targeting-hud,
+.helix-brain-core,
+.helix-top-metric,
+.helix-pulse-card {
+  backdrop-filter: blur(16px);
+}
+
+.helix-widget-grid .react-grid-item {
+  will-change: transform, width, height;
+}
+
+.helix-widget-grid .react-grid-item.react-draggable-dragging .helix-panel-shell,
+.helix-widget-grid .react-grid-item.resizing .helix-panel-shell {
+  border-color: rgba(103, 232, 249, 0.26);
+  box-shadow:
+    0 36px 90px rgba(2, 6, 23, 0.58),
+    0 0 0 1px rgba(34, 211, 238, 0.08);
+}
+
+.helix-widget-grid ::-webkit-scrollbar-thumb:hover {
+  background: rgba(125, 211, 252, 0.52);
+}
+
+.helix-presentation-hero {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(900px 380px at 0% 0%, rgba(34, 211, 238, 0.16), transparent 52%),
+    radial-gradient(780px 360px at 100% 0%, rgba(16, 185, 129, 0.12), transparent 48%),
+    linear-gradient(180deg, rgba(7, 14, 24, 0.9), rgba(5, 8, 15, 0.82));
+  box-shadow:
+    0 34px 90px rgba(2, 6, 23, 0.48),
+    0 0 0 1px rgba(125, 211, 252, 0.04);
+}
+
+.helix-presentation-hero::before {
+  content: '';
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(110deg, transparent 0%, rgba(125, 211, 252, 0.08) 42%, transparent 68%),
+    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.04), transparent 42%);
+  opacity: 0.9;
+}
+
+.helix-presentation-focus,
+.helix-presentation-card {
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.68), rgba(9, 14, 24, 0.76)),
+    rgba(255, 255, 255, 0.02);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 18px 40px rgba(2, 6, 23, 0.22);
+}
+
+.helix-presentation-focus::after,
+.helix-presentation-card::after {
+  content: '';
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(115deg, transparent 0%, rgba(125, 211, 252, 0.07) 46%, transparent 65%);
+  opacity: 0.55;
+}
+
+[data-view-mode='presentation'] .helix-command-bar {
+  border-color: rgba(103, 232, 249, 0.22);
+  box-shadow:
+    0 30px 90px rgba(2, 6, 23, 0.58),
+    0 0 0 1px rgba(125, 211, 252, 0.08);
+}
+
+[data-view-mode='presentation'] .helix-panel-shell {
+  border-color: rgba(148, 163, 184, 0.11);
+  background: linear-gradient(180deg, rgba(10, 16, 28, 0.92), rgba(8, 12, 20, 0.82));
+  box-shadow:
+    0 28px 80px rgba(2, 6, 23, 0.48),
+    0 0 0 1px rgba(148, 163, 184, 0.04);
+}
+
+[data-view-mode='presentation'] .helix-panel-title {
+  font-size: 1.22rem;
+  letter-spacing: 0.01em;
+}
+
+[data-view-mode='presentation'] .helix-panel-subtitle {
+  max-width: 36rem;
+  color: rgba(203, 213, 225, 0.72);
+}
+
+[data-view-mode='presentation'] .widget-drag-handle {
+  opacity: 0.42;
+  border-style: solid;
+  border-color: rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.025);
+  transition: opacity 160ms ease, border-color 160ms ease, background-color 160ms ease;
+}
+
+[data-view-mode='presentation'] .helix-panel-shell:hover .widget-drag-handle {
+  opacity: 0.78;
+  border-color: rgba(103, 232, 249, 0.2);
+}
+
+[data-view-mode='presentation'] .helix-top-metric {
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.84), rgba(8, 13, 22, 0.82)),
+    rgba(255, 255, 255, 0.02);
+}
+
+[data-view-mode='presentation'] .helix-pulse-strip {
+  border-color: rgba(103, 232, 249, 0.22);
+}
+
+[data-view-mode='presentation'] .helix-pulse-card {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.045),
+    0 24px 48px rgba(2, 6, 23, 0.28);
+}
+
+[data-view-mode='presentation'] .helix-market-row,
+[data-view-mode='presentation'] .helix-targeting-hud,
+[data-view-mode='presentation'] .helix-brain-core,
+[data-view-mode='presentation'] .helix-top-metric,
+[data-view-mode='presentation'] .helix-pulse-card {
+  backdrop-filter: blur(22px);
+}
+
+.helix-settings-shell {
+  background:
+    radial-gradient(1200px 540px at 8% -10%, rgba(34, 211, 238, 0.14), transparent 52%),
+    radial-gradient(920px 520px at 100% 0%, rgba(16, 185, 129, 0.09), transparent 46%),
+    linear-gradient(180deg, rgba(5, 9, 18, 0.98), rgba(3, 6, 12, 1));
+}
+
+.helix-settings-hero {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(840px 340px at 0% 0%, rgba(34, 211, 238, 0.14), transparent 55%),
+    radial-gradient(720px 300px at 100% 0%, rgba(16, 185, 129, 0.1), transparent 48%),
+    linear-gradient(180deg, rgba(9, 16, 27, 0.92), rgba(7, 11, 20, 0.84));
+  box-shadow:
+    0 28px 90px rgba(2, 6, 23, 0.42),
+    0 0 0 1px rgba(125, 211, 252, 0.05);
+}
+
+.helix-settings-hero::before,
+.helix-settings-panel::before,
+.helix-settings-focus::before,
+.helix-settings-focus-card::before,
+.helix-settings-tile::before,
+.helix-settings-field::before {
+  content: '';
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, transparent 0%, rgba(125, 211, 252, 0.06) 46%, transparent 65%);
+  opacity: 0.45;
+}
+
+.helix-settings-panel,
+.helix-settings-focus,
+.helix-settings-focus-card,
+.helix-settings-tile,
+.helix-settings-field,
+.helix-settings-toggle {
+  position: relative;
+  overflow: hidden;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.035),
+    0 18px 42px rgba(2, 6, 23, 0.26);
+}
+
+.helix-settings-focus,
+.helix-settings-focus-card {
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.7), rgba(8, 13, 22, 0.74)),
+    rgba(255, 255, 255, 0.02);
+}
+
+.helix-settings-field,
+.helix-settings-toggle,
+.helix-settings-tile {
+  backdrop-filter: blur(16px);
+}
+
+.helix-settings-panel:hover,
+.helix-settings-field:hover,
+.helix-settings-toggle:hover,
+.helix-settings-tile:hover,
+.helix-settings-focus-card:hover {
+  border-color: rgba(103, 232, 249, 0.18);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .helix-pulse-card::before,
+  .helix-targeting-hud::before,
+  .helix-brain-core::before,
+  .helix-orb,
+  .helix-brain-orb,
+  .helix-node-pulse {
+    animation: none;
+  }
+
+  .helix-panel-shell,
+  .helix-pulse-card,
+  .helix-header-action,
+  .helix-widget-grid .react-grid-item {
+    transition: none;
+  }
+}
+
+@keyframes helix-scan {
+  0% {
+    transform: translateX(-48%) rotate(8deg);
+  }
+  100% {
+    transform: translateX(48%) rotate(8deg);
+  }
+}
+
+@keyframes helix-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.92;
+  }
+  50% {
+    transform: scale(1.035);
+    opacity: 1;
+  }
+}
+
+@keyframes helix-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+    box-shadow: 0 0 0 rgba(103, 232, 249, 0);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 18px rgba(103, 232, 249, 0.55);
+  }
+}

@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { tradingApi, TradeSignal, ModelAccount, TradingStatus } from '../services/tradingApi';
+import { tradingApi, TradeSignal, ModelAccount, TradingStatus, SymbolExecutionProfile } from '../services/tradingApi';
 
 interface TradingPanelProps {
   modelId: string;
   modelName: string;
   onTradeExecuted?: (signal: TradeSignal) => void;
 }
+
+const TEST_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'DOGEUSDT', 'BNBUSDT'];
 
 export const TradingPanel: React.FC<TradingPanelProps> = ({ 
   modelId, 
@@ -16,6 +18,9 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({
   const [modelAccount, setModelAccount] = useState<ModelAccount | null>(null);
   const [isTradingEnabled, setIsTradingEnabled] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [testSymbol, setTestSymbol] = useState('BTCUSDT');
+  const [symbolProfiles, setSymbolProfiles] = useState<SymbolExecutionProfile[]>([]);
+  const [watchlistMap, setWatchlistMap] = useState<Record<string, { tradable: boolean; watchlistOnly: boolean }>>({});
 
   useEffect(() => {
     loadTradingData();
@@ -24,14 +29,17 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({
   const loadTradingData = async () => {
     try {
       setLoading(true);
-      const [status, account] = await Promise.all([
+      const [status, account, profilePayload] = await Promise.all([
         tradingApi.getTradingStatus(),
-        tradingApi.getModelAccount(modelId).catch(() => null)
+        tradingApi.getModelAccount(modelId).catch(() => null),
+        tradingApi.getSymbolProfiles().catch(() => null)
       ]);
       
       setTradingStatus(status);
       setModelAccount(account);
       setIsTradingEnabled(status.enabled);
+      setSymbolProfiles(profilePayload?.profiles || []);
+      setWatchlistMap(Object.fromEntries((profilePayload?.watchlist || []).map((row) => [row.symbol, row])));
     } catch (error) {
       console.error('Error loading trading data:', error);
     } finally {
@@ -75,10 +83,10 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({
       setLoading(true);
       const signal = tradingApi.generateTradeSignal(
         modelId,
-        'BTC',
+        testSymbol.replace('USDT', ''),
         'BUY',
         0.85,
-        'Test trade from frontend',
+        `Test trade from frontend (${testSymbol})`,
         {
           type: 'MARKET',
           leverage: 2,
@@ -153,7 +161,7 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({
       ) : (
         <div className="space-y-4">
           {/* Account Info */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div>
               <p className="text-sm text-gray-400">Balance</p>
               <p className="text-lg font-mono text-white">
@@ -161,11 +169,27 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({
               </p>
             </div>
             <div>
-              <p className="text-sm text-gray-400">P&L</p>
+              <p className="text-sm text-gray-400">Total P&L</p>
               <p className={`text-lg font-mono ${
                 modelAccount.totalPnL >= 0 ? 'text-green-400' : 'text-red-400'
               }`}>
                 {modelAccount.totalPnL >= 0 ? '+' : ''}${modelAccount.totalPnL.toFixed(2)}
+              </p>
+            </div>
+            <div>
+              <p className="text-sm text-gray-400">Realized P&L</p>
+              <p className={`text-lg font-mono ${
+                (modelAccount.realizedPnL || 0) >= 0 ? 'text-green-400' : 'text-red-400'
+              }`}>
+                {(modelAccount.realizedPnL || 0) >= 0 ? '+' : ''}${(modelAccount.realizedPnL || 0).toFixed(2)}
+              </p>
+            </div>
+            <div>
+              <p className="text-sm text-gray-400">Daily P&L</p>
+              <p className={`text-lg font-mono ${
+                (modelAccount.dailyPnl || 0) >= 0 ? 'text-green-400' : 'text-red-400'
+              }`}>
+                {(modelAccount.dailyPnl || 0) >= 0 ? '+' : ''}${(modelAccount.dailyPnl || 0).toFixed(2)}
               </p>
             </div>
           </div>
@@ -189,7 +213,10 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({
                     </div>
                     <div className="text-xs text-gray-400 mt-1">
                       Size: {position.size} | Entry: ${position.entryPrice.toFixed(2)} | 
-                      Current: ${position.currentPrice.toFixed(2)}
+                      Current: ${position.currentPrice.toFixed(2)} | Leverage: {position.leverage}x
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      SL: {position.stopLoss ? `$${position.stopLoss.toFixed(4)}` : '—'} | TP: {position.takeProfit ? `$${position.takeProfit.toFixed(4)}` : '—'}
                     </div>
                   </div>
                 ))}
@@ -197,8 +224,43 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({
             </div>
           )}
 
+          {/* Symbol Profiles */}
+          <div>
+            <h4 className="text-sm font-bold text-gray-400 mb-2">Symbol Execution Profiles</h4>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs text-left text-gray-300">
+                <thead className="text-gray-500 border-b border-gray-800">
+                  <tr>
+                    <th className="py-2 pr-3">Symbol</th>
+                    <th className="py-2 pr-3">Role</th>
+                    <th className="py-2 pr-3">Min Conf</th>
+                    <th className="py-2 pr-3">Lev</th>
+                    <th className="py-2 pr-3">Stop</th>
+                    <th className="py-2 pr-3">Target</th>
+                    <th className="py-2 pr-3">Size</th>
+                    <th className="py-2 pr-3">Spread</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {symbolProfiles.map((profile) => (
+                    <tr key={profile.symbol} className="border-b border-gray-800/60">
+                      <td className="py-2 pr-3 font-mono text-white">{profile.symbol}</td>
+                      <td className="py-2 pr-3">{profile.notes?.[0]?.replaceAll('_', ' ') || '—'}</td>
+                      <td className="py-2 pr-3">{profile.minConfidencePct}%</td>
+                      <td className="py-2 pr-3">{profile.maxLeverage}x</td>
+                      <td className="py-2 pr-3">{(profile.stopDistancePct * 100).toFixed(2)}%</td>
+                      <td className="py-2 pr-3">{profile.targetR.toFixed(1)}R</td>
+                      <td className="py-2 pr-3">{profile.sizeMultiplier.toFixed(2)}x</td>
+                      <td className="py-2 pr-3">{profile.spreadCeilingBps} bps</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           {/* Controls */}
-          <div className="flex space-x-2">
+          <div className="flex flex-wrap gap-2">
             <button
               onClick={toggleTrading}
               disabled={loading}
@@ -210,6 +272,16 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({
             >
               {isTradingEnabled ? 'Disable Trading' : 'Enable Trading'}
             </button>
+
+            <select
+              value={testSymbol}
+              onChange={(e) => setTestSymbol(e.target.value)}
+              className="bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded text-sm"
+            >
+              {TEST_SYMBOLS.map((symbol) => (
+                <option key={symbol} value={symbol}>{symbol}</option>
+              ))}
+            </select>
 
             <button
               onClick={sendTestTrade}

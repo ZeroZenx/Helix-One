@@ -1,607 +1,2022 @@
-import { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
+import Head from 'next/head';
+import { useEffect, useMemo, useState } from 'react';
+import { fetchWithTimeout, getTradingApiBaseUrl } from '../src/utils/api';
 
-interface BinanceAccount {
-  connected: boolean;
-  apiKey: string;
-  testnet: boolean;
-  balance: number;
-  tradingEnabled: boolean;
-  lastSync: Date | null;
-}
+const API = getTradingApiBaseUrl();
 
-interface ModelAccount {
-  modelId: number;
-  modelName: string;
-  apiKey: string;
-  secretKey: string;
-  balance: number;
-  tradingEnabled: boolean;
-  positionsCount: number;
-}
+type Banner = { type: 'success' | 'error'; text: string } | null;
+
+type UiPrefs = {
+  baseCurrency: 'USDT' | 'USDC' | 'BUSD';
+  slippageTolerancePct: number;
+  tradeConfirmation: boolean;
+  orderTimeoutSec: number;
+  useDeepSeekBrain: boolean;
+};
+
+const defaultUiPrefs: UiPrefs = {
+  baseCurrency: 'USDT',
+  slippageTolerancePct: 0.25,
+  tradeConfirmation: false,
+  orderTimeoutSec: 30,
+  useDeepSeekBrain: true,
+};
+
+type SettingsTab = 'General' | 'Trading' | 'Risk Management' | 'Notifications' | 'Advanced';
 
 export default function Settings() {
-  const [activeTab, setActiveTab] = useState<'connection' | 'models' | 'risk'>('connection');
-  const [showApiKey, setShowApiKey] = useState(false);
-  const [showSecretKey, setShowSecretKey] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState<'idle' | 'success' | 'error'>('idle');
-  
-  // Master Account Settings
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<string>('');
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+
+  const [banner, setBanner] = useState<Banner>(null);
+  const [lastSavedAt, setLastSavedAt] = useState<string>('');
+
+  const [adminKey, setAdminKey] = useState('');
   const [masterApiKey, setMasterApiKey] = useState('');
   const [masterSecretKey, setMasterSecretKey] = useState('');
-  const [useTestnet, setUseTestnet] = useState(true);
+  const [aiProvider, setAiProvider] = useState<'deepseek' | 'openai' | 'gemini'>('deepseek');
+  const [deepseekApiKey, setDeepseekApiKey] = useState('');
+  const [openaiApiKey, setOpenaiApiKey] = useState('');
+  const [geminiApiKey, setGeminiApiKey] = useState('');
+  const [testnet, setTestnet] = useState(false);
   const [globalTradingEnabled, setGlobalTradingEnabled] = useState(false);
-  
-  // Model Accounts
-  const [modelAccounts, setModelAccounts] = useState<ModelAccount[]>([
-    { modelId: 1, modelName: 'DeepSeek Chat V3.1', apiKey: '', secretKey: '', balance: 10000, tradingEnabled: false, positionsCount: 0 },
-    { modelId: 2, modelName: 'Grok-4', apiKey: '', secretKey: '', balance: 10000, tradingEnabled: false, positionsCount: 0 },
-    { modelId: 3, modelName: 'Claude Sonnet 4.5', apiKey: '', secretKey: '', balance: 10000, tradingEnabled: false, positionsCount: 0 },
-    { modelId: 4, modelName: 'GPT 5', apiKey: '', secretKey: '', balance: 10000, tradingEnabled: false, positionsCount: 0 },
-    { modelId: 5, modelName: 'Qwen3 Max', apiKey: '', secretKey: '', balance: 10000, tradingEnabled: false, positionsCount: 0 },
-    { modelId: 6, modelName: 'Gemini 2.5 Pro', apiKey: '', secretKey: '', balance: 10000, tradingEnabled: false, positionsCount: 0 },
-  ]);
-  
-  // Risk Management Settings
-  const [maxDailyLoss, setMaxDailyLoss] = useState(3);
-  const [maxPositionSize, setMaxPositionSize] = useState(10);
-  const [maxLeverage, setMaxLeverage] = useState(5);
-  const [dailyTargetReturn, setDailyTargetReturn] = useState(20);
+  const [portfolioTradingEnabled, setPortfolioTradingEnabled] = useState(false);
+  const [deepseekBalance, setDeepseekBalance] = useState(10000);
+
+  const [maxDailyLossPct, setMaxDailyLossPct] = useState(3);
+  const [maxPositionSizePct, setMaxPositionSizePct] = useState(8);
+  const [maxLeverage, setMaxLeverage] = useState(20);
+  const [minLeverage, setMinLeverage] = useState(10);
+  const [maxOpenPositions, setMaxOpenPositions] = useState(4);
+  const [killSwitchDrawdownPct, setKillSwitchDrawdownPct] = useState(5);
+  const [cooldownMinutes, setCooldownMinutes] = useState(45);
+  const [maxTradesPerDay, setMaxTradesPerDay] = useState(8);
+  const [maxConsecutiveLosses, setMaxConsecutiveLosses] = useState(3);
+  const [minConfidence, setMinConfidence] = useState(0.60);
+  const [paperTrading, setPaperTrading] = useState(false);
+  const [deepseekDecisionEnabled, setDeepseekDecisionEnabled] = useState(true);
+  const [breakEvenBufferPct, setBreakEvenBufferPct] = useState(0.001);
+  const [breakEvenFeeBps, setBreakEvenFeeBps] = useState(8);
+  const [breakEvenSlippageBps, setBreakEvenSlippageBps] = useState(5);
+  const [letWinnersRunEnabled, setLetWinnersRunEnabled] = useState(true);
+  const [runnerActivationR, setRunnerActivationR] = useState(2);
+  const [runnerPartialTakeProfitPct, setRunnerPartialTakeProfitPct] = useState(30);
+  const [runnerTrailPct, setRunnerTrailPct] = useState(0.006);
+  const [tradeConfirmation, setTradeConfirmation] = useState(false);
+  const [notificationsPush, setNotificationsPush] = useState(true);
+  const [notificationsEmail, setNotificationsEmail] = useState(false);
+  const [notificationsTelegram, setNotificationsTelegram] = useState(false);
+  const [notificationEmail, setNotificationEmail] = useState('');
+  const [telegramBotToken, setTelegramBotToken] = useState('');
+  const [telegramUserId, setTelegramUserId] = useState('');
+  const [telegramPairingCode, setTelegramPairingCode] = useState('');
+  const [telegramMinSeverity, setTelegramMinSeverity] = useState<'info' | 'warning' | 'critical'>('info');
+  const [telegramRateLimitSec, setTelegramRateLimitSec] = useState(120);
+  const [testingTelegram, setTestingTelegram] = useState(false);
+
+  const [hasMasterApiKey, setHasMasterApiKey] = useState(false);
+  const [hasMasterSecretKey, setHasMasterSecretKey] = useState(false);
+  const [hasDeepseekApiKey, setHasDeepseekApiKey] = useState(false);
+  const [hasOpenaiApiKey, setHasOpenaiApiKey] = useState(false);
+  const [hasGeminiApiKey, setHasGeminiApiKey] = useState(false);
+  const [hasTelegramBotToken, setHasTelegramBotToken] = useState(false);
+
+  const [status, setStatus] = useState<any>(null);
+  const [briefing, setBriefing] = useState<any>(null);
+  const [uiPrefs, setUiPrefs] = useState<UiPrefs>(defaultUiPrefs);
+  const [activeTab, setActiveTab] = useState<SettingsTab>('General');
+
+  const [helixEvalOutput, setHelixEvalOutput] = useState<any>(null);
+  const [darwinOutput, setDarwinOutput] = useState<any>(null);
+  const [experimentsOutput, setExperimentsOutput] = useState<any>(null);
+  const [walkForwardOutput, setWalkForwardOutput] = useState<any>(null);
+  const [contractValidateOutput, setContractValidateOutput] = useState<any>(null);
+  const [promotionEvalOutput, setPromotionEvalOutput] = useState<any>(null);
+  const [leaderboardOutput, setLeaderboardOutput] = useState<any>(null);
+  const [runsOutput, setRunsOutput] = useState<any>(null);
+  const [liveGovernanceOutput, setLiveGovernanceOutput] = useState<any>(null);
+  const [lastLivePayload, setLastLivePayload] = useState<any>(null);
+  const [promotionDryRun, setPromotionDryRun] = useState(true);
+  const [promotionConfirmText, setPromotionConfirmText] = useState('');
+  const [executionAudit, setExecutionAudit] = useState<any[]>([]);
+  const [settingsAudit, setSettingsAudit] = useState<any[]>([]);
+  const [workerStatus, setWorkerStatus] = useState<any>(null);
+  const [learningReviewRunning, setLearningReviewRunning] = useState(false);
+  const [learningReviewResult, setLearningReviewResult] = useState<any>(null);
+  const [selfLearningStatus, setSelfLearningStatus] = useState<any>(null);
+  const [selfLearningEnabled, setSelfLearningEnabled] = useState(true);
+  const [selfLearningIntervalHours, setSelfLearningIntervalHours] = useState(6);
+  const [selfLearningMinClosedTrades, setSelfLearningMinClosedTrades] = useState(30);
+  const [selfLearningAutoRiskTightening, setSelfLearningAutoRiskTightening] = useState(true);
+  const [selfLearningAllowLivePromotion, setSelfLearningAllowLivePromotion] = useState(false);
+  const [selfLearningNotifyOnReview, setSelfLearningNotifyOnReview] = useState(true);
+
+  const authHeaders = useMemo(() => (adminKey ? { 'x-admin-key': adminKey } : {}), [adminKey]);
+
+  const riskValidation = useMemo(() => {
+    const errors: string[] = [];
+    if (maxDailyLossPct <= 0 || maxDailyLossPct > 100) errors.push('Max daily loss must be 0-100%.');
+    if (maxPositionSizePct <= 0 || maxPositionSizePct > 100) errors.push('Max position size must be 0-100%.');
+    if (killSwitchDrawdownPct <= 0 || killSwitchDrawdownPct > 100) errors.push('Kill-switch drawdown must be 0-100%.');
+    if (maxLeverage < 1 || maxLeverage > 125) errors.push('Max leverage must be between 1 and 125.');
+    if (minLeverage < 1 || minLeverage > 125) errors.push('Min leverage must be between 1 and 125.');
+    if (minLeverage > maxLeverage) errors.push('Min leverage cannot exceed max leverage.');
+    if (maxOpenPositions < 1 || maxOpenPositions > 20) errors.push('Max open positions must be 1-20.');
+    if (cooldownMinutes < 0 || cooldownMinutes > 1440) errors.push('Cooldown must be 0-1440 minutes.');
+    if (maxTradesPerDay < 1 || maxTradesPerDay > 100) errors.push('Max trades/day must be 1-100.');
+    if (maxConsecutiveLosses < 1 || maxConsecutiveLosses > 20) errors.push('Max consecutive losses must be 1-20.');
+    if (minConfidence < 0 || minConfidence > 1) errors.push('Min confidence must be 0.00-1.00.');
+    if (breakEvenBufferPct < 0 || breakEvenBufferPct > 0.05) errors.push('BE+ safety buffer must be 0-5%.');
+    if (breakEvenFeeBps < 0 || breakEvenFeeBps > 100) errors.push('BE+ fee buffer must be 0-100 bps.');
+    if (breakEvenSlippageBps < 0 || breakEvenSlippageBps > 200) errors.push('BE+ slippage buffer must be 0-200 bps.');
+    if (runnerActivationR < 1 || runnerActivationR > 10) errors.push('Runner activation must be 1-10R.');
+    if (runnerPartialTakeProfitPct < 5 || runnerPartialTakeProfitPct > 80) errors.push('Runner partial take-profit must be 5-80%.');
+    if (runnerTrailPct < 0.001 || runnerTrailPct > 0.2) errors.push('Runner trailing stop must be 0.10-20%.');
+    return errors;
+  }, [maxDailyLossPct, maxPositionSizePct, killSwitchDrawdownPct, maxLeverage, minLeverage, maxOpenPositions, cooldownMinutes, maxTradesPerDay, maxConsecutiveLosses, minConfidence, breakEvenBufferPct, breakEvenFeeBps, breakEvenSlippageBps, runnerActivationR, runnerPartialTakeProfitPct, runnerTrailPct]);
+
+  const credentialStatus = (saved: boolean): 'Saved' | 'Not set' | 'Unknown' => {
+    if (!settingsLoaded) return 'Unknown';
+    return saved ? 'Saved' : 'Not set';
+  };
+
+  function applySettings(s: any) {
+    const isMasked = (v: string) => /^\*+$/.test(v || '');
+
+    setHasMasterApiKey(Boolean(s.hasMasterApiKey));
+    setHasMasterSecretKey(Boolean(s.hasMasterSecretKey));
+    setHasDeepseekApiKey(Boolean(s.hasDeepseekApiKey));
+    setHasOpenaiApiKey(Boolean(s.hasOpenaiApiKey));
+    setHasGeminiApiKey(Boolean(s.hasGeminiApiKey));
+    setHasTelegramBotToken(Boolean(s.hasTelegramBotToken));
+    setAiProvider((s.aiProvider === 'openai' || s.aiProvider === 'gemini' || s.aiProvider === 'deepseek') ? s.aiProvider : 'deepseek');
+
+    if (typeof s.masterApiKey === 'string' && s.masterApiKey && !isMasked(s.masterApiKey)) {
+      setMasterApiKey(s.masterApiKey);
+    } else if (Boolean(s.hasMasterApiKey) && !masterApiKey) {
+      setMasterApiKey('********');
+    }
+
+    if (typeof s.masterSecretKey === 'string' && s.masterSecretKey && !isMasked(s.masterSecretKey)) {
+      setMasterSecretKey(s.masterSecretKey);
+    } else if (Boolean(s.hasMasterSecretKey) && !masterSecretKey) {
+      setMasterSecretKey('********');
+    }
+
+    if (typeof s.deepseekApiKey === 'string' && s.deepseekApiKey && !isMasked(s.deepseekApiKey)) {
+      setDeepseekApiKey(s.deepseekApiKey);
+    } else if (Boolean(s.hasDeepseekApiKey) && !deepseekApiKey) {
+      setDeepseekApiKey('********');
+    }
+
+    if (typeof s.openaiApiKey === 'string' && s.openaiApiKey && !isMasked(s.openaiApiKey)) {
+      setOpenaiApiKey(s.openaiApiKey);
+    } else if (Boolean(s.hasOpenaiApiKey) && !openaiApiKey) {
+      setOpenaiApiKey('********');
+    }
+
+    if (typeof s.geminiApiKey === 'string' && s.geminiApiKey && !isMasked(s.geminiApiKey)) {
+      setGeminiApiKey(s.geminiApiKey);
+    } else if (Boolean(s.hasGeminiApiKey) && !geminiApiKey) {
+      setGeminiApiKey('********');
+    }
+
+    setTestnet(Boolean(s.testnet));
+
+    setGlobalTradingEnabled(Boolean(s.tradingEnabled));
+
+    const account = s.modelAccounts?.[0] || {};
+    setPortfolioTradingEnabled(Boolean(account.tradingEnabled));
+    setDeepseekBalance(Number(account.balance || 10000));
+
+    const r = s.riskSettings || {};
+    setMaxDailyLossPct(Number(r.maxDailyLossPct ?? 3));
+    setMaxPositionSizePct(Number(r.maxPositionSizePct ?? 8));
+    setMaxLeverage(Number(r.maxLeverage ?? 20));
+    setMinLeverage(Number((r as any).minLeverage ?? 10));
+    setMaxOpenPositions(Number((r as any).maxOpenPositions ?? 4));
+    setKillSwitchDrawdownPct(Number(r.killSwitchDrawdownPct ?? 5));
+    setCooldownMinutes(Number(r.cooldownMinutes ?? 45));
+    setMaxTradesPerDay(Number(r.maxTradesPerDay ?? 8));
+    setMaxConsecutiveLosses(Number(r.maxConsecutiveLosses ?? 3));
+    setMinConfidence(Number(r.minConfidence ?? 0.60));
+    setPaperTrading(Boolean((r as any).paperTrading ?? true));
+    setDeepseekDecisionEnabled(r.deepseekDecisionEnabled !== false);
+    setBreakEvenBufferPct(Number((r as any).breakEvenBufferPct ?? 0.001));
+    setBreakEvenFeeBps(Number((r as any).breakEvenFeeBps ?? 8));
+    setBreakEvenSlippageBps(Number((r as any).breakEvenSlippageBps ?? 5));
+    setLetWinnersRunEnabled((r as any).letWinnersRunEnabled !== false);
+    setRunnerActivationR(Number((r as any).runnerActivationR ?? 2));
+    setRunnerPartialTakeProfitPct(Number((r as any).runnerPartialTakeProfitPct ?? 30));
+    setRunnerTrailPct(Number((r as any).runnerTrailPct ?? 0.006));
+
+    const n = s.notificationSettings || {};
+    setNotificationsPush(Boolean(n.pushEnabled ?? true));
+    setNotificationsEmail(Boolean(n.emailEnabled ?? false));
+    setNotificationsTelegram(Boolean(n.telegramEnabled ?? false));
+    setNotificationEmail(String(n.email || ''));
+    if (typeof n.telegramBotToken === 'string' && n.telegramBotToken && !isMasked(String(n.telegramBotToken))) {
+      setTelegramBotToken(String(n.telegramBotToken));
+    } else if (Boolean(s.hasTelegramBotToken) && !telegramBotToken) {
+      setTelegramBotToken('********');
+    }
+    setTelegramUserId(String(n.telegramUserId || ''));
+    setTelegramPairingCode(String(n.telegramPairingCode || ''));
+    setTelegramMinSeverity((n.telegramMinSeverity || 'info') as 'info' | 'warning' | 'critical');
+    setTelegramRateLimitSec(Number(n.telegramRateLimitSec ?? 120));
+
+    const sl = s.selfLearningSettings || {};
+    setSelfLearningEnabled(sl.enabled !== false);
+    setSelfLearningIntervalHours(Number(sl.intervalHours ?? 6));
+    setSelfLearningMinClosedTrades(Number(sl.minClosedTrades ?? 30));
+    setSelfLearningAutoRiskTightening(sl.autoRiskTightening !== false);
+    setSelfLearningAllowLivePromotion(sl.allowLivePromotion === true);
+    setSelfLearningNotifyOnReview(sl.notifyOnReview !== false);
+  }
+
+  async function load(silent = false) {
+    if (!silent) setLoading(true);
+    setRefreshing(true);
+
+    let loadedCore = false;
+    try {
+      const settingsRes = await fetchWithTimeout(`${API}/settings`, {}, 4000);
+      if (!settingsRes.ok) throw new Error('Unable to load settings');
+      const settingsData = await settingsRes.json();
+      applySettings(settingsData);
+      loadedCore = true;
+      setSettingsLoaded(true);
+      setLastUpdated(new Date().toLocaleTimeString());
+    } catch (error: any) {
+      if (!silent) setSettingsLoaded(false);
+      if (!silent) {
+        const isTimeout = error?.name === 'AbortError';
+        setBanner({
+          type: 'error',
+          text: isTimeout ? 'Settings request timed out. Backend API may be offline.' : 'Load failed: backend API is not reachable.',
+        });
+      }
+    } finally {
+      if (!silent) setLoading(false);
+    }
+
+    try {
+      const [statusResult, briefingResult, workerResult, selfLearningStatusResult] = await Promise.allSettled([
+        fetchWithTimeout(`${API}/status`, {}, 2500),
+        fetchWithTimeout(`${API}/daily-briefing`, {}, 2500),
+        fetchWithTimeout(`${API}/worker-status`, {}, 2500),
+        fetchWithTimeout(`${API}/helix/self-learning/status`, {}, 2500),
+      ]);
+
+      if (statusResult.status === 'fulfilled' && statusResult.value.ok) {
+        setStatus(await statusResult.value.json());
+      }
+
+      if (briefingResult.status === 'fulfilled' && briefingResult.value.ok) {
+        setBriefing(await briefingResult.value.json());
+      }
+
+      if (workerResult.status === 'fulfilled' && workerResult.value.ok) {
+        setWorkerStatus(await workerResult.value.json());
+      }
+
+      if (selfLearningStatusResult.status === 'fulfilled' && selfLearningStatusResult.value.ok) {
+        setSelfLearningStatus(await selfLearningStatusResult.value.json());
+      }
+
+      if (adminKey) {
+        try {
+          const [auditRes, settingsAuditRes] = await Promise.all([
+            fetchWithTimeout(`${API}/helix/promotion-audit?limit=30`, { headers: { ...authHeaders } }, 2500),
+            fetchWithTimeout(`${API}/settings-audit?limit=30`, { headers: { ...authHeaders } }, 2500),
+          ]);
+          if (auditRes.ok) {
+            const audit = await auditRes.json();
+            if (Array.isArray(audit?.entries)) setExecutionAudit(audit.entries);
+          }
+          if (settingsAuditRes.ok) {
+            const audit = await settingsAuditRes.json();
+            if (Array.isArray(audit?.entries)) setSettingsAudit(audit.entries);
+          }
+        } catch {
+          // ignore audit fetch failures
+        }
+      }
+
+      if (!loadedCore && statusResult.status !== 'fulfilled' && briefingResult.status !== 'fulfilled') {
+        setBanner({ type: 'error', text: 'Unable to load settings data from API.' });
+      }
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   useEffect(() => {
-    loadSettings();
-    checkTradingStatus();
+    load();
+    const id = setInterval(() => load(true), 30000);
+    return () => clearInterval(id);
   }, []);
 
-  const loadSettings = async () => {
-    try {
-      const response = await fetch('http://localhost:3001/api/trading/settings');
-      if (response.ok) {
-        const data = await response.json();
-        setMasterApiKey(data.masterApiKey || '');
-        setUseTestnet(data.testnet || true);
-        setGlobalTradingEnabled(data.tradingEnabled || false);
-        if (data.modelAccounts) {
-          setModelAccounts(data.modelAccounts);
-        }
-      }
-    } catch (error) {
-      console.error('Error loading settings:', error);
-    }
-  };
 
-  const checkTradingStatus = async () => {
-    try {
-      const response = await fetch('http://localhost:3001/api/trading/status');
-      if (response.ok) {
-        const data = await response.json();
-        setGlobalTradingEnabled(data.globalTradingEnabled || false);
-        if (data.activePortfolios) {
-          const updatedModels = modelAccounts.map(model => {
-            const portfolio = data.activePortfolios.find((p: any) => p.modelId === model.modelId);
-            if (portfolio) {
-              return {
-                ...model,
-                balance: portfolio.currentBalance,
-                tradingEnabled: portfolio.tradingEnabled,
-                positionsCount: portfolio.positionsCount
-              };
-            }
-            return model;
-          });
-          setModelAccounts(updatedModels);
-        }
-      }
-    } catch (error) {
-      console.error('Error checking trading status:', error);
-    }
-  };
+  useEffect(() => {
+    if (!adminKey) return;
+    Promise.all([
+      fetchWithTimeout(`${API}/helix/promotion-audit?limit=30`, { headers: { ...authHeaders } }, 2500)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (Array.isArray(data?.entries)) setExecutionAudit(data.entries);
+        }),
+      fetchWithTimeout(`${API}/settings-audit?limit=30`, { headers: { ...authHeaders } }, 2500)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (Array.isArray(data?.entries)) setSettingsAudit(data.entries);
+        }),
+      fetchWithTimeout(`${API}/helix/self-learning/status`, {}, 2500)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data?.success) setSelfLearningStatus(data);
+        }),
+    ]).catch(() => {
+      // ignore initial audit fetch failure
+    });
+  }, [adminKey]);
 
-  const testConnection = async () => {
-    if (!masterApiKey || !masterSecretKey) {
-      setConnectionStatus('error');
+  async function saveSettings() {
+    if (riskValidation.length) {
+      setBanner({ type: 'error', text: riskValidation[0] });
       return;
     }
 
-    setTesting(true);
-    setConnectionStatus('idle');
-
-    try {
-      const response = await fetch('http://localhost:3001/api/trading/test-connection', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          apiKey: masterApiKey,
-          secretKey: masterSecretKey,
-          testnet: useTestnet
-        })
-      });
-
-      if (response.ok) {
-        setConnectionStatus('success');
-      } else {
-        setConnectionStatus('error');
-      }
-    } catch (error) {
-      console.error('Connection test failed:', error);
-      setConnectionStatus('error');
-    } finally {
-      setTesting(false);
-    }
-  };
-
-  const saveSettings = async () => {
     setSaving(true);
-
+    setBanner(null);
     try {
-      const response = await fetch('http://localhost:3001/api/trading/settings', {
+      const includeSecret = (v: string) => {
+        const t = String(v || '').trim();
+        return t.length > 0 && !/^\*+$/.test(t);
+      };
+
+      const payload: any = {
+        aiProvider,
+        testnet,
+        tradingEnabled: globalTradingEnabled,
+        tradeConfirmation,
+        modelAccounts: [
+          {
+            modelId: 1,
+            modelName: 'AI Portfolio Engine',
+            tradingEnabled: portfolioTradingEnabled,
+            balance: deepseekBalance,
+          },
+        ],
+        riskSettings: {
+          maxDailyLossPct,
+          maxPositionSizePct,
+          maxLeverage,
+          minLeverage,
+          maxOpenPositions,
+          killSwitchDrawdownPct,
+          cooldownMinutes,
+          maxTradesPerDay,
+          maxConsecutiveLosses,
+          minConfidence,
+          paperTrading,
+          deepseekDecisionEnabled,
+          breakEvenEnabled: true,
+          breakEvenTriggerR: 1,
+          breakEvenBufferPct,
+          breakEvenFeeBps,
+          breakEvenSlippageBps,
+          letWinnersRunEnabled,
+          runnerActivationR,
+          runnerPartialTakeProfitPct,
+          runnerTrailPct,
+        },
+        notificationSettings: {
+          pushEnabled: notificationsPush,
+          emailEnabled: notificationsEmail,
+          telegramEnabled: notificationsTelegram,
+          email: notificationEmail,
+          telegramUserId,
+          telegramPairingCode,
+          telegramMinSeverity,
+          telegramRateLimitSec,
+        },
+        selfLearningSettings: {
+          enabled: selfLearningEnabled,
+          intervalHours: selfLearningIntervalHours,
+          minClosedTrades: selfLearningMinClosedTrades,
+          autoRiskTightening: selfLearningAutoRiskTightening,
+          allowLivePromotion: selfLearningAllowLivePromotion,
+          notifyOnReview: selfLearningNotifyOnReview,
+        },
+      };
+
+      if (includeSecret(masterApiKey)) payload.masterApiKey = masterApiKey.trim();
+      if (includeSecret(masterSecretKey)) payload.masterSecretKey = masterSecretKey.trim();
+      if (includeSecret(deepseekApiKey)) payload.deepseekApiKey = deepseekApiKey.trim();
+      if (includeSecret(openaiApiKey)) payload.openaiApiKey = openaiApiKey.trim();
+      if (includeSecret(geminiApiKey)) payload.geminiApiKey = geminiApiKey.trim();
+      if (includeSecret(telegramBotToken)) payload.notificationSettings.telegramBotToken = telegramBotToken.trim();
+
+      const res = await fetchWithTimeout(`${API}/settings`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          masterApiKey,
-          masterSecretKey,
-          testnet: useTestnet,
-          modelAccounts,
-          riskSettings: {
-            maxDailyLoss,
-            maxPositionSize,
-            maxLeverage,
-            dailyTargetReturn
-          }
-        })
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify(payload),
       });
 
-      if (response.ok) {
-        alert('Settings saved successfully!');
-      } else {
-        alert('Failed to save settings');
-      }
-    } catch (error) {
-      console.error('Error saving settings:', error);
-      alert('Error saving settings');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Save failed');
+      const savedAt = new Date().toLocaleTimeString();
+      setLastSavedAt(savedAt);
+      setBanner({ type: 'success', text: `Settings saved at ${savedAt}.` });
+      await load(true);
+    } catch (e: any) {
+      setBanner({ type: 'error', text: e?.message || 'Save failed.' });
     } finally {
       setSaving(false);
     }
-  };
+  }
 
-  const toggleGlobalTrading = async () => {
+  async function testConnection() {
+    setTesting(true);
+    setBanner(null);
     try {
-      const newState = !globalTradingEnabled;
-      const response = await fetch('http://localhost:3001/api/trading/toggle', {
+      const res = await fetchWithTimeout(`${API}/test-connection`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enable: newState })
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ apiKey: masterApiKey, secretKey: masterSecretKey, testnet }),
       });
-
-      if (response.ok) {
-        setGlobalTradingEnabled(newState);
-        alert(`Global trading ${newState ? 'ENABLED' : 'DISABLED'}`);
+      const data = await res.json();
+      if (res.ok && data.connected) {
+        setBanner({ type: 'success', text: 'Binance connection successful.' });
+      } else {
+        const msg = String(data.error || 'Connection failed.');
+        if (msg.includes('Invalid API-key') && testnet) {
+          setBanner({ type: 'error', text: 'Invalid key for testnet. Disable "Use testnet" or use Binance Futures testnet keys.' });
+        } else {
+          setBanner({ type: 'error', text: msg });
+        }
       }
-    } catch (error) {
-      console.error('Error toggling trading:', error);
+    } catch {
+      setBanner({ type: 'error', text: 'Connection test failed.' });
+    } finally {
+      setTesting(false);
     }
-  };
+  }
 
-  const closeAllPositions = async () => {
-    if (!confirm('Are you sure you want to close ALL open positions across all models?')) {
+  async function testTelegramConnection() {
+    setTestingTelegram(true);
+    setBanner(null);
+    try {
+      const res = await fetchWithTimeout(`${API}/telegram/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({
+          botToken: telegramBotToken,
+          chatId: telegramUserId,
+          pairingCode: telegramPairingCode,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data?.success) {
+        setBanner({ type: 'success', text: 'Telegram linked and test message sent.' });
+      } else {
+        setBanner({ type: 'error', text: String(data?.error || 'Telegram test failed.') });
+      }
+    } catch (e: any) {
+      setBanner({ type: 'error', text: e?.message || 'Telegram test failed.' });
+    } finally {
+      setTestingTelegram(false);
+    }
+  }
+
+  async function toggleTrading(next: boolean) {
+    const ok = window.confirm(`${next ? 'Enable' : 'Disable'} global trading?`);
+    if (!ok) return;
+
+    const res = await fetchWithTimeout(`${API}/toggle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders },
+      body: JSON.stringify({ enabled: next }),
+    });
+
+    if (res.ok) {
+      setBanner({ type: 'success', text: `Trading ${next ? 'enabled' : 'disabled'}.` });
+      setGlobalTradingEnabled(next);
+      await load(true);
+    } else {
+      setBanner({ type: 'error', text: 'Failed to toggle trading.' });
+    }
+  }
+
+  async function updatePortfolioTradingEnabled(next: boolean) {
+    const previous = portfolioTradingEnabled;
+    setPortfolioTradingEnabled(next);
+
+    try {
+      const payload: any = {
+        aiProvider,
+        testnet,
+        tradingEnabled: globalTradingEnabled,
+        tradeConfirmation,
+        modelAccounts: [
+          {
+            modelId: 1,
+            modelName: 'AI Portfolio Engine',
+            tradingEnabled: next,
+            balance: deepseekBalance,
+          },
+        ],
+        riskSettings: {
+          maxDailyLossPct,
+          maxPositionSizePct,
+          maxLeverage,
+          minLeverage,
+          maxOpenPositions,
+          killSwitchDrawdownPct,
+          cooldownMinutes,
+          maxTradesPerDay,
+          maxConsecutiveLosses,
+          minConfidence,
+          paperTrading,
+          deepseekDecisionEnabled,
+        },
+        notificationSettings: {
+          pushEnabled: notificationsPush,
+          emailEnabled: notificationsEmail,
+          telegramEnabled: notificationsTelegram,
+          email: notificationEmail,
+          telegramUserId,
+          telegramPairingCode,
+          telegramMinSeverity,
+          telegramRateLimitSec,
+        },
+      };
+
+      const res = await fetchWithTimeout(`${API}/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify(payload),
+      }, 6000);
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'save_failed');
+
+      setLastSavedAt(new Date().toLocaleTimeString());
+      setBanner({ type: 'success', text: `DeepSeek Portfolio Trading ${next ? 'enabled' : 'disabled'} and saved.` });
+      await load(true);
+    } catch (e: any) {
+      setPortfolioTradingEnabled(previous);
+      setBanner({ type: 'error', text: e?.message || 'Failed to persist DeepSeek Portfolio Trading.' });
+    }
+  }
+
+  async function closeAllPositions() {
+    const ok = window.confirm('Close ALL open positions now? This is immediate.');
+    if (!ok) return;
+
+    const res = await fetchWithTimeout(`${API}/close-positions`, { method: 'POST', headers: { ...authHeaders } });
+    if (res.ok) {
+      setBanner({ type: 'success', text: 'All positions closed.' });
+      await load(true);
+    } else {
+      setBanner({ type: 'error', text: 'Failed to close positions.' });
+    }
+  }
+
+  async function runHelixEvaluateSample() {
+    try {
+      const payload = {
+        snapshot: {
+          symbol: 'BTCUSDT',
+          price: 68000,
+          change24hPct: 1.2,
+          trendStrength: 68,
+          volatilityPct: 1.5,
+          spreadBps: 3.8,
+          volumeScore: 74,
+          sector: 'technology',
+        },
+        candidate: {
+          symbol: 'BTCUSDT',
+          side: 'BUY',
+          entry: 68000,
+          stopLoss: 66750,
+          takeProfit: 70600,
+          confidence: 78,
+          thesis: 'Momentum continuation above 24h range.',
+          style: 'momentum',
+        },
+        constraints: {
+          equityUsd: Number(account.balance || 10000),
+          availableMarginUsd: Number(account.availableMargin || 5000),
+          currentDrawdownPct: 1.2,
+          maxDrawdownPct: killSwitchDrawdownPct,
+          perTradeRiskPct: 1.0,
+          maxOpenPositions: 4,
+          openPositions: 1,
+          slippageBps: 4,
+          feesBps: 6,
+        },
+      };
+
+      const res = await fetchWithTimeout(`${API}/helix/evaluate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'helix evaluate failed');
+      setHelixEvalOutput(data);
+      setBanner({ type: 'success', text: 'Helix evaluate sample completed.' });
+    } catch (e: any) {
+      setBanner({ type: 'error', text: e?.message || 'Helix evaluate sample failed.' });
+    }
+  }
+
+  async function runHelixEvaluateLive() {
+    try {
+      const riskRes = await fetchWithTimeout(`${API}/risk-context?symbols=BTCUSDT,ETHUSDT`, {}, 3500);
+      const riskData = riskRes.ok ? await riskRes.json() : null;
+
+      const micro = Array.isArray(riskData?.microstructure)
+        ? riskData.microstructure.find((m: any) => m.symbol === 'BTCUSDT') || riskData.microstructure[0]
+        : null;
+
+      const price = Number(micro?.markPrice || 68000);
+      const trendStrength = Math.max(10, Math.min(95, Number(riskData?.regimeConfidence || market.regimeConfidence || 60)));
+      const change24hPct = Number(micro?.change24hPct || 0);
+      const spreadBps = Number(micro?.spreadBps || 5);
+      const volatilityPct = Number(micro?.atrPct || 1.2);
+      const volumeScore = spreadBps <= 3 ? 80 : spreadBps <= 7 ? 60 : 40;
+
+      const stopDistance = Math.max(price * 0.008, 1);
+      const payload = {
+        snapshot: {
+          symbol: 'BTCUSDT',
+          price,
+          change24hPct,
+          trendStrength,
+          volatilityPct,
+          spreadBps,
+          volumeScore,
+          sector: 'technology',
+        },
+        candidate: {
+          symbol: 'BTCUSDT',
+          side: change24hPct >= 0 ? 'BUY' : 'SELL',
+          entry: price,
+          stopLoss: change24hPct >= 0 ? price - stopDistance : price + stopDistance,
+          takeProfit: change24hPct >= 0 ? price + stopDistance * 2 : price - stopDistance * 2,
+          confidence: Math.max(55, Math.min(90, trendStrength)),
+          thesis: `Live regime=${market.regime || 'unclear'} change24h=${change24hPct.toFixed(2)}%`,
+          style: market.regime === 'range' ? 'mean_reversion' : 'momentum',
+        },
+        constraints: {
+          equityUsd: Number(account.balance || deepseekBalance || 10000),
+          availableMarginUsd: Number(account.availableMargin || 0),
+          currentDrawdownPct: Number(status?.activePortfolios?.[0]
+            ? ((Number(status.activePortfolios[0].currentBalance || 0) < Number(deepseekBalance || 1))
+              ? ((Number(deepseekBalance || 1) - Number(status.activePortfolios[0].currentBalance || 0)) / Number(deepseekBalance || 1)) * 100
+              : 0)
+            : 0),
+          maxDrawdownPct: killSwitchDrawdownPct,
+          perTradeRiskPct: Math.min(1.5, Math.max(0.25, maxPositionSizePct / 20)),
+          maxOpenPositions: Math.max(1, Math.min(10, maxOpenPositions)),
+          openPositions: Number(status?.activePortfolios?.[0]?.positionsCount || 0),
+          slippageBps: Number(uiPrefs.slippageTolerancePct || 0.25) * 100,
+          feesBps: testnet ? 2 : 6,
+        },
+      };
+
+      const res = await fetchWithTimeout(`${API}/helix/evaluate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'helix evaluate live failed');
+      setLastLivePayload(payload);
+      setHelixEvalOutput({ mode: 'live', payload, response: data });
+      setBanner({ type: 'success', text: 'Helix LIVE evaluate completed.' });
+    } catch (e: any) {
+      setBanner({ type: 'error', text: e?.message || 'Helix live evaluate failed.' });
+    }
+  }
+
+  async function promoteLivePlanToTradeSignal() {
+    try {
+      const plan = helixEvalOutput?.response?.plan;
+      const payload = lastLivePayload;
+      if (!plan || !payload) throw new Error('Run "Layered Evaluate LIVE" first.');
+
+      const hardBlocks: string[] = [];
+      if (plan.decision !== 'TRADE') hardBlocks.push('decision_not_trade');
+      if (Boolean(plan.killSwitchTriggered)) hardBlocks.push('kill_switch_triggered');
+      if (Number(plan.expectedRMultiple || 0) < 1.5) hardBlocks.push('rr_below_1.5');
+      if (Number(plan.expectedNetEdgeBps || 0) <= 0) hardBlocks.push('edge_not_positive_after_costs');
+
+      const side = plan.side === 'BUY' || plan.side === 'SELL' ? plan.side : null;
+      const entry = Number(plan.entry || 0);
+      const stopLoss = Number(plan.stopLoss || 0);
+      const takeProfit = Number(plan.takeProfit || 0);
+      if (!side || !entry || !stopLoss || !takeProfit) hardBlocks.push('missing_trade_fields');
+
+      const confidenceRaw = Number(payload?.candidate?.confidence || 0);
+      const confidence = Math.max(0, Math.min(1, confidenceRaw / 100));
+      if (confidence < minConfidence) hardBlocks.push('confidence_below_runtime_floor');
+
+      if (hardBlocks.length > 0) {
+        throw new Error(`Promotion blocked by safety checks: ${hardBlocks.join(', ')}`);
+      }
+
+      const confirmText = [
+        `Promote LIVE plan to executable signal?`,
+        `Symbol: ${plan.symbol}`,
+        `Side: ${side}`,
+        `Entry: ${entry}`,
+        `Stop: ${stopLoss}`,
+        `TP: ${takeProfit}`,
+        `Confidence: ${(confidence * 100).toFixed(1)}%`,
+      ].join('\n');
+
+      const ok = window.confirm(confirmText);
+      if (!ok) return;
+
+      const requiredPhrase = 'PROMOTE LIVE';
+      if (promotionConfirmText.trim().toUpperCase() !== requiredPhrase) {
+        throw new Error(`Type confirmation phrase exactly: ${requiredPhrase}`);
+      }
+
+      const signal = {
+        modelId: '1',
+        symbol: String(plan.symbol || 'BTCUSDT'),
+        side,
+        type: 'MARKET',
+        confidence,
+        reason: `Promoted from Helix LIVE layered plan | R=${Number(plan.expectedRMultiple || 0).toFixed(2)} edgeBps=${Number(plan.expectedNetEdgeBps || 0).toFixed(1)}`,
+        stopLoss,
+        takeProfit,
+        timestamp: new Date().toISOString(),
+      };
+
+      if (promotionDryRun) {
+        await appendAudit({
+          type: 'promotion_dry_run',
+          symbol: signal.symbol,
+          side: signal.side,
+          confidence: signal.confidence,
+          reason: signal.reason,
+          checks: 'passed',
+        });
+        setBanner({ type: 'success', text: 'Dry-run complete: plan passed all checks (no signal sent).' });
+        return;
+      }
+
+      const res = await fetchWithTimeout(`${API}/signals`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify(signal),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'signal_submit_failed');
+
+      await appendAudit({
+        type: 'promotion_submitted',
+        symbol: signal.symbol,
+        side: signal.side,
+        confidence: signal.confidence,
+        signalResult: data,
+      });
+      setBanner({ type: 'success', text: 'LIVE plan promoted and signal submitted.' });
+      await load(true);
+    } catch (e: any) {
+      await appendAudit({ type: 'promotion_failed', error: e?.message || 'unknown_error' });
+      setBanner({ type: 'error', text: e?.message || 'Failed to promote live plan.' });
+    }
+  }
+
+  async function runDarwinSample() {
+    try {
+      const payload = {
+        floor: 0.3,
+        ceiling: 2.5,
+        performanceByAgent: {
+          macro: 0.42,
+          sector: 0.15,
+          style: 0.31,
+          cro: 0.56,
+          execution: -0.07,
+          cio: 0.11,
+        },
+      };
+      const res = await fetchWithTimeout(`${API}/helix/darwin/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'darwin update failed');
+      setDarwinOutput(data);
+      setBanner({ type: 'success', text: 'Darwinian weights updated with sample payload.' });
+    } catch (e: any) {
+      setBanner({ type: 'error', text: e?.message || 'Darwin sample failed.' });
+    }
+  }
+
+  async function runPromptExperimentSample() {
+    try {
+      const startRes = await fetchWithTimeout(`${API}/helix/prompt-experiments/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({
+          promptFile: 'prompts/system_trading_brain.md',
+          objectiveMetric: 'expectancy',
+          lookbackDays: 5,
+          baselineValue: 0.08,
+          summary: 'Sample run from Settings UI',
+        }),
+      });
+      const started = await startRes.json();
+      if (!startRes.ok) throw new Error(started?.error || 'start failed');
+
+      const completeRes = await fetchWithTimeout(`${API}/helix/prompt-experiments/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ id: started?.experiment?.id, candidateValue: 0.11 }),
+      });
+      const completed = await completeRes.json();
+      if (!completeRes.ok) throw new Error(completed?.error || 'complete failed');
+
+      const listRes = await fetchWithTimeout(`${API}/helix/prompt-experiments?limit=10`, { headers: { ...authHeaders } });
+      const listed = await listRes.json();
+      if (!listRes.ok) throw new Error(listed?.error || 'list failed');
+
+      setExperimentsOutput({ started, completed, listed });
+      setBanner({ type: 'success', text: 'Prompt experiment sample lifecycle completed.' });
+    } catch (e: any) {
+      setBanner({ type: 'error', text: e?.message || 'Prompt experiment sample failed.' });
+    }
+  }
+
+  async function runWalkForwardSample() {
+    try {
+      const payload = {
+        trades: [
+          { ts: '2026-03-01T00:00:00.000Z', symbol: 'BTCUSDT', side: 'BUY', entry: 62000, exit: 62800, feesBps: 4, slippageBps: 3 },
+          { ts: '2026-03-02T00:00:00.000Z', symbol: 'BTCUSDT', side: 'SELL', entry: 62800, exit: 62350, feesBps: 4, slippageBps: 3 },
+          { ts: '2026-03-03T00:00:00.000Z', symbol: 'ETHUSDT', side: 'BUY', entry: 3400, exit: 3465, feesBps: 4, slippageBps: 4 },
+          { ts: '2026-03-04T00:00:00.000Z', symbol: 'ETHUSDT', side: 'BUY', entry: 3465, exit: 3432, feesBps: 4, slippageBps: 4 },
+        ],
+        windows: [
+          {
+            trainStart: '2026-03-01T00:00:00.000Z',
+            trainEnd: '2026-03-02T23:59:59.000Z',
+            testStart: '2026-03-03T00:00:00.000Z',
+            testEnd: '2026-03-04T23:59:59.000Z',
+          },
+        ],
+      };
+      const res = await fetchWithTimeout(`${API}/helix/walk-forward`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'walk-forward failed');
+      setWalkForwardOutput(data);
+      setBanner({ type: 'success', text: 'Walk-forward sample completed.' });
+    } catch (e: any) {
+      setBanner({ type: 'error', text: e?.message || 'Walk-forward sample failed.' });
+    }
+  }
+
+  async function runExperimentGovernanceSamples() {
+    try {
+      const contract = {
+        objective: 'slippageAdjustedExpectancyR',
+        window: {
+          trainStart: '2026-03-01T00:00:00.000Z',
+          trainEnd: '2026-03-07T23:59:59.000Z',
+          testStart: '2026-03-08T00:00:00.000Z',
+          testEnd: '2026-03-12T23:59:59.000Z',
+        },
+        minSamples: 30,
+        hardRiskGates: {
+          maxDrawdownPct: 8,
+          maxTurnover: 80,
+          requirePositiveEdge: true,
+          minExpectedNetEdgeBps: 0,
+        },
+        rollbackTarget: 'prompts/system_trading_brain.md@main',
+        atomicChange: {
+          type: 'prompt',
+          changedKeys: ['entry_filter.threshold'],
+        },
+        improvementDelta: 0.01,
+      };
+
+      const baselineMetrics = {
+        sampleSize: 44,
+        maxDrawdownPct: 6.2,
+        turnover: 54,
+        expectancyR: 0.12,
+        slippageAdjustedExpectancyR: 0.09,
+        sharpe: 1.05,
+        expectedNetEdgeBps: 11,
+      };
+
+      const candidateMetrics = {
+        sampleSize: 49,
+        maxDrawdownPct: 6.4,
+        turnover: 58,
+        expectancyR: 0.14,
+        slippageAdjustedExpectancyR: 0.12,
+        sharpe: 1.22,
+        expectedNetEdgeBps: 14,
+      };
+
+      const regimeSlices = [
+        { regime: 'trend', sampleSize: 18, slippageAdjustedExpectancyR: 0.13, maxDrawdownPct: 4.8, turnover: 20 },
+        { regime: 'range', sampleSize: 16, slippageAdjustedExpectancyR: 0.10, maxDrawdownPct: 5.9, turnover: 21 },
+        { regime: 'event_driven', sampleSize: 15, slippageAdjustedExpectancyR: 0.11, maxDrawdownPct: 6.4, turnover: 17 },
+      ];
+
+      const validateRes = await fetchWithTimeout(`${API}/helix/experiment-contract/validate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ contract }),
+      });
+      const validateData = await validateRes.json();
+      if (!validateRes.ok) throw new Error(validateData?.error || 'contract validation failed');
+      setContractValidateOutput(validateData);
+
+      const evalRes = await fetchWithTimeout(`${API}/helix/experiment-contract/evaluate-promotion`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ contract, baselineMetrics, candidateMetrics, regimeSlices }),
+      });
+      const evalData = await evalRes.json();
+      if (!evalRes.ok) throw new Error(evalData?.error || 'promotion evaluation failed');
+      setPromotionEvalOutput(evalData);
+
+      const leaderboardRes = await fetchWithTimeout(`${API}/helix/experiment-contract/leaderboard?limit=10`, { headers: { ...authHeaders } });
+      const leaderboardData = await leaderboardRes.json();
+      if (!leaderboardRes.ok) throw new Error(leaderboardData?.error || 'leaderboard failed');
+      setLeaderboardOutput(leaderboardData);
+
+      const runsRes = await fetchWithTimeout(`${API}/helix/experiment-contract/runs?limit=10`, { headers: { ...authHeaders } });
+      const runsData = await runsRes.json();
+      if (!runsRes.ok) throw new Error(runsData?.error || 'runs fetch failed');
+      setRunsOutput(runsData);
+
+      setBanner({ type: 'success', text: 'Experiment governance samples completed.' });
+    } catch (e: any) {
+      setBanner({ type: 'error', text: e?.message || 'Experiment governance sample failed.' });
+    }
+  }
+
+  async function runExperimentGovernanceLive() {
+    try {
+      const payload = {
+        allocatedBalance: deepseekBalance,
+        minSamples: 30,
+        contract: {
+          objective: 'slippageAdjustedExpectancyR',
+          hardRiskGates: {
+            maxDrawdownPct: killSwitchDrawdownPct,
+            maxTurnover: 120,
+            minExpectedNetEdgeBps: 0,
+          },
+          rollbackTarget: 'prompts/system_trading_brain.md@main',
+          atomicChange: { type: 'prompt', changedKeys: ['live.auto_feed'] },
+          improvementDelta: 0,
+          regimeSpecialized: false,
+        },
+      };
+
+      const liveRes = await fetchWithTimeout(`${API}/helix/experiment-contract/live-evaluate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify(payload),
+      });
+      const liveData = await liveRes.json();
+      if (!liveRes.ok) throw new Error(liveData?.error || 'live governance evaluate failed');
+      setLiveGovernanceOutput(liveData);
+
+      const leaderboardRes = await fetchWithTimeout(`${API}/helix/experiment-contract/leaderboard?limit=10`, { headers: { ...authHeaders } });
+      const leaderboardData = await leaderboardRes.json();
+      if (leaderboardRes.ok) setLeaderboardOutput(leaderboardData);
+
+      const runsRes = await fetchWithTimeout(`${API}/helix/experiment-contract/runs?limit=10`, { headers: { ...authHeaders } });
+      const runsData = await runsRes.json();
+      if (runsRes.ok) setRunsOutput(runsData);
+
+      setBanner({ type: 'success', text: 'Live governance auto-feed evaluation completed.' });
+    } catch (e: any) {
+      setBanner({ type: 'error', text: e?.message || 'Live governance evaluation failed.' });
+    }
+  }
+
+  async function runSelfLearningReview() {
+    if (!adminKey.trim()) {
+      setBanner({ type: 'error', text: 'Admin key is required to run the guarded learning review.' });
       return;
     }
-
+    setLearningReviewRunning(true);
+    setLearningReviewResult(null);
+    setBanner(null);
     try {
-      const response = await fetch('http://localhost:3001/api/trading/close-positions', {
+      const res = await fetchWithTimeout(`${API}/helix/self-learning/run`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+      }, 60000);
+      const data = await res.json();
+      if (!res.ok || data?.success === false) throw new Error(data?.error || data?.reason || 'self_learning_review_failed');
+      setLearningReviewResult(data);
+      setSelfLearningStatus({
+        success: true,
+        running: false,
+        settings: {
+          enabled: selfLearningEnabled,
+          intervalHours: selfLearningIntervalHours,
+          minClosedTrades: selfLearningMinClosedTrades,
+          autoRiskTightening: selfLearningAutoRiskTightening,
+          allowLivePromotion: selfLearningAllowLivePromotion,
+          notifyOnReview: selfLearningNotifyOnReview,
+        },
+        lastRunAt: data.completedAt,
+        nextRunAt: null,
+        lastResult: data,
       });
+      setLiveGovernanceOutput(data);
+      const decision = String(data?.record?.result?.decision || 'completed').toUpperCase();
+      const reasons = Array.isArray(data?.record?.result?.reasons) ? data.record.result.reasons : [];
+      setBanner({ type: 'success', text: `Guarded self-learning review completed: ${decision}${reasons.length ? ` (${reasons.slice(0, 2).join(', ')})` : ''}.` });
 
-      if (response.ok) {
-        alert('All positions closed successfully');
-        checkTradingStatus();
-      } else {
-        alert('Failed to close positions');
+      const [statusRes, auditRes] = await Promise.allSettled([
+        fetchWithTimeout(`${API}/helix/self-learning/status`, {}, 5000),
+        fetchWithTimeout(`${API}/helix/promotion-audit?limit=30`, { headers: { ...authHeaders } }, 5000),
+      ]);
+      if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
+        const statusData = await statusRes.value.json().catch(() => null);
+        if (statusData?.success) setSelfLearningStatus(statusData);
       }
-    } catch (error) {
-      console.error('Error closing positions:', error);
-      alert('Error closing positions');
+      if (auditRes.status === 'fulfilled' && auditRes.value.ok) {
+        const auditData = await auditRes.value.json().catch(() => null);
+        if (Array.isArray(auditData?.entries)) setExecutionAudit(auditData.entries);
+      }
+    } catch (e: any) {
+      setLearningReviewResult({ success: false, error: e?.message || 'Self-learning review failed.' });
+      setBanner({ type: 'error', text: e?.message || 'Self-learning review failed.' });
+    } finally {
+      setLearningReviewRunning(false);
+    }
+  }
+
+  const appendAudit = async (entry: any) => {
+    const normalized = { ts: new Date().toISOString(), ...entry };
+    setExecutionAudit((prev) => [normalized, ...prev].slice(0, 30));
+
+    if (!adminKey) return;
+    try {
+      const res = await fetchWithTimeout(`${API}/helix/promotion-audit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify(normalized),
+      }, 2500);
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.entry) {
+          setExecutionAudit((prev) => [data.entry, ...prev.filter((x) => x.ts !== normalized.ts || x.type !== normalized.type)].slice(0, 30));
+        }
+      }
+    } catch {
+      // keep local audit even if persistence fails
     }
   };
 
-  const updateModelAccount = (modelId: number, field: string, value: any) => {
-    setModelAccounts(prev => 
-      prev.map(model => 
-        model.modelId === modelId ? { ...model, [field]: value } : model
-      )
-    );
+  const account = briefing?.account || {};
+  const market = briefing?.market || {};
+
+  const livePlan = helixEvalOutput?.response?.plan;
+  const latestLearningResult = selfLearningStatus?.lastResult || liveGovernanceOutput;
+  const governanceRecord = latestLearningResult?.record || liveGovernanceOutput?.record;
+  const governanceResult = governanceRecord?.result;
+  const statusEvidence = selfLearningStatus?.evidence || latestLearningResult?.evidence || {};
+  const governanceEvidenceCount = Number(
+    statusEvidence.closedTrades
+    ?? latestLearningResult?.inputs?.candidateMetrics?.sampleSize
+    ?? liveGovernanceOutput?.inputs?.candidateMetrics?.sampleSize
+    ?? 0
+  );
+  const journalEvidenceCount = executionAudit.filter((row) => String(row?.type || '').toLowerCase() === 'trade_close').length;
+  const evidenceCount = Math.max(governanceEvidenceCount, journalEvidenceCount);
+  const evidenceTarget = Number(
+    statusEvidence.requiredClosedTrades
+    ?? selfLearningStatus?.settings?.minClosedTrades
+    ?? latestLearningResult?.inputs?.contract?.minSamples
+    ?? liveGovernanceOutput?.inputs?.contract?.minSamples
+    ?? selfLearningMinClosedTrades
+    ?? 30
+  );
+
+  const fallbackAction = workerStatus?.lastAction === 'trade_opened'
+    ? 'TRADE OPENED'
+    : Number(market.regimeConfidence || 0) >= 60
+      ? 'TRADE CANDIDATE'
+      : 'WAIT / NO TRADE';
+
+  const traderSummary = {
+    actionNow: livePlan?.decision === 'TRADE' ? 'TRADE CANDIDATE' : fallbackAction,
+    confidencePct: Number(helixEvalOutput?.payload?.candidate?.confidence || market.regimeConfidence || 0),
+    riskUsd: Number(livePlan?.riskUsd || 0),
+    positionUsd: Number(livePlan?.positionSizeUsd || 0),
+    expectedEdgeBps: Number(livePlan?.expectedNetEdgeBps || 0),
+    rMultiple: Number(livePlan?.expectedRMultiple || 0),
+    rationale: Array.isArray(livePlan?.reasons) && livePlan.reasons.length
+      ? livePlan.reasons
+      : [
+          `worker=${String(workerStatus?.lastAction || 'unknown')}`,
+          `reason=${String(workerStatus?.lastReason || 'n/a')}`,
+          `regime=${String(market.regime || 'unknown')}`,
+        ],
+    promotionDecision: governanceResult?.decision || 'n/a',
+    promotionReasons: Array.isArray(governanceResult?.reasons) ? governanceResult.reasons : [],
+  };
+
+  const labRecommendation = evidenceCount < evidenceTarget
+    ? 'No action needed now. Let auto-trading continue and collect more closed trades.'
+    : 'Weekly checks ready: run Governance LIVE Auto-Feed and Walk-Forward, then review.';
+
+  const learningEvidencePct = evidenceTarget > 0 ? Math.min(100, Math.round((evidenceCount / evidenceTarget) * 100)) : 0;
+  const selfLearningOverview = {
+    mode: deepseekDecisionEnabled ? 'Learning guard active' : 'Learning paused',
+    phase: evidenceCount >= evidenceTarget ? 'Ready for review' : 'Collecting evidence',
+    confidence: `${learningEvidencePct}%`,
+    promotion: String(governanceResult?.decision || 'No promotion decision yet').toUpperCase(),
+    summary: evidenceCount >= evidenceTarget
+      ? 'The system has enough closed-trade evidence to run governance checks before changing strategy behavior.'
+      : 'The system is collecting trade outcomes, market regimes, and execution results before trusting strategy changes.',
+    nextBestAction: evidenceCount >= evidenceTarget
+      ? 'Run a guarded self-learning review. Promote nothing unless governance, walk-forward, and risk gates agree.'
+      : 'Let live trading continue and avoid manual strategy changes until the evidence bar is filled.',
+  };
+
+  const settingsHealthCards = [
+    {
+      label: 'Execution Mode',
+      value: !settingsLoaded ? 'LOADING' : paperTrading ? 'PAPER' : testnet ? 'TESTNET' : 'LIVE',
+      tone: !settingsLoaded ? 'cyan' : paperTrading || testnet ? 'amber' : 'green',
+      detail: !settingsLoaded ? 'Waiting for backend settings' : paperTrading ? 'Simulated orders' : testnet ? 'Binance testnet' : 'Real Binance execution',
+    },
+    {
+      label: 'Trading Gate',
+      value: globalTradingEnabled && portfolioTradingEnabled ? 'ARMED' : 'LOCKED',
+      tone: globalTradingEnabled && portfolioTradingEnabled ? 'green' : 'red',
+      detail: `Global ${globalTradingEnabled ? 'on' : 'off'} • Portfolio ${portfolioTradingEnabled ? 'on' : 'off'}`,
+    },
+    {
+      label: 'AI Brain',
+      value: aiProvider.toUpperCase(),
+      tone: deepseekDecisionEnabled ? 'cyan' : 'amber',
+      detail: deepseekDecisionEnabled ? 'Decision gate enabled' : 'Decision gate disabled',
+    },
+    {
+      label: 'Learning',
+      value: `${evidenceCount}/${evidenceTarget}`,
+      tone: evidenceCount >= evidenceTarget ? 'green' : 'cyan',
+      detail: `${learningEvidencePct}% readiness`,
+    },
+  ];
+
+  const tabDetails: Record<SettingsTab, { eyebrow: string; title: string; summary: string }> = {
+    General: {
+      eyebrow: 'Credential Core',
+      title: 'Secure connection and AI brain routing',
+      summary: 'Manage exchange credentials, provider keys, and the live/testnet boundary from one guarded control surface.',
+    },
+    Trading: {
+      eyebrow: 'Execution Console',
+      title: 'Order behavior and operator controls',
+      summary: 'Tune order handling, confirmations, engine toggles, and live account operations without touching strategy code.',
+    },
+    'Risk Management': {
+      eyebrow: 'Risk Shield',
+      title: 'Capital preservation and winner management',
+      summary: 'Hard caps, BE+ protection, partial profit-taking, and trailing runner rules live here.',
+    },
+    Notifications: {
+      eyebrow: 'Signal Relay',
+      title: 'Telegram, email, and alert delivery',
+      summary: 'Route the messages that matter: trade events, risk changes, API health, and learning review outcomes.',
+    },
+    Advanced: {
+      eyebrow: 'Evolution Lab',
+      title: 'Autonomous review and guarded improvement',
+      summary: 'Observe, evaluate, and promote system improvements only after evidence and governance checks agree.',
+    },
+  };
+
+  const settingsOverviewCards = [
+    {
+      label: 'Exchange Auth',
+      value: status?.exchangeAuthConnected ? 'VERIFIED' : 'CHECKING',
+      tone: status?.exchangeAuthConnected ? 'green' : 'amber',
+      detail: status?.exchangeAuthConnected ? 'Binance credentials validated' : 'Waiting for exchange auth check',
+    },
+    {
+      label: 'Worker State',
+      value: String(workerStatus?.health || 'idle').toUpperCase(),
+      tone: workerStatus?.health === 'HEALTHY' ? 'green' : workerStatus?.health === 'STALE' ? 'amber' : 'cyan',
+      detail: workerStatus?.lastRunAt ? `Last cycle ${new Date(workerStatus.lastRunAt).toLocaleTimeString()}` : 'No worker cycle reported yet',
+    },
+    {
+      label: 'Alert Routing',
+      value: notificationsTelegram ? 'TELEGRAM ON' : notificationsPush ? 'PUSH ON' : 'QUIET',
+      tone: notificationsTelegram || notificationsPush ? 'cyan' : 'amber',
+      detail: notificationsTelegram ? `Severity floor ${telegramMinSeverity.toUpperCase()}` : 'Notifications can be armed in Signal Relay',
+    },
+    {
+      label: 'Risk Posture',
+      value: String(briefing?.recommendedRiskLevel || 'normal').toUpperCase(),
+      tone: String(briefing?.recommendedRiskLevel || 'normal').toLowerCase() === 'normal' ? 'green' : 'amber',
+      detail: `Regime ${String(market.regime || 'unknown').toUpperCase()} • ${Number(market.regimeConfidence || 0)}% confidence`,
+    },
+  ];
+
+  const tabFocusCards: Record<SettingsTab, Array<{ label: string; value: string; detail: string; tone: 'green' | 'amber' | 'red' | 'cyan' }>> = {
+    General: [
+      { label: 'Execution Boundary', value: paperTrading ? 'PAPER' : testnet ? 'TESTNET' : 'LIVE', detail: paperTrading ? 'Orders are simulated' : testnet ? 'Binance testnet active' : 'Real Binance routing', tone: paperTrading || testnet ? 'amber' : 'green' },
+      { label: 'Brain Routing', value: aiProvider.toUpperCase(), detail: deepseekDecisionEnabled ? 'AI decision gate is active' : 'AI gate is disabled', tone: deepseekDecisionEnabled ? 'cyan' : 'amber' },
+      { label: 'Credential State', value: hasMasterApiKey && hasMasterSecretKey ? 'READY' : 'INCOMPLETE', detail: hasMasterApiKey && hasMasterSecretKey ? 'Exchange keys are saved' : 'Add Binance key and secret', tone: hasMasterApiKey && hasMasterSecretKey ? 'green' : 'red' },
+    ],
+    Trading: [
+      { label: 'Global Gate', value: globalTradingEnabled ? 'ENABLED' : 'DISABLED', detail: globalTradingEnabled ? 'Runtime can accept fresh entries' : 'Fresh entries are blocked', tone: globalTradingEnabled ? 'green' : 'red' },
+      { label: 'Portfolio Engine', value: portfolioTradingEnabled ? 'ARMED' : 'LOCKED', detail: portfolioTradingEnabled ? 'DeepSeek portfolio may execute' : 'Portfolio execution is blocked', tone: portfolioTradingEnabled ? 'green' : 'amber' },
+      { label: 'Confirmation', value: tradeConfirmation ? 'MANUAL' : 'AUTO', detail: tradeConfirmation ? 'Orders require manual confirmation' : 'Execution proceeds automatically when allowed', tone: tradeConfirmation ? 'amber' : 'cyan' },
+    ],
+    'Risk Management': [
+      { label: 'Daily Loss Cap', value: `${maxDailyLossPct}%`, detail: `Kill switch at ${killSwitchDrawdownPct}% drawdown`, tone: maxDailyLossPct <= 3 ? 'green' : 'amber' },
+      { label: 'Winner Mode', value: letWinnersRunEnabled ? 'RUNNER ON' : 'STATIC TP', detail: letWinnersRunEnabled ? `${runnerPartialTakeProfitPct}% partial • ${runnerTrailPct * 100}% trail` : 'Close full size at TP', tone: letWinnersRunEnabled ? 'green' : 'amber' },
+      { label: 'Position Budget', value: `${maxPositionSizePct}%`, detail: `${maxOpenPositions} max open • ${maxTradesPerDay} trades/day`, tone: maxPositionSizePct <= 10 ? 'green' : 'amber' },
+    ],
+    Notifications: [
+      { label: 'Telegram', value: notificationsTelegram ? 'ARMED' : 'OFF', detail: notificationsTelegram ? `User ${telegramUserId || 'not set'}` : 'Telegram delivery disabled', tone: notificationsTelegram ? 'green' : 'amber' },
+      { label: 'Rate Limit', value: `${telegramRateLimitSec}s`, detail: `Severity floor ${telegramMinSeverity.toUpperCase()}`, tone: telegramRateLimitSec <= 120 ? 'cyan' : 'amber' },
+      { label: 'Delivery Mix', value: `${notificationsPush ? 'Push' : '—'} ${notificationsEmail ? 'Email' : ''}`.trim() || 'None', detail: notificationEmail ? `Email ${notificationEmail}` : 'Only enabled channels will receive alerts', tone: notificationsPush || notificationsEmail || notificationsTelegram ? 'green' : 'amber' },
+    ],
+    Advanced: [
+      { label: 'Evidence', value: `${evidenceCount}/${evidenceTarget}`, detail: `${learningEvidencePct}% readiness`, tone: evidenceCount >= evidenceTarget ? 'green' : 'cyan' },
+      { label: 'Scheduler', value: selfLearningEnabled ? 'ARMED' : 'PAUSED', detail: selfLearningStatus?.nextRunAt ? `Next ${new Date(selfLearningStatus.nextRunAt).toLocaleString()}` : 'Waiting for next schedule', tone: selfLearningEnabled ? 'green' : 'amber' },
+      { label: 'Promotion Mode', value: selfLearningAllowLivePromotion ? 'LIVE' : 'DRY RUN', detail: selfLearningAllowLivePromotion ? 'Live promotion allowed with gates' : 'Promotion stays guarded and manual', tone: selfLearningAllowLivePromotion ? 'amber' : 'cyan' },
+    ],
   };
 
   return (
-    <div className="min-h-screen bg-black text-white font-mono">
-      {/* Header */}
-      <header className="bg-gradient-to-r from-gray-900 via-black to-gray-900 border-b border-gray-800">
-        <div className="container mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold">⚙️ Trading System Settings</h1>
-              <p className="text-gray-400 mt-1">Configure Binance API and manage trading parameters</p>
-            </div>
-            <div className="flex items-center gap-4">
-              <div className={`px-4 py-2 rounded-full text-sm font-bold ${
-                globalTradingEnabled ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-              }`}>
-                Trading: {globalTradingEnabled ? 'ENABLED' : 'DISABLED'}
-              </div>
-              <a href="/" className="px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm">
-                ← Back to Dashboard
-              </a>
-            </div>
-          </div>
-        </div>
-      </header>
+    <>
+      <Head>
+        <title>HELIX.ONE | Settings</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+      </Head>
 
-      {/* Main Content */}
-      <main className="container mx-auto px-6 py-8">
-        {/* Tabs */}
-        <div className="flex gap-2 mb-6 bg-gray-900 p-2 rounded-lg">
-          <button
-            onClick={() => setActiveTab('connection')}
-            className={`flex-1 px-4 py-3 rounded-lg font-bold transition-all ${
-              activeTab === 'connection' 
-                ? 'bg-cyan-500 text-black' 
-                : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-            }`}
-          >
-            🔌 Binance Connection
-          </button>
-          <button
-            onClick={() => setActiveTab('models')}
-            className={`flex-1 px-4 py-3 rounded-lg font-bold transition-all ${
-              activeTab === 'models' 
-                ? 'bg-cyan-500 text-black' 
-                : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-            }`}
-          >
-            🤖 Model Accounts
-          </button>
-          <button
-            onClick={() => setActiveTab('risk')}
-            className={`flex-1 px-4 py-3 rounded-lg font-bold transition-all ${
-              activeTab === 'risk' 
-                ? 'bg-cyan-500 text-black' 
-                : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-            }`}
-          >
-            🛡️ Risk Management
-          </button>
-        </div>
-
-        {/* Connection Tab */}
-        {activeTab === 'connection' && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="space-y-6"
-          >
-            {/* Warning Banner */}
-            <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4">
-              <div className="flex items-start gap-3">
-                <span className="text-2xl">⚠️</span>
+      <div className="helix-shell helix-settings-shell min-h-screen text-slate-100" style={{ fontFamily: 'IBM Plex Sans, Space Grotesk, sans-serif' }}>
+        <div className="mx-auto max-w-[1500px] px-4 md:px-8 py-5">
+          <header className="helix-command-bar rounded-3xl border border-white/10 bg-slate-950/70 backdrop-blur-xl p-4 md:p-5 shadow-2xl shadow-black/40">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div className="flex items-center gap-4">
+                <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-emerald-300/25 bg-emerald-400/[0.08] text-emerald-200 helix-orb">H</div>
                 <div>
-                  <h3 className="font-bold text-yellow-400 mb-1">Security Warning</h3>
-                  <p className="text-sm text-gray-300">
-                    Never share your API keys with anyone. Enable IP restrictions and trading-only permissions on Binance.
-                    Start with testnet mode to ensure everything works correctly before using real funds.
-                  </p>
+                  <div className="text-3xl font-bold tracking-[0.18em]" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
+                    <span className="text-emerald-300">HELIX</span>.ONE
+                  </div>
+                  <div className="mt-1 text-xs uppercase tracking-[0.24em] text-slate-500">Settings command center</div>
                 </div>
               </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={`rounded-full border px-3 py-1 text-[11px] font-black uppercase tracking-wide ${status?.engineConnected ? 'border-emerald-300/35 bg-emerald-400/10 text-emerald-200' : 'border-amber-300/35 bg-amber-400/10 text-amber-200'}`}>
+                  {status?.engineConnected ? 'Backend Online' : 'Backend Checking'}
+                </span>
+                <span className={`rounded-full border px-3 py-1 text-[11px] font-black uppercase tracking-wide ${!settingsLoaded ? 'border-cyan-300/35 bg-cyan-400/10 text-cyan-200' : paperTrading || testnet ? 'border-amber-300/35 bg-amber-400/10 text-amber-200' : 'border-red-300/35 bg-red-400/10 text-red-200'}`}>
+                  {!settingsLoaded ? 'Loading Mode' : paperTrading ? 'Paper Guard' : testnet ? 'Testnet' : 'Live Execution'}
+                </span>
+                <a href="/" className="rounded-xl border border-cyan-300/25 bg-cyan-400/10 px-4 py-2 text-sm font-bold text-cyan-100 hover:bg-cyan-400/20">Dashboard</a>
+              </div>
             </div>
+          </header>
 
-            {/* Master Account Settings */}
-            <div className="bg-gray-900 rounded-lg p-6">
-              <h2 className="text-xl font-bold mb-4">Master Binance Account</h2>
-              
-              <div className="space-y-4">
-                {/* Testnet Toggle */}
-                <div className="flex items-center justify-between p-4 bg-gray-800 rounded-lg">
-                  <div>
-                    <div className="font-bold">Testnet Mode</div>
-                    <div className="text-sm text-gray-400">Use Binance Futures Testnet (recommended for testing)</div>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={useTestnet}
-                      onChange={(e) => setUseTestnet(e.target.checked)}
-                      className="sr-only peer"
-                    />
-                    <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-cyan-500"></div>
-                  </label>
-                </div>
-
-                {/* API Key */}
-                <div>
-                  <label className="block text-sm font-bold mb-2">API Key</label>
-                  <div className="relative">
-                    <input
-                      type={showApiKey ? 'text' : 'password'}
-                      value={masterApiKey}
-                      onChange={(e) => setMasterApiKey(e.target.value)}
-                      placeholder="Enter your Binance API key"
-                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white font-mono text-sm focus:outline-none focus:border-cyan-500"
-                    />
-                    <button
-                      onClick={() => setShowApiKey(!showApiKey)}
-                      className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-white"
-                    >
-                      {showApiKey ? '🙈' : '👁️'}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Secret Key */}
-                <div>
-                  <label className="block text-sm font-bold mb-2">Secret Key</label>
-                  <div className="relative">
-                    <input
-                      type={showSecretKey ? 'text' : 'password'}
-                      value={masterSecretKey}
-                      onChange={(e) => setMasterSecretKey(e.target.value)}
-                      placeholder="Enter your Binance secret key"
-                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white font-mono text-sm focus:outline-none focus:border-cyan-500"
-                    />
-                    <button
-                      onClick={() => setShowSecretKey(!showSecretKey)}
-                      className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-white"
-                    >
-                      {showSecretKey ? '🙈' : '👁️'}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Connection Status */}
-                {connectionStatus !== 'idle' && (
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    className={`p-4 rounded-lg ${
-                      connectionStatus === 'success' 
-                        ? 'bg-green-500/20 border border-green-500/30 text-green-400' 
-                        : 'bg-red-500/20 border border-red-500/30 text-red-400'
+          <div className="mt-5 grid grid-cols-1 xl:grid-cols-12 gap-4">
+            <aside className="rounded-3xl border border-white/10 bg-slate-950/65 p-3 shadow-2xl shadow-black/30 backdrop-blur-xl xl:col-span-3">
+              <div className="mb-3 rounded-2xl border border-white/10 bg-white/[0.035] p-3">
+                <div className="text-[10px] uppercase tracking-[0.26em] text-cyan-200/70">{tabDetails[activeTab].eyebrow}</div>
+                <div className="mt-1 text-lg font-black text-slate-50">{tabDetails[activeTab].title}</div>
+                <div className="mt-2 text-xs leading-relaxed text-slate-400">{tabDetails[activeTab].summary}</div>
+              </div>
+              <div className="space-y-1 text-sm">
+                {(['General', 'Trading', 'Risk Management', 'Notifications', 'Advanced'] as SettingsTab[]).map((item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    onClick={() => setActiveTab(item)}
+                    className={`group w-full rounded-2xl border px-3 py-3 text-left transition ${
+                      activeTab === item
+                        ? 'border-cyan-300/40 bg-cyan-400/15 text-cyan-100 shadow-lg shadow-cyan-950/20'
+                        : 'border-transparent text-slate-300 hover:border-white/10 hover:bg-white/[0.04]'
                     }`}
                   >
-                    {connectionStatus === 'success' ? (
-                      <div className="flex items-center gap-2">
-                        <span className="text-xl">✅</span>
-                        <span className="font-bold">Connection successful! Your Binance account is connected.</span>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-2">
-                        <span className="text-xl">❌</span>
-                        <span className="font-bold">Connection failed. Please check your API keys and try again.</span>
-                      </div>
-                    )}
-                  </motion.div>
-                )}
-
-                {/* Action Buttons */}
-                <div className="flex gap-3">
-                  <button
-                    onClick={testConnection}
-                    disabled={testing || !masterApiKey || !masterSecretKey}
-                    className="flex-1 px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg font-bold transition-all"
-                  >
-                    {testing ? '🔄 Testing...' : '🔌 Test Connection'}
-                  </button>
-                  <button
-                    onClick={saveSettings}
-                    disabled={saving}
-                    className="flex-1 px-6 py-3 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg font-bold transition-all"
-                  >
-                    {saving ? '💾 Saving...' : '💾 Save Settings'}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* How to Get API Keys */}
-            <div className="bg-gray-900 rounded-lg p-6">
-              <h3 className="text-lg font-bold mb-3">📚 How to Get Binance API Keys</h3>
-              <div className="space-y-2 text-sm text-gray-300">
-                <p><strong>For Testnet (Recommended for Testing):</strong></p>
-                <ol className="list-decimal list-inside space-y-1 ml-4">
-                  <li>Go to <a href="https://testnet.binancefuture.com" target="_blank" className="text-cyan-400 hover:underline">https://testnet.binancefuture.com</a></li>
-                  <li>Register with your email (no verification needed)</li>
-                  <li>Generate API keys from the dashboard</li>
-                  <li>You'll receive 10,000 USDT testnet balance</li>
-                </ol>
-                
-                <p className="mt-4"><strong>For Live Trading (Real Money):</strong></p>
-                <ol className="list-decimal list-inside space-y-1 ml-4">
-                  <li>Log in to <a href="https://www.binance.com" target="_blank" className="text-cyan-400 hover:underline">Binance.com</a></li>
-                  <li>Go to API Management in your account settings</li>
-                  <li>Create a new API key</li>
-                  <li>Enable "Futures" permissions only</li>
-                  <li>Enable IP restrictions for security</li>
-                  <li>⚠️ NEVER enable withdrawal permissions</li>
-                </ol>
-              </div>
-            </div>
-          </motion.div>
-        )}
-
-        {/* Model Accounts Tab */}
-        {activeTab === 'models' && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="space-y-6"
-          >
-            <div className="bg-gray-900 rounded-lg p-6">
-              <div className="flex items-center justify-between mb-6">
-                <div>
-                  <h2 className="text-xl font-bold">AI Model Trading Accounts</h2>
-                  <p className="text-sm text-gray-400 mt-1">Each model can have its own sub-account or share the master account</p>
-                </div>
-                <button
-                  onClick={toggleGlobalTrading}
-                  className={`px-6 py-3 rounded-lg font-bold transition-all ${
-                    globalTradingEnabled 
-                      ? 'bg-red-600 hover:bg-red-700' 
-                      : 'bg-green-600 hover:bg-green-700'
-                  }`}
-                >
-                  {globalTradingEnabled ? '🛑 STOP ALL TRADING' : '▶️ START TRADING'}
-                </button>
-              </div>
-
-              <div className="space-y-4">
-                {modelAccounts.map((model) => (
-                  <div key={model.modelId} className="bg-gray-800 rounded-lg p-4">
-                    <div className="flex items-center justify-between mb-4">
-                      <div>
-                        <h3 className="font-bold text-lg">{model.modelName}</h3>
-                        <div className="text-sm text-gray-400">
-                          Balance: ${model.balance.toLocaleString()} • 
-                          Open Positions: {model.positionsCount}
-                        </div>
-                      </div>
-                      <label className="relative inline-flex items-center cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={model.tradingEnabled}
-                          onChange={(e) => updateModelAccount(model.modelId, 'tradingEnabled', e.target.checked)}
-                          className="sr-only peer"
-                        />
-                        <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-500"></div>
-                      </label>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-bold">{item}</span>
+                      <span className={`h-2 w-2 rounded-full ${activeTab === item ? 'bg-cyan-300 shadow-[0_0_14px_rgba(103,232,249,0.9)]' : 'bg-slate-700 group-hover:bg-slate-500'}`} />
                     </div>
-
-                    <div className="text-xs text-gray-500">
-                      Using master account credentials (shared balance)
-                    </div>
-                  </div>
+                    <div className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-slate-500">{tabDetails[item].eyebrow}</div>
+                  </button>
                 ))}
               </div>
+            </aside>
 
-              <div className="mt-6 flex gap-3">
-                <button
-                  onClick={closeAllPositions}
-                  className="px-6 py-3 bg-red-600 hover:bg-red-700 rounded-lg font-bold transition-all"
-                >
-                  🚨 Close All Positions
+            <main className="grid grid-cols-1 gap-4 lg:grid-cols-12 xl:col-span-9">
+              {banner && (
+                <div className={`lg:col-span-12 rounded-2xl px-4 py-3 text-sm shadow-xl ${banner.type === 'success' ? 'bg-emerald-900/50 text-emerald-100 border border-emerald-500/40' : 'bg-red-900/50 text-red-100 border border-red-500/40'}`}>
+                  {banner.text}
+                </div>
+              )}
+
+              {loading && !lastUpdated && <div className="lg:col-span-12 text-sm text-slate-300">Loading settings...</div>}
+              <div className="lg:col-span-12 rounded-3xl border border-white/10 bg-slate-950/55 p-4 shadow-xl shadow-black/30 backdrop-blur-xl">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <div className="text-[10px] uppercase tracking-[0.3em] text-cyan-200/70">{tabDetails[activeTab].eyebrow}</div>
+                    <div className="mt-1 text-2xl font-black text-slate-50">{activeTab}</div>
+                    <div className="mt-2 max-w-3xl text-sm leading-relaxed text-slate-400">{tabDetails[activeTab].summary}</div>
+                  </div>
+                  <div className="text-xs text-slate-500">{refreshing ? 'Refreshing...' : `Last updated: ${lastUpdated || '—'}`}</div>
+                </div>
+              <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4">
+                  {settingsHealthCards.map((card) => (
+                    <StatusTile key={card.label} {...card} />
+                  ))}
+                </div>
+              </div>
+              <div className="lg:col-span-12 grid grid-cols-1 gap-3 xl:grid-cols-[1.35fr_1fr]">
+                <section className="helix-settings-hero rounded-3xl border border-cyan-300/15 p-5">
+                  <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+                    <div className="max-w-3xl">
+                      <div className="text-[10px] uppercase tracking-[0.3em] text-cyan-200/75">{tabDetails[activeTab].eyebrow}</div>
+                      <div className="mt-2 text-3xl font-black tracking-tight text-slate-50" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
+                        {tabDetails[activeTab].title}
+                      </div>
+                      <div className="mt-3 text-sm leading-7 text-slate-300">
+                        {tabDetails[activeTab].summary}
+                      </div>
+                    </div>
+                    <div className="helix-settings-focus rounded-2xl border border-white/10 px-4 py-4 xl:max-w-[320px]">
+                      <div className="text-[10px] uppercase tracking-[0.24em] text-cyan-200/75">Control posture</div>
+                      <div className="mt-2 text-xl font-black text-slate-50">
+                        {settingsLoaded ? (globalTradingEnabled && portfolioTradingEnabled ? 'Armed with guardrails' : 'Configured but gated') : 'Syncing settings'}
+                      </div>
+                      <div className="mt-2 text-sm leading-6 text-slate-300">
+                        {activeTab === 'Advanced'
+                          ? selfLearningOverview.nextBestAction
+                          : activeTab === 'Risk Management'
+                            ? 'Risk rules here are hard backend limits. DeepSeek can recommend, but it cannot override these caps.'
+                            : activeTab === 'Notifications'
+                              ? 'Alert routing should stay selective: trade events, API health, risk shifts, and learning review outcomes.'
+                              : activeTab === 'Trading'
+                                ? 'Execution controls should make intent obvious: whether entries are allowed, confirmed, simulated, or blocked.'
+                                : 'Keys stay masked, saves are intentional, and provider routing should stay explicit.'}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-3">
+                    {tabFocusCards[activeTab].map((card) => (
+                      <CommandFocusCard key={`${activeTab}-${card.label}`} {...card} />
+                    ))}
+                  </div>
+                </section>
+                <section className="rounded-3xl border border-white/10 bg-slate-950/55 p-4 shadow-xl shadow-black/30 backdrop-blur-xl">
+                  <div className="text-[10px] uppercase tracking-[0.28em] text-cyan-200/70">Command overview</div>
+                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {settingsOverviewCards.map((card) => (
+                      <StatusTile key={`overview-${card.label}`} {...card} />
+                    ))}
+                  </div>
+                </section>
+              </div>
+              {settingsLoaded && paperTrading && (
+                <div className="lg:col-span-12 rounded-2xl border border-amber-500/40 bg-amber-900/30 px-4 py-3 text-sm text-amber-100">
+                  Paper Trading Mode is ON. Strategy actions are simulated and should not place live exchange orders.
+                </div>
+              )}
+              {lastSavedAt && <div className="lg:col-span-12 text-xs text-emerald-300">Last saved: {lastSavedAt}</div>}
+
+              {activeTab === 'General' && (
+              <Panel className="lg:col-span-8" title="General" subtitle="Exchange identity, admin access, and AI-provider routing.">
+                <SectionIntro eyebrow="Access Layer" title="Keys stay masked, saves are intentional" text="Credentials are never persisted in browser storage. Masked values mean the backend already has a saved secret; leaving them unchanged will not wipe the stored key." />
+                <TextField label="Admin Key" type="password" value={adminKey} onChange={setAdminKey} />
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                  <TextField label="Binance API Key" type="password" value={masterApiKey} onChange={setMasterApiKey} placeholder={hasMasterApiKey ? '********' : ''} status={credentialStatus(hasMasterApiKey)} />
+                  <TextField label="Binance API Secret" type="password" value={masterSecretKey} onChange={setMasterSecretKey} placeholder={hasMasterSecretKey ? '********' : ''} status={credentialStatus(hasMasterSecretKey)} />
+                </div>
+                <SectionIntro eyebrow="AI Provider" title="Choose the reasoning engine" text="DeepSeek can remain the main trading brain while OpenAI/Gemini keys are available for future redundancy or analysis tasks." compact />
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                  <SelectField
+                    label="AI Provider"
+                    value={aiProvider}
+                    options={['deepseek', 'openai', 'gemini']}
+                    onChange={(v) => setAiProvider((v === 'openai' || v === 'gemini' || v === 'deepseek') ? v : 'deepseek')}
+                  />
+                  <TextField label="DeepSeek API Key" type="password" value={deepseekApiKey} onChange={setDeepseekApiKey} placeholder={hasDeepseekApiKey ? '********' : ''} status={credentialStatus(hasDeepseekApiKey)} />
+                  <TextField label="OpenAI API Key" type="password" value={openaiApiKey} onChange={setOpenaiApiKey} placeholder={hasOpenaiApiKey ? '********' : ''} status={credentialStatus(hasOpenaiApiKey)} />
+                  <TextField label="Google Gemini API Key" type="password" value={geminiApiKey} onChange={setGeminiApiKey} placeholder={hasGeminiApiKey ? '********' : ''} status={credentialStatus(hasGeminiApiKey)} />
+                </div>
+
+                <div className="pt-2">
+                  <Toggle label="Trading Mode (Live/Testnet)" checked={!testnet} onChange={(v) => setTestnet(!v)} onLabel="Live" offLabel="Testnet" />
+                </div>
+
+                <div className="mt-3 flex gap-2">
+                  <button className="flex-1 rounded-lg border border-cyan-300/30 bg-cyan-500/20 hover:bg-cyan-500/30 px-3 py-2 text-sm" onClick={testConnection} disabled={testing}>{testing ? 'Testing...' : 'Test Connection'}</button>
+                  <button className="flex-1 rounded-lg border border-emerald-300/30 bg-emerald-500/20 hover:bg-emerald-500/30 px-3 py-2 text-sm" onClick={saveSettings} disabled={saving}>{saving ? 'Saving...' : 'Save Changes'}</button>
+                </div>
+              </Panel>
+              )}
+
+              {activeTab === 'Trading' && (
+              <Panel className="lg:col-span-6" title="Trading" subtitle="Execution behavior, operator toggles, and order-handling preferences.">
+                <SectionIntro eyebrow="Execution Behavior" title="How orders should behave" text="These settings control execution UX and basic order handling. Hard risk rules still live in Risk Management." />
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <SelectField
+                    label="Default Base Currency"
+                    value={uiPrefs.baseCurrency}
+                    options={['USDT', 'USDC', 'BUSD']}
+                    onChange={(v) => setUiPrefs((p) => ({ ...p, baseCurrency: v as UiPrefs['baseCurrency'] }))}
+                  />
+                  <NumberField label="Slippage Tolerance (%)" value={uiPrefs.slippageTolerancePct} setValue={(v) => setUiPrefs((p) => ({ ...p, slippageTolerancePct: v }))} step="0.01" />
+                  <NumberField label="Timeout for Orders (seconds)" value={uiPrefs.orderTimeoutSec} setValue={(v) => setUiPrefs((p) => ({ ...p, orderTimeoutSec: v }))} />
+                </div>
+
+                <div className="space-y-3 pt-1">
+                  <Toggle label="Trade Confirmation" checked={tradeConfirmation} onChange={setTradeConfirmation} onLabel="Enabled" offLabel="Disabled" />
+                  <Toggle label="Use DeepSeek Strategy Brain" checked={uiPrefs.useDeepSeekBrain} onChange={(v) => setUiPrefs((p) => ({ ...p, useDeepSeekBrain: v }))} onLabel="Enabled" offLabel="Disabled" />
+                  <Toggle label="Global Trading" checked={globalTradingEnabled} onChange={toggleTrading} onLabel="Enabled" offLabel="Disabled" />
+                  <Toggle label="DeepSeek Portfolio Trading" checked={portfolioTradingEnabled} onChange={updatePortfolioTradingEnabled} onLabel="Enabled" offLabel="Disabled" />
+                </div>
+              </Panel>
+              )}
+
+              {activeTab === 'Risk Management' && (
+              <Panel className="lg:col-span-8" title="Risk Management" subtitle="Hard limits, BE+ buffers, runner rules, and capital-preservation controls.">
+                <SectionIntro eyebrow="Hard Guardrails" title="The system protects capital before seeking trades" text="These are backend-enforced limits. DeepSeek can recommend, but it cannot override these caps." />
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  <NumberField label="Max Daily Loss (%)" value={maxDailyLossPct} setValue={setMaxDailyLossPct} step="0.1" />
+                  <NumberField label="Max Position Size (%)" value={maxPositionSizePct} setValue={setMaxPositionSizePct} />
+                  <NumberField label="Max Leverage" value={maxLeverage} setValue={setMaxLeverage} />
+                  <NumberField label="Min Leverage" value={minLeverage} setValue={setMinLeverage} />
+                  <NumberField label="Simultaneous Trades / Max Open Positions" value={maxOpenPositions} setValue={setMaxOpenPositions} />
+                  <NumberField label="Kill-Switch Drawdown (%)" value={killSwitchDrawdownPct} setValue={setKillSwitchDrawdownPct} step="0.1" />
+                  <NumberField label="Cooldown Period (minutes)" value={cooldownMinutes} setValue={setCooldownMinutes} />
+                  <NumberField label="Max Trades Per Day" value={maxTradesPerDay} setValue={setMaxTradesPerDay} />
+                  <NumberField label="Max Consecutive Losses" value={maxConsecutiveLosses} setValue={setMaxConsecutiveLosses} />
+                  <NumberField label="Confidence Floor (0-1)" value={minConfidence} setValue={setMinConfidence} step="0.01" />
+                </div>
+                <div className="pt-1 space-y-2">
+                  <Toggle
+                    label="Paper Trading Mode"
+                    checked={paperTrading}
+                    onChange={setPaperTrading}
+                    onLabel="Enabled"
+                    offLabel="Disabled"
+                  />
+                  <Toggle
+                    label="DeepSeek AI Decision Gate"
+                    checked={deepseekDecisionEnabled}
+                    onChange={setDeepseekDecisionEnabled}
+                    onLabel="Enabled"
+                    offLabel="Disabled"
+                  />
+                  <Toggle
+                    label="Let Winners Run"
+                    checked={letWinnersRunEnabled}
+                    onChange={setLetWinnersRunEnabled}
+                    onLabel="Partial + Trail"
+                    offLabel="Close at TP"
+                  />
+                </div>
+                <div className="mt-4 rounded-2xl border border-emerald-300/15 bg-emerald-400/[0.04] p-3">
+                  <div className="text-sm font-semibold text-emerald-100">Profit Protection</div>
+                  <p className="mt-1 text-xs leading-relaxed text-slate-400">
+                    BE+ moves stops beyond raw entry by covering exchange fees, expected slippage, and a small safety buffer. Winner mode takes partial profit, leaves a runner open, and trails the stop so strong trades can keep paying.
+                  </p>
+                  <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                    <NumberField label="BE+ Safety Buffer (%)" value={breakEvenBufferPct * 100} setValue={(v) => setBreakEvenBufferPct(v / 100)} step="0.01" />
+                    <NumberField label="BE+ Fee Buffer (bps)" value={breakEvenFeeBps} setValue={setBreakEvenFeeBps} step="1" />
+                    <NumberField label="BE+ Slippage Buffer (bps)" value={breakEvenSlippageBps} setValue={setBreakEvenSlippageBps} step="1" />
+                    <NumberField label="Runner Activation (R)" value={runnerActivationR} setValue={setRunnerActivationR} step="0.1" />
+                    <NumberField label="Runner Partial Take Profit (%)" value={runnerPartialTakeProfitPct} setValue={setRunnerPartialTakeProfitPct} step="1" />
+                    <NumberField label="Runner Trailing Stop (%)" value={runnerTrailPct * 100} setValue={(v) => setRunnerTrailPct(v / 100)} step="0.05" />
+                  </div>
+                </div>
+                <NumberField label="Allocated Portfolio Balance" value={deepseekBalance} setValue={setDeepseekBalance} step="1" />
+
+                <button className="mt-3 w-full rounded-lg border border-emerald-300/30 bg-emerald-500/20 hover:bg-emerald-500/30 px-3 py-2 text-sm" onClick={saveSettings} disabled={saving}>{saving ? 'Saving...' : 'Save Changes'}</button>
+
+                {riskValidation.length > 0 && <div className="mt-2 text-xs text-amber-300">{riskValidation[0]}</div>}
+              </Panel>
+              )}
+
+              {(activeTab === 'Trading' || activeTab === 'Advanced') && (
+              <Panel className="lg:col-span-6" title="Operations" subtitle="Live interventions, health checks, and account refresh tools.">
+                <SectionIntro eyebrow="Live Ops" title="Manual operational controls" text="Use these for intervention, refresh, and API health checks. Close All Positions is intentionally visible and high-friction colored." />
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <button className="rounded-lg border border-red-400/40 bg-red-900/30 hover:bg-red-900/50 px-3 py-2 text-sm" onClick={closeAllPositions}>Close All Positions</button>
+                  <button className="rounded-lg border border-white/20 bg-white/5 hover:bg-white/10 px-3 py-2 text-sm" onClick={() => load(true)}>{refreshing ? 'Refreshing...' : 'Refresh Data'}</button>
+                  <button className="rounded-lg border border-cyan-300/30 bg-cyan-500/20 hover:bg-cyan-500/30 px-3 py-2 text-sm" onClick={testConnection}>{testing ? 'Testing...' : 'Retest Binance API'}</button>
+                </div>
+
+                <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                  <InfoRow label="Balance" value={typeof account.balance === 'number' ? money(account.balance) : '—'} />
+                  <InfoRow label="Available Margin" value={typeof account.availableMargin === 'number' ? money(account.availableMargin) : '—'} />
+                  <InfoRow label="Consecutive Losses" value={String(account.consecutiveLosses ?? '—')} />
+                  <InfoRow label="Recommended Risk" value={String(briefing?.recommendedRiskLevel || '—').toUpperCase()} />
+                  <InfoRow label="Market Regime" value={String(market.regime || '—').toUpperCase()} />
+                  <InfoRow label="Regime Confidence" value={`${market.regimeConfidence ?? '—'}%`} />
+                </div>
+              </Panel>
+              )}
+
+              {activeTab === 'Notifications' && (
+              <Panel className="lg:col-span-8" title="Notifications" subtitle="Alert routing, severity floors, and Telegram/email delivery controls.">
+                <SectionIntro eyebrow="Alert Routing" title="Keep only useful alerts loud" text="Telegram should carry trade opens/closes, kill switches, API disconnects, and self-learning reviews without spamming normal noise." />
+                <div className="space-y-3">
+                  <Toggle label="Push Alerts" checked={notificationsPush} onChange={setNotificationsPush} onLabel="On" offLabel="Off" />
+                  <Toggle label="Email Alerts" checked={notificationsEmail} onChange={setNotificationsEmail} onLabel="On" offLabel="Off" />
+                  <Toggle label="Telegram Alerts" checked={notificationsTelegram} onChange={setNotificationsTelegram} onLabel="On" offLabel="Off" />
+                  <TextField label="Email Address" type="text" value={notificationEmail} onChange={setNotificationEmail} />
+                  <TextField label="Telegram Bot Token" type="password" value={telegramBotToken} onChange={setTelegramBotToken} placeholder={hasTelegramBotToken ? '********' : ''} status={credentialStatus(hasTelegramBotToken)} />
+                  <TextField label="Telegram User ID" type="text" value={telegramUserId} onChange={setTelegramUserId} />
+                  <TextField label="Telegram Pairing Code" type="text" value={telegramPairingCode} onChange={setTelegramPairingCode} />
+                  <SelectField label="Telegram Min Severity" value={telegramMinSeverity} options={['info', 'warning', 'critical']} onChange={(v) => setTelegramMinSeverity(v as 'info' | 'warning' | 'critical')} />
+                  <NumberField label="Telegram Rate Limit (seconds)" value={telegramRateLimitSec} setValue={setTelegramRateLimitSec} />
+                  <button className="w-full rounded-lg border border-cyan-300/30 bg-cyan-500/20 hover:bg-cyan-500/30 px-3 py-2 text-sm" onClick={testTelegramConnection} disabled={testingTelegram}>
+                    {testingTelegram ? 'Testing Telegram...' : 'Test Telegram Connection'}
+                  </button>
+                </div>
+              </Panel>
+              )}
+
+              {(activeTab === 'General' || activeTab === 'Advanced') && (
+              <Panel className="lg:col-span-4" title="Active Services" subtitle="Live runtime heartbeat for the local frontend and backend surfaces.">
+                <SectionIntro eyebrow="Runtime" title="Service heartbeat" text="Quick local health readout for the running backend and frontend processes." compact />
+                <ServiceRow name="Backend Engine" state={status ? (Boolean(status?.engineConnected) ? 'running' : 'down') : 'unknown'} meta={`Last update ${lastUpdated || '—'}`} />
+                <ServiceRow name="Frontend Server" state={lastUpdated ? 'running' : 'unknown'} meta={`Auto-refresh ${refreshing ? 'active' : 'idle'}`} />
+                <button className="mt-4 w-full rounded-lg border border-white/20 bg-white/5 hover:bg-white/10 px-3 py-2 text-sm" onClick={() => load(true)}>
+                  Refresh Service Status
                 </button>
-                <button
-                  onClick={checkTradingStatus}
-                  className="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-bold transition-all"
-                >
-                  🔄 Refresh Status
-                </button>
-              </div>
-            </div>
-          </motion.div>
-        )}
+              </Panel>
+              )}
 
-        {/* Risk Management Tab */}
-        {activeTab === 'risk' && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="space-y-6"
-          >
-            <div className="bg-gray-900 rounded-lg p-6">
-              <h2 className="text-xl font-bold mb-6">Risk Management Parameters</h2>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* Max Daily Loss */}
-                <div className="bg-gray-800 rounded-lg p-4">
-                  <label className="block text-sm font-bold mb-2">Max Daily Loss (%)</label>
-                  <input
-                    type="number"
-                    value={maxDailyLoss}
-                    onChange={(e) => setMaxDailyLoss(Number(e.target.value))}
-                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white font-mono focus:outline-none focus:border-cyan-500"
-                  />
-                  <p className="text-xs text-gray-400 mt-2">Trading stops if loss exceeds this percentage</p>
+              {activeTab === 'Advanced' && (
+              <Panel className="lg:col-span-8" title="Self-Learning Engine" subtitle="Observe, evaluate, and only promote changes when evidence and governance agree.">
+                <div className="rounded-2xl border border-cyan-300/20 bg-cyan-500/[0.07] p-4">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-[0.28em] text-cyan-200/70">Autopilot status</div>
+                      <div className="mt-1 text-2xl font-black text-slate-50">{selfLearningOverview.mode}</div>
+                      <div className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-300">{selfLearningOverview.summary}</div>
+                    </div>
+                    <div className={`rounded-full border px-3 py-1 text-[11px] font-black uppercase tracking-wide ${evidenceCount >= evidenceTarget ? 'border-emerald-300/30 bg-emerald-400/10 text-emerald-200' : 'border-amber-300/30 bg-amber-400/10 text-amber-200'}`}>
+                      {selfLearningOverview.phase}
+                    </div>
+                  </div>
+                  <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10">
+                    <div className="h-full rounded-full bg-gradient-to-r from-cyan-300 via-emerald-300 to-lime-200" style={{ width: `${Math.max(4, learningEvidencePct)}%` }} />
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+                    <LearningMetric label="Evidence" value={`${evidenceCount}/${evidenceTarget}`} />
+                    <LearningMetric label="Readiness" value={selfLearningOverview.confidence} />
+                    <LearningMetric label="Regime" value={String(market.regime || '—').toUpperCase()} />
+                    <LearningMetric label="Promotion" value={selfLearningOverview.promotion} />
+                  </div>
+                  <div className="mt-3 grid grid-cols-1 gap-2 text-xs md:grid-cols-3">
+                    <LearningMetric label="Scheduler" value={selfLearningStatus?.running ? 'RUNNING NOW' : selfLearningEnabled ? 'ARMED' : 'PAUSED'} />
+                    <LearningMetric label="Last Review" value={selfLearningStatus?.lastRunAt ? new Date(selfLearningStatus.lastRunAt).toLocaleString() : '—'} />
+                    <LearningMetric label="Next Review" value={selfLearningStatus?.nextRunAt ? new Date(selfLearningStatus.nextRunAt).toLocaleString() : 'after restart/status refresh'} />
+                  </div>
                 </div>
 
-                {/* Max Position Size */}
-                <div className="bg-gray-800 rounded-lg p-4">
-                  <label className="block text-sm font-bold mb-2">Max Position Size (%)</label>
-                  <input
-                    type="number"
-                    value={maxPositionSize}
-                    onChange={(e) => setMaxPositionSize(Number(e.target.value))}
-                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white font-mono focus:outline-none focus:border-cyan-500"
-                  />
-                  <p className="text-xs text-gray-400 mt-2">Maximum capital per single position</p>
+                <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-3">
+                  <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
+                    <div className="text-[10px] uppercase tracking-[0.24em] text-slate-400">Observe</div>
+                    <div className="mt-2 text-sm font-semibold text-slate-100">Collect live evidence</div>
+                    <div className="mt-1 text-xs leading-relaxed text-slate-400">Trades, P&L, drawdown, regime, execution quality, and risk-rule behavior are collected before strategy changes are trusted.</div>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
+                    <div className="text-[10px] uppercase tracking-[0.24em] text-slate-400">Evaluate</div>
+                    <div className="mt-2 text-sm font-semibold text-slate-100">Test candidate improvements</div>
+                    <div className="mt-1 text-xs leading-relaxed text-slate-400">Walk-forward and governance checks compare candidate behavior against baseline results instead of guessing.</div>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
+                    <div className="text-[10px] uppercase tracking-[0.24em] text-slate-400">Promote</div>
+                    <div className="mt-2 text-sm font-semibold text-slate-100">Guarded self-improvement</div>
+                    <div className="mt-1 text-xs leading-relaxed text-slate-400">Promotion stays dry-run by default. Live promotion requires evidence, risk gates, and your explicit confirmation.</div>
+                  </div>
                 </div>
 
-                {/* Max Leverage */}
-                <div className="bg-gray-800 rounded-lg p-4">
-                  <label className="block text-sm font-bold mb-2">Max Leverage (x)</label>
-                  <input
-                    type="number"
-                    value={maxLeverage}
-                    onChange={(e) => setMaxLeverage(Number(e.target.value))}
-                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white font-mono focus:outline-none focus:border-cyan-500"
-                  />
-                  <p className="text-xs text-gray-400 mt-2">Maximum leverage allowed for positions</p>
+                <div className="mt-3 rounded-2xl border border-emerald-300/20 bg-emerald-500/[0.06] p-4">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-[0.24em] text-emerald-200/80">Recommended next action</div>
+                      <div className="mt-1 text-sm leading-relaxed text-slate-200">{selfLearningOverview.nextBestAction}</div>
+                      <div className="mt-2 text-xs text-slate-400">Current playbook: {labRecommendation}</div>
+                      {!adminKey.trim() && (
+                        <div className="mt-2 rounded-lg border border-amber-300/25 bg-amber-400/[0.08] px-3 py-2 text-xs text-amber-100">
+                          Enter the Admin Key in General settings before running a manual guarded review.
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      className="rounded-xl border border-emerald-300/40 bg-emerald-500/15 px-4 py-3 text-sm font-bold text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-50"
+                      onClick={runSelfLearningReview}
+                      disabled={learningReviewRunning || !adminKey.trim()}
+                    >
+                      {learningReviewRunning ? 'Review Running...' : 'Run Guarded Learning Review'}
+                    </button>
+                  </div>
+                  {(learningReviewRunning || learningReviewResult || selfLearningStatus?.lastResult) && (
+                    <div className={`mt-4 rounded-2xl border p-4 text-sm ${learningReviewResult?.success === false ? 'border-red-300/25 bg-red-400/[0.08]' : learningReviewRunning ? 'border-cyan-300/25 bg-cyan-400/[0.08]' : 'border-emerald-300/25 bg-black/25'}`}>
+                      {(() => {
+                        const result = learningReviewResult || selfLearningStatus?.lastResult || {};
+                        const record = result?.record?.result || {};
+                        const decision = String(record?.decision || (learningReviewRunning ? 'RUNNING' : '—')).toUpperCase();
+                        const reasons = Array.isArray(record?.reasons) ? record.reasons : [];
+                        const evidence = result?.evidence || selfLearningStatus?.evidence || {};
+                        const completedAt = result?.completedAt || selfLearningStatus?.lastRunAt;
+                        return (
+                          <div>
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div>
+                                <div className="text-[10px] uppercase tracking-[0.24em] text-slate-400">Latest guarded review result</div>
+                                <div className="mt-1 text-xl font-black text-slate-50">{decision}</div>
+                              </div>
+                              <div className="text-right text-xs text-slate-400">
+                                {learningReviewRunning ? 'Running governance, walk-forward, and risk gates...' : completedAt ? new Date(completedAt).toLocaleString() : 'Waiting for first result'}
+                              </div>
+                            </div>
+                            {result?.error ? (
+                              <div className="mt-3 rounded-xl border border-red-300/20 bg-red-500/[0.08] p-3 text-red-100">{result.error}</div>
+                            ) : (
+                              <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+                                <LearningMetric label="Closed Trades" value={`${Number(evidence.closedTrades || 0)}/${Number(evidence.requiredClosedTrades || evidenceTarget || 0)}`} />
+                                <LearningMetric label="Risk Change" value={result?.riskAdjustment?.applied ? 'APPLIED' : 'NONE'} />
+                                <LearningMetric label="Next Action" value={String(result?.nextAction || '—').replace(/_/g, ' ').toUpperCase()} />
+                              </div>
+                            )}
+                            {reasons.length > 0 && (
+                              <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.035] p-3 text-xs text-slate-300">
+                                <span className="font-semibold text-slate-100">Reasons:</span> {reasons.join(', ')}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
                 </div>
 
-                {/* Daily Target Return */}
-                <div className="bg-gray-800 rounded-lg p-4">
-                  <label className="block text-sm font-bold mb-2">Daily Target Return (%)</label>
-                  <input
-                    type="number"
-                    value={dailyTargetReturn}
-                    onChange={(e) => setDailyTargetReturn(Number(e.target.value))}
-                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white font-mono focus:outline-none focus:border-cyan-500"
-                  />
-                  <p className="text-xs text-gray-400 mt-2">Target daily return percentage</p>
+                <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <TraderSummaryCard summary={traderSummary} />
+                  <EvidenceCard evidenceCount={evidenceCount} evidenceTarget={evidenceTarget} marketRegime={String(market.regime || 'unknown')} />
                 </div>
-              </div>
 
-              <div className="mt-6">
-                <button
-                  onClick={saveSettings}
-                  disabled={saving}
-                  className="px-6 py-3 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg font-bold transition-all"
-                >
-                  {saving ? '💾 Saving...' : '💾 Save Risk Settings'}
-                </button>
-              </div>
-            </div>
+                <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.035] p-3">
+                  <div className="mb-3 text-[10px] uppercase tracking-[0.24em] text-slate-400">Learning schedule & safety</div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <Toggle
+                      label="Autonomous Learning Scheduler"
+                      checked={selfLearningEnabled}
+                      onChange={setSelfLearningEnabled}
+                      onLabel="ON"
+                      offLabel="OFF"
+                    />
+                    <Toggle
+                      label="Auto Tighten Risk After Bad Evidence"
+                      checked={selfLearningAutoRiskTightening}
+                      onChange={setSelfLearningAutoRiskTightening}
+                      onLabel="ON"
+                      offLabel="OFF"
+                    />
+                    <Toggle
+                      label="Telegram Review Alerts"
+                      checked={selfLearningNotifyOnReview}
+                      onChange={setSelfLearningNotifyOnReview}
+                      onLabel="ON"
+                      offLabel="OFF"
+                    />
+                    <Toggle
+                      label="Allow Live Promotion"
+                      checked={selfLearningAllowLivePromotion}
+                      onChange={setSelfLearningAllowLivePromotion}
+                      onLabel="ON"
+                      offLabel="OFF"
+                    />
+                    <NumberField label="Review Interval (hours)" value={selfLearningIntervalHours} setValue={setSelfLearningIntervalHours} />
+                    <NumberField label="Evidence Required (closed trades)" value={selfLearningMinClosedTrades} setValue={setSelfLearningMinClosedTrades} />
+                    <Toggle
+                      label="Promotion Dry-Run (recommended)"
+                      checked={promotionDryRun}
+                      onChange={setPromotionDryRun}
+                      onLabel="ON"
+                      offLabel="OFF"
+                    />
+                    <TextField
+                      label="Second Confirmation Phrase"
+                      value={promotionConfirmText}
+                      onChange={setPromotionConfirmText}
+                      placeholder="Type: PROMOTE LIVE"
+                    />
+                  </div>
+                </div>
 
-            {/* Current Risk Status */}
-            <div className="bg-gray-900 rounded-lg p-6">
-              <h3 className="text-lg font-bold mb-4">Current Risk Status</h3>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="bg-gray-800 rounded-lg p-4">
-                  <div className="text-xs text-gray-400">Daily P&L</div>
-                  <div className="text-xl font-bold text-green-400">+$234.50</div>
-                  <div className="text-xs text-gray-500">+2.35%</div>
+                <details className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-4">
+                  <summary className="cursor-pointer list-none text-sm font-semibold text-cyan-100">Advanced Lab Controls</summary>
+                  <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <button className="rounded-lg border border-cyan-300/30 bg-cyan-500/20 hover:bg-cyan-500/30 px-3 py-2 text-sm" onClick={runHelixEvaluateSample}>Run Layered Evaluate Sample</button>
+                    <button className="rounded-lg border border-sky-300/30 bg-sky-500/20 hover:bg-sky-500/30 px-3 py-2 text-sm" onClick={runHelixEvaluateLive}>Run Layered Evaluate LIVE</button>
+                    <button
+                      className="rounded-lg border border-red-300/30 bg-red-500/20 hover:bg-red-500/30 px-3 py-2 text-sm disabled:opacity-50"
+                      onClick={promoteLivePlanToTradeSignal}
+                      disabled={!helixEvalOutput?.response?.plan || helixEvalOutput?.mode !== 'live'}
+                    >
+                      Promote LIVE Plan → Executable Signal
+                    </button>
+                    <button className="rounded-lg border border-purple-300/30 bg-purple-500/20 hover:bg-purple-500/30 px-3 py-2 text-sm" onClick={runDarwinSample}>Run Darwin Weights Sample</button>
+                    <button className="rounded-lg border border-amber-300/30 bg-amber-500/20 hover:bg-amber-500/30 px-3 py-2 text-sm" onClick={runPromptExperimentSample}>Run Prompt Experiment Sample</button>
+                    <button className="rounded-lg border border-emerald-300/30 bg-emerald-500/20 hover:bg-emerald-500/30 px-3 py-2 text-sm" onClick={runWalkForwardSample}>Run Walk-Forward Sample</button>
+                    <button className="rounded-lg border border-fuchsia-300/30 bg-fuchsia-500/20 hover:bg-fuchsia-500/30 px-3 py-2 text-sm" onClick={runExperimentGovernanceSamples}>Run Experiment Governance Samples</button>
+                    <button className="rounded-lg border border-indigo-300/30 bg-indigo-500/20 hover:bg-indigo-500/30 px-3 py-2 text-sm" onClick={runExperimentGovernanceLive}>Run Experiment Governance LIVE Auto-Feed</button>
+                  </div>
+                  <div className="mt-3 text-xs text-slate-400">These controls call backend learning endpoints and expose raw JSON below. Normal auto-trading does not require touching this section.</div>
+                </details>
+
+                <div className="mt-3 grid grid-cols-1 gap-3">
+                  {helixEvalOutput && <JsonBlock title="Evaluate Output" value={helixEvalOutput} />}
+                  {darwinOutput && <JsonBlock title="Darwin Output" value={darwinOutput} />}
+                  {experimentsOutput && <JsonBlock title="Prompt Experiment Output" value={experimentsOutput} />}
+                  {walkForwardOutput && <JsonBlock title="Walk-Forward Output" value={walkForwardOutput} />}
+                  {contractValidateOutput && <JsonBlock title="Contract Validate Output" value={contractValidateOutput} />}
+                  {promotionEvalOutput && <JsonBlock title="Promotion Evaluate Output" value={promotionEvalOutput} />}
+                  {leaderboardOutput && <JsonBlock title="Leaderboard Output" value={leaderboardOutput} />}
+                  {runsOutput && <JsonBlock title="Experiment Runs Output" value={runsOutput} />}
+                  {liveGovernanceOutput && <JsonBlock title="Live Governance Auto-Feed Output" value={liveGovernanceOutput} />}
+                  <div className="rounded-lg border border-white/10 bg-slate-950/70 p-3">
+                    <div className="text-xs text-slate-400 mb-2">Execution Audit Log (latest 30)</div>
+                    {executionAudit.length === 0 ? (
+                      <div className="text-xs text-slate-500">No promotion events yet.</div>
+                    ) : (
+                      <div className="space-y-2 max-h-64 overflow-auto">
+                        {executionAudit.map((row, idx) => (
+                          <div key={idx} className="text-xs text-slate-200 border border-white/5 rounded p-2">
+                            <div className="text-slate-400">{row.ts} • {row.type}</div>
+                            <pre className="whitespace-pre-wrap">{JSON.stringify(row, null, 2)}</pre>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className="rounded-lg border border-white/10 bg-slate-950/70 p-3">
+                    <div className="text-xs text-slate-400 mb-2">Settings Audit Log (latest 30)</div>
+                    {settingsAudit.length === 0 ? (
+                      <div className="text-xs text-slate-500">No settings changes recorded yet.</div>
+                    ) : (
+                      <div className="space-y-2 max-h-64 overflow-auto">
+                        {settingsAudit.map((row, idx) => (
+                          <div key={idx} className="text-xs text-slate-200 border border-white/5 rounded p-2">
+                            <div className="text-slate-400">{row.ts} • {row.summary || row.type}</div>
+                            <pre className="whitespace-pre-wrap">{JSON.stringify(row, null, 2)}</pre>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div className="bg-gray-800 rounded-lg p-4">
-                  <div className="text-xs text-gray-400">Max Drawdown</div>
-                  <div className="text-xl font-bold text-red-400">-$87.20</div>
-                  <div className="text-xs text-gray-500">-0.87%</div>
-                </div>
-                <div className="bg-gray-800 rounded-lg p-4">
-                  <div className="text-xs text-gray-400">Total Positions</div>
-                  <div className="text-xl font-bold text-white">12</div>
-                  <div className="text-xs text-gray-500">Across 6 models</div>
-                </div>
-                <div className="bg-gray-800 rounded-lg p-4">
-                  <div className="text-xs text-gray-400">Risk Level</div>
-                  <div className="text-xl font-bold text-yellow-400">MEDIUM</div>
-                  <div className="text-xs text-gray-500">Within limits</div>
-                </div>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </main>
+              </Panel>
+              )}
+            </main>
+          </div>
+
+          <footer className="mt-8 border-t border-white/10 pt-5 text-center text-sm text-slate-400">
+            <p>© 2024 Helix.One - All rights reserved.</p>
+            <p className="mt-1">Powered by the Helix Engine • Real-time algorithmic trading</p>
+            <p className="mt-1">Built by Darren Headley</p>
+          </footer>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function Panel({ title, subtitle, className = '', children }: { title: string; subtitle?: string; className?: string; children: React.ReactNode }) {
+  return (
+    <section className={`helix-settings-panel relative overflow-hidden rounded-3xl border border-white/10 bg-slate-950/65 p-4 shadow-2xl shadow-black/35 backdrop-blur-xl ${className}`}>
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-300/50 to-transparent" />
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-black tracking-tight text-slate-50" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{title}</h2>
+          {subtitle ? <div className="mt-1 max-w-3xl text-xs leading-relaxed text-slate-400">{subtitle}</div> : null}
+        </div>
+        <span className="mt-2 h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_18px_rgba(103,232,249,0.85)]" />
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function SectionIntro({ eyebrow, title, text, compact = false }: { eyebrow: string; title: string; text: string; compact?: boolean }) {
+  return (
+    <div className={`${compact ? 'mb-3' : 'mb-4'} rounded-2xl border border-white/10 bg-white/[0.035] p-3`}>
+      <div className="text-[10px] uppercase tracking-[0.24em] text-cyan-200/70">{eyebrow}</div>
+      <div className="mt-1 text-sm font-black text-slate-100">{title}</div>
+      <div className="mt-1 text-xs leading-relaxed text-slate-400">{text}</div>
+    </div>
+  );
+}
+
+function StatusTile({ label, value, detail, tone }: { label: string; value: string; detail: string; tone: string }) {
+  const toneClass = tone === 'green'
+    ? 'border-emerald-300/25 bg-emerald-400/[0.07] text-emerald-200'
+    : tone === 'red'
+      ? 'border-red-300/25 bg-red-400/[0.07] text-red-200'
+      : tone === 'amber'
+        ? 'border-amber-300/25 bg-amber-400/[0.07] text-amber-200'
+        : 'border-cyan-300/25 bg-cyan-400/[0.07] text-cyan-200';
+  return (
+    <div className={`helix-settings-tile rounded-2xl border p-3 ${toneClass}`}>
+      <div className="text-[10px] uppercase tracking-[0.2em] opacity-70">{label}</div>
+      <div className="mt-1 truncate text-lg font-black text-slate-50">{value}</div>
+      <div className="mt-1 truncate text-[11px] text-slate-400">{detail}</div>
+    </div>
+  );
+}
+
+function CommandFocusCard({ label, value, detail, tone }: { label: string; value: string; detail: string; tone: 'green' | 'amber' | 'red' | 'cyan' }) {
+  const toneClass = tone === 'green'
+    ? 'border-emerald-300/20 bg-emerald-400/[0.07]'
+    : tone === 'amber'
+      ? 'border-amber-300/20 bg-amber-400/[0.07]'
+      : tone === 'red'
+        ? 'border-red-300/20 bg-red-400/[0.07]'
+        : 'border-cyan-300/20 bg-cyan-400/[0.07]';
+  return (
+    <div className={`helix-settings-focus-card rounded-2xl border px-4 py-4 ${toneClass}`}>
+      <div className="text-[10px] uppercase tracking-[0.24em] text-slate-400">{label}</div>
+      <div className="mt-2 text-xl font-black text-slate-50" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{value}</div>
+      <div className="mt-2 text-sm leading-6 text-slate-300">{detail}</div>
+    </div>
+  );
+}
+
+function TextField({ label, value, onChange, type = 'text', placeholder = '', status }: { label: string; value: string; onChange: (v: string) => void; type?: string; placeholder?: string; status?: 'Saved' | 'Not set' | 'Unknown' }) {
+  const statusTone = status === 'Saved'
+    ? 'bg-emerald-500/20 text-emerald-200 border-emerald-400/40'
+    : status === 'Unknown'
+      ? 'bg-slate-500/20 text-slate-200 border-slate-400/40'
+      : 'bg-amber-500/20 text-amber-200 border-amber-400/40';
+  return (
+    <label className="helix-settings-field mb-2 block rounded-2xl border border-white/10 bg-black/20 p-3 transition focus-within:border-cyan-300/40 focus-within:bg-cyan-400/[0.03]">
+      <div className="mb-2 flex items-center justify-between text-sm text-slate-300">
+        <span className="font-semibold">{label}</span>
+        {status && <span className={`text-[10px] rounded-full border px-2 py-0.5 ${statusTone}`}>{status}</span>}
+      </div>
+      <input type={type} autoComplete="off" placeholder={placeholder} className="w-full rounded-xl border border-white/15 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-cyan-300/50" value={value} onChange={(e) => onChange(e.target.value)} />
+    </label>
+  );
+}
+
+function NumberField({ label, value, setValue, step = '1' }: { label: string; value: number; setValue: (v: number) => void; step?: string }) {
+  return (
+    <label className="helix-settings-field mb-2 block rounded-2xl border border-white/10 bg-black/20 p-3 transition focus-within:border-cyan-300/40 focus-within:bg-cyan-400/[0.03]">
+      <div className="mb-2 text-sm font-semibold text-slate-300">{label}</div>
+      <input type="number" step={step} className="w-full rounded-xl border border-white/15 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-300/50" value={value} onChange={(e) => setValue(Number(e.target.value))} />
+    </label>
+  );
+}
+
+function SelectField({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (v: string) => void }) {
+  return (
+    <label className="helix-settings-field mb-2 block rounded-2xl border border-white/10 bg-black/20 p-3 transition focus-within:border-cyan-300/40 focus-within:bg-cyan-400/[0.03]">
+      <div className="mb-2 text-sm font-semibold text-slate-300">{label}</div>
+      <select className="w-full rounded-xl border border-white/15 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-300/50" value={value} onChange={(e) => onChange(e.target.value)}>
+        {options.map((o) => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </label>
+  );
+}
+
+function Toggle({ label, checked, onChange, onLabel, offLabel }: { label: string; checked: boolean; onChange: (v: boolean) => void; onLabel: string; offLabel: string }) {
+  return (
+    <div className={`helix-settings-toggle flex items-center justify-between rounded-2xl border px-3 py-3 transition ${checked ? 'border-emerald-300/20 bg-emerald-400/[0.055]' : 'border-white/10 bg-white/[0.03]'}`}>
+      <span className="text-sm font-semibold text-slate-200">{label}</span>
+      <button
+        type="button"
+        onClick={() => onChange(!checked)}
+        className={`relative h-8 w-24 rounded-full border transition ${checked ? 'bg-emerald-500/30 border-emerald-400/60 shadow-[0_0_20px_rgba(52,211,153,0.18)]' : 'bg-slate-800/80 border-white/20'}`}
+      >
+        <span className={`absolute left-1 top-1 h-6 w-6 rounded-full bg-white transition ${checked ? 'translate-x-16' : 'translate-x-0'}`} />
+        <span className="absolute inset-0 flex items-center justify-center text-[11px] font-semibold text-slate-100">{checked ? onLabel : offLabel}</span>
+      </button>
+    </div>
+  );
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="helix-settings-tile rounded-2xl border border-white/10 bg-white/[0.035] px-3 py-3">
+      <div className="text-[10px] uppercase tracking-[0.2em] text-slate-500">{label}</div>
+      <div className="mt-1 text-sm font-black text-slate-100">{value}</div>
+    </div>
+  );
+}
+
+function ServiceRow({ name, state, meta }: { name: string; state: 'running' | 'down' | 'unknown'; meta: string }) {
+  const badge = state === 'running'
+    ? 'bg-emerald-500/30 text-emerald-200'
+    : state === 'down'
+      ? 'bg-red-500/30 text-red-200'
+      : 'bg-amber-500/30 text-amber-200';
+  const label = state === 'running' ? 'Running' : state === 'down' ? 'Down' : 'Unknown';
+  return (
+    <div className="helix-settings-tile mb-2 rounded-2xl border border-white/10 bg-white/[0.035] px-3 py-3">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-semibold text-slate-200">{name}</span>
+        <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${badge}`}>{label}</span>
+      </div>
+      <div className="text-xs text-slate-400 mt-1">{meta}</div>
+    </div>
+  );
+}
+
+function LearningMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="helix-settings-tile rounded-xl border border-white/10 bg-white/[0.035] p-3">
+      <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="mt-1 truncate text-sm font-black text-slate-100">{value}</div>
+    </div>
+  );
+}
+
+function TraderSummaryCard({ summary }: { summary: any }) {
+  const edgeTone = summary.expectedEdgeBps > 0 ? 'text-emerald-300' : 'text-red-300';
+  const actionTone = summary.actionNow.includes('TRADE') ? 'text-emerald-200' : 'text-amber-200';
+  return (
+    <div className="helix-settings-panel rounded-3xl border border-white/10 bg-slate-950/70 p-4">
+      <div className="text-xs text-slate-400 mb-2">Trader Summary (Human View)</div>
+      <div className={`text-sm font-semibold ${actionTone}`}>Action now: {summary.actionNow}</div>
+      <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+        <div className="text-slate-300">Confidence: <span className="text-slate-100">{summary.confidencePct || 0}%</span></div>
+        <div className="text-slate-300">Risk/trade: <span className="text-slate-100">${Number(summary.riskUsd || 0).toFixed(4)}</span></div>
+        <div className="text-slate-300">Position size: <span className="text-slate-100">${Number(summary.positionUsd || 0).toFixed(4)}</span></div>
+        <div className="text-slate-300">R multiple: <span className="text-slate-100">{Number(summary.rMultiple || 0).toFixed(2)}</span></div>
+      </div>
+      <div className={`mt-2 text-xs ${edgeTone}`}>Expected edge: {Number(summary.expectedEdgeBps || 0).toFixed(2)} bps</div>
+      <div className="mt-2 text-xs text-slate-300">Execution rationale: {(summary.rationale || []).join(', ') || 'n/a'}</div>
+      <div className="mt-2 text-xs text-slate-300">Promotion decision: <span className="text-slate-100 uppercase">{summary.promotionDecision}</span></div>
+      <div className="mt-1 text-xs text-slate-400">Promotion reasons: {(summary.promotionReasons || []).join(', ') || 'No governance run yet'}</div>
+    </div>
+  );
+}
+
+function EvidenceCard({ evidenceCount, evidenceTarget, marketRegime }: { evidenceCount: number; evidenceTarget: number; marketRegime: string }) {
+  const pct = evidenceTarget > 0 ? Math.min(100, Math.round((evidenceCount / evidenceTarget) * 100)) : 0;
+  const ready = evidenceCount >= evidenceTarget;
+  return (
+    <div className="helix-settings-panel rounded-3xl border border-white/10 bg-slate-950/70 p-4">
+      <div className="text-xs text-slate-400 mb-2">Governance Readiness</div>
+      <div className={`text-sm font-semibold ${ready ? 'text-emerald-200' : 'text-amber-200'}`}>
+        {ready ? 'Evidence threshold met' : 'Not enough evidence yet'} ({evidenceCount}/{evidenceTarget} closed trades)
+      </div>
+      <div className="mt-2 h-2 w-full bg-slate-800 rounded">
+        <div className={`h-2 rounded ${ready ? 'bg-emerald-400' : 'bg-amber-400'}`} style={{ width: `${pct}%` }} />
+      </div>
+      <div className="mt-2 text-xs text-slate-300">Current regime: <span className="text-slate-100 uppercase">{marketRegime}</span></div>
+      {!ready && <div className="mt-2 text-xs text-slate-400">Next step: collect more closed trades or import historical trade data before trusting promotion decisions.</div>}
+    </div>
+  );
+}
+
+function money(v: number) {
+  return `$${v.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+}
+
+function JsonBlock({ title, value }: { title: string; value: any }) {
+  return (
+    <div className="helix-settings-panel rounded-3xl border border-white/10 bg-slate-950/70 p-4">
+      <div className="text-xs text-slate-400 mb-2">{title}</div>
+      <pre className="text-xs text-slate-200 overflow-auto max-h-64 whitespace-pre-wrap">{JSON.stringify(value, null, 2)}</pre>
     </div>
   );
 }

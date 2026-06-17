@@ -1,1550 +1,4180 @@
-import { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import LiveMarketState from '../src/components/LiveMarketState';
-import LivePerformanceChart from '../src/components/LivePerformanceChart';
+import Head from 'next/head';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Responsive, WidthProvider, type ResponsiveLayouts } from 'react-grid-layout/legacy';
+import { fetchWithTimeout, getTradingApiBaseUrl } from '../src/utils/api';
 
-export default function Home() {
-  // Initial model data
-  const initialModels = [
-    { id: 1, name: 'DeepSeek Chat V3.1', currentBalance: 10907.00, roi: 9.07, drawdown: -1.2, winRate: 0, avgLeverage: 2.1, totalTrades: 3, status: 'active', strategy: 'momentum', icon: '🐋', color: '#3B82F6', fees: 58.51, biggestWin: -4.19, biggestLoss: -348.33, sharpe: 0.030, activePositions: ['XRP', 'DOGE', 'BTC', 'ETH', 'SOL'] },
-    { id: 2, name: 'Grok-4', currentBalance: 10283.00, roi: 2.83, drawdown: -2.1, winRate: 0, avgLeverage: 1.4, totalTrades: 0, status: 'active', strategy: 'hybrid', icon: '⚡', color: '#EF4444', fees: 0.00, biggestWin: 0.00, biggestLoss: 0.00, sharpe: 0.014, activePositions: [] },
-    { id: 3, name: 'Claude Sonnet 4.5', currentBalance: 10083.00, roi: 0.83, drawdown: -3.5, winRate: 0, avgLeverage: 2.8, totalTrades: 3, status: 'active', strategy: 'mean_reversion', icon: '⭐', color: '#F59E0B', fees: 42.63, biggestWin: -35.23, biggestLoss: -88.38, sharpe: 0.025, activePositions: ['BTC', 'ETH'] },
-    { id: 4, name: 'GPT 5', currentBalance: 9460.00, roi: -5.40, drawdown: -1.8, winRate: 0, avgLeverage: 1.8, totalTrades: 2, status: 'active', strategy: 'momentum', icon: '🅖', color: '#8B5CF6', fees: 10.10, biggestWin: -27.57, biggestLoss: -59.04, sharpe: -0.023, activePositions: ['DOGE'] },
-    { id: 5, name: 'Qwen3 Max', currentBalance: 9442.00, roi: -5.58, drawdown: -2.7, winRate: 0, avgLeverage: 3.1, totalTrades: 1, status: 'active', strategy: 'momentum', icon: '🟣', color: '#A855F7', fees: 44.62, biggestWin: -517.77, biggestLoss: -517.77, sharpe: -0.006, activePositions: [] },
-    { id: 6, name: 'Gemini 2.5 Pro', currentBalance: 9362.00, roi: -6.38, drawdown: -6.2, winRate: 60, avgLeverage: 2.2, totalTrades: 5, status: 'active', strategy: 'mean_reversion', icon: '💎', color: '#10B981', fees: 106.46, biggestWin: 329.35, biggestLoss: -731.43, sharpe: -0.026, activePositions: ['XRP', 'SOL'] }
-  ];
-  
-  // Load models from localStorage or use initial data
-  const loadModelsFromStorage = () => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('helix-models');
-      if (saved) {
-        try {
-          const parsed = JSON.parse(saved);
-          console.log('📥 Loaded saved model data from localStorage');
-          return parsed;
-        } catch (e) {
-          console.error('Error parsing saved models:', e);
-        }
-      }
-    }
-    console.log('🆕 Using initial model data');
-    return initialModels;
+type TradingStatus = {
+  connected: boolean;
+  enabled: boolean;
+  accounts: number;
+  engineConnected?: boolean;
+  globalTradingEnabled?: boolean;
+  portfolioTradingEnabled?: boolean;
+  activePortfolios?: Array<{
+    modelId: number;
+    modelName: string;
+    allocatedBalance?: number;
+    currentBalance: number;
+    realizedPnL?: number;
+    totalPnL?: number;
+    equitySource?: 'exchange' | 'journal' | 'allocation';
+    positionsCount: number;
+    positions?: Array<{
+      symbol: string;
+      side: 'LONG' | 'SHORT';
+      size: number;
+      entryPrice: number;
+      currentPrice: number;
+      pnl: number;
+      leverage: number;
+      stopLoss?: number;
+      takeProfit?: number;
+      runnerMode?: boolean;
+      partialTakenPct?: number;
+      bestPrice?: number;
+      openedAt: string;
+    }>;
+    tradingEnabled: boolean;
+    killSwitchTriggered?: boolean;
+    cooldownUntil?: string | null;
+    tradesToday?: number;
+    dailyPnl?: number;
+    consecutiveLosses?: number;
+  }>;
+};
+
+type SettingsPayload = {
+  testnet?: boolean;
+  hasTelegramBotToken?: boolean;
+  modelAccounts?: Array<{
+    modelId: number;
+    modelName: string;
+    tradingEnabled: boolean;
+    balance: number;
+  }>;
+  notificationSettings?: {
+    pushEnabled?: boolean;
+    emailEnabled?: boolean;
+    telegramEnabled?: boolean;
+    email?: string;
+    telegramUserId?: string;
+    telegramPairingCode?: string;
+    telegramMinSeverity?: 'info' | 'warning' | 'critical';
+    telegramRateLimitSec?: number;
   };
-  
-  const [models, setModels] = useState<any[]>(loadModelsFromStorage());
-  const [loading, setLoading] = useState(true);
-  const [connected, setConnected] = useState(true);
-  const [cryptoPrices, setCryptoPrices] = useState([
-    { symbol: 'BTC', name: 'Bitcoin', price: 106870, change: 0.19, volume: 39.6, high: 108000, low: 105500 },
-    { symbol: 'ETH', name: 'Ethereum', price: 3300, change: -0.5, volume: 15.2, high: 3350, low: 3280 },
-    { symbol: 'SOL', name: 'Solana', price: 220, change: 2.1, volume: 4.2, high: 223, low: 218 },
-    { symbol: 'XRP', name: 'Ripple', price: 3.15, change: 1.8, volume: 8.5, high: 3.20, low: 3.10 },
-    { symbol: 'DOGE', name: 'Dogecoin', price: 0.38, change: 0.5, volume: 1.2, high: 0.39, low: 0.37 },
-    { symbol: 'BNB', name: 'Binance', price: 695, change: 1.2, volume: 2.1, high: 700, low: 690 }
-  ]);
-  const [selectedModel, setSelectedModel] = useState(null);
-  const [activeTab, setActiveTab] = useState('LEADERBOARD');
-  const [subTab, setSubTab] = useState('LIVE TRADES');
-  const [viewMode, setViewMode] = useState('$'); // $ or %
-  const [detailedView, setDetailedView] = useState(false);
-  const [chatMessages, setChatMessages] = useState<any[]>([]);
-  const [chatInput, setChatInput] = useState('');
-  const [selectedChatModel, setSelectedChatModel] = useState<any>(null);
-  const [showMarketData, setShowMarketData] = useState(false);
-  const [selectedPositionModel, setSelectedPositionModel] = useState<any>(null);
-  const [positionFilter, setPositionFilter] = useState<'all' | 'open' | 'closed'>('open');
-
-  useEffect(() => {
-    console.log('useEffect running, fetching models...');
-    fetchModels();
-    fetchRealCryptoPrices(); // Initial fetch
-    
-    // Fetch real crypto prices every 10 seconds
-    const priceInterval = setInterval(() => {
-      fetchRealCryptoPrices();
-      updateModelPortfolios(); // Update model portfolios with real-time data
-    }, 10000); // Update every 10 seconds with real API data
-    
-    // Force a re-render to ensure leaderboard updates
-    const refreshInterval = setInterval(() => {
-      setModels(prevModels => [...prevModels]);
-    }, 5000); // Refresh every 5 seconds
-    
-    return () => {
-      clearInterval(priceInterval);
-      clearInterval(refreshInterval);
-    };
-  }, []);
-
-  const fetchRealCryptoPrices = async () => {
-    try {
-      console.log('🔄 Fetching live crypto prices...');
-      
-      // Using CoinGecko API (free, no API key required)
-      const coins = 'bitcoin,ethereum,solana,ripple,dogecoin,binancecoin';
-      
-      // Fetch comprehensive market data (includes high/low/volume)
-      const marketResponse = await fetch(
-        `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${coins}&order=market_cap_desc&sparkline=false&price_change_percentage=24h`
-      );
-      
-      if (!marketResponse.ok) {
-        console.error('❌ CoinGecko API error:', marketResponse.status);
-        return;
-      }
-      
-      const marketData = await marketResponse.json();
-      console.log('✅ Live data fetched for', marketData.length, 'coins at', new Date().toLocaleTimeString());
-      
-      // Map the market data to our format
-      const btcData = marketData.find((c: any) => c.id === 'bitcoin');
-      const ethData = marketData.find((c: any) => c.id === 'ethereum');
-      const solData = marketData.find((c: any) => c.id === 'solana');
-      const xrpData = marketData.find((c: any) => c.id === 'ripple');
-      const dogeData = marketData.find((c: any) => c.id === 'dogecoin');
-      const bnbData = marketData.find((c: any) => c.id === 'binancecoin');
-      
-      setCryptoPrices([
-        {
-          symbol: 'BTC',
-          name: 'Bitcoin',
-          price: btcData?.current_price || 0,
-          change: btcData?.price_change_percentage_24h || 0,
-          volume: (btcData?.total_volume || 0) / 1000000000,
-          high: btcData?.high_24h || 0,
-          low: btcData?.low_24h || 0
-        },
-        {
-          symbol: 'ETH',
-          name: 'Ethereum',
-          price: ethData?.current_price || 0,
-          change: ethData?.price_change_percentage_24h || 0,
-          volume: (ethData?.total_volume || 0) / 1000000000,
-          high: ethData?.high_24h || 0,
-          low: ethData?.low_24h || 0
-        },
-        {
-          symbol: 'SOL',
-          name: 'Solana',
-          price: solData?.current_price || 0,
-          change: solData?.price_change_percentage_24h || 0,
-          volume: (solData?.total_volume || 0) / 1000000000,
-          high: solData?.high_24h || 0,
-          low: solData?.low_24h || 0
-        },
-        {
-          symbol: 'XRP',
-          name: 'Ripple',
-          price: xrpData?.current_price || 0,
-          change: xrpData?.price_change_percentage_24h || 0,
-          volume: (xrpData?.total_volume || 0) / 1000000000,
-          high: xrpData?.high_24h || 0,
-          low: xrpData?.low_24h || 0
-        },
-        {
-          symbol: 'DOGE',
-          name: 'Dogecoin',
-          price: dogeData?.current_price || 0,
-          change: dogeData?.price_change_percentage_24h || 0,
-          volume: (dogeData?.total_volume || 0) / 1000000000,
-          high: dogeData?.high_24h || 0,
-          low: dogeData?.low_24h || 0
-        },
-        {
-          symbol: 'BNB',
-          name: 'Binance Coin',
-          price: bnbData?.current_price || 0,
-          change: bnbData?.price_change_percentage_24h || 0,
-          volume: (bnbData?.total_volume || 0) / 1000000000,
-          high: bnbData?.high_24h || 0,
-          low: bnbData?.low_24h || 0
-        }
-      ]);
-      
-      setConnected(true); // Set to LIVE after successful API fetch
-      console.log('💹 Crypto prices updated successfully!');
-    } catch (error) {
-      console.error('Error fetching real crypto prices:', error);
-      // Keep existing prices on error
-    }
+  riskSettings?: {
+    maxDailyLossPct?: number;
+    maxPositionSizePct?: number;
+    maxLeverage?: number;
+    minLeverage?: number;
+    maxOpenPositions?: number;
+    killSwitchDrawdownPct?: number;
+    cooldownMinutes?: number;
+    maxTradesPerDay?: number;
+    maxConsecutiveLosses?: number;
+    minConfidence?: number;
+    paperTrading?: boolean;
+    breakEvenBufferPct?: number;
+    breakEvenFeeBps?: number;
+    breakEvenSlippageBps?: number;
+    letWinnersRunEnabled?: boolean;
+    runnerActivationR?: number;
+    runnerPartialTakeProfitPct?: number;
+    runnerTrailPct?: number;
   };
+};
 
-  // Save models to localStorage whenever they change
-  useEffect(() => {
-    if (typeof window !== 'undefined' && models.length > 0) {
-      localStorage.setItem('helix-models', JSON.stringify(models));
-      console.log('💾 Saved model data to localStorage');
-    }
-  }, [models]);
-
-  // Update model portfolios with real-time market data
-  const updateModelPortfolios = () => {
-    console.log('📊 Updating model portfolios...', new Date().toLocaleTimeString());
-    
-    setModels(prevModels => 
-      prevModels.map(model => {
-        // Simulate real-time portfolio changes based on market movements
-        const marketVolatility = Math.random() * 0.04 - 0.02; // -2% to +2% for more visible changes
-        const newBalance = model.currentBalance * (1 + marketVolatility);
-        const newROI = ((newBalance - 10000) / 10000) * 100;
-        
-        console.log(`  ${model.name}: $${model.currentBalance.toFixed(2)} → $${newBalance.toFixed(2)}`);
-        
-        // Update active positions with current market prices
-        const updatedActivePositions = (model.activePositions || []).map((asset: string) => {
-          const cryptoData = cryptoPrices.find(c => c.symbol === asset);
-          return cryptoData ? {
-            asset,
-            currentPrice: cryptoData.price,
-            change: cryptoData.change
-          } : asset;
-        });
-
-        return {
-          ...model,
-          currentBalance: newBalance,
-          roi: newROI,
-          activePositions: updatedActivePositions || [],
-          lastUpdated: new Date()
-        };
-      })
-    );
+type BriefingPayload = {
+  generatedAt?: string;
+  deepseekDecision?: DeepSeekDecision;
+  account?: {
+    balance?: number;
+    availableMargin?: number;
+    previousDayPnl?: number;
+    consecutiveLosses?: number;
   };
-
-  const fetchModels = async () => {
-    // Temporarily use fallback data to test the UI
-    console.log('Using fallback data for testing...');
-    setModels([
-      { id: 1, name: 'DEEPSEEK CHAT V3.1', currentBalance: 10385.25, roi: 3.85, drawdown: -1.2, winRate: 68.5, avgLeverage: 2.1, totalTrades: 127, status: 'active', strategy: 'momentum', icon: '🧠', color: '#3B82F6' },
-      { id: 2, name: 'Claude 4.5 Sonnet', currentBalance: 9985.73, roi: -0.14, drawdown: -2.1, winRate: 72.3, avgLeverage: 1.4, totalTrades: 94, status: 'active', strategy: 'mean_reversion', icon: '⭐', color: '#F59E0B' },
-      { id: 3, name: 'Gemini 2.5 Pro', currentBalance: 9859.75, roi: -1.40, drawdown: -3.5, winRate: 65.2, avgLeverage: 2.8, totalTrades: 156, status: 'active', strategy: 'hybrid', icon: '💎', color: '#10B981' },
-      { id: 4, name: 'GPT 5', currentBalance: 10014.69, roi: 0.15, drawdown: -1.8, winRate: 71.0, avgLeverage: 1.8, totalTrades: 82, status: 'active', strategy: 'momentum', icon: '🅖', color: '#8B5CF6' },
-      { id: 5, name: 'Grok 4', currentBalance: 9880.02, roi: -1.20, drawdown: -2.7, winRate: 69.8, avgLeverage: 2.2, totalTrades: 113, status: 'active', strategy: 'hybrid', icon: '⚡', color: '#EF4444' },
-      { id: 6, name: 'Qwen 3 Max', currentBalance: 9437.07, roi: -5.63, drawdown: -6.2, winRate: 58.2, avgLeverage: 3.1, totalTrades: 89, status: 'active', strategy: 'momentum', icon: '🟣', color: '#A855F7' },
-      { id: 7, name: 'BTC BUY&HOLD', currentBalance: 9992.41, roi: -0.08, drawdown: -0.5, winRate: 100.0, avgLeverage: 1.0, totalTrades: 1, status: 'active', strategy: 'buy_hold', icon: '₿', color: '#F59E0B' }
-    ]);
-    setConnected(true);
-    setLoading(false);
+  market?: {
+    regime?: string;
+    regimeConfidence?: number;
+    liquidityState?: string;
+    volatilityState?: string;
+    funding?: Array<{ symbol: string; fundingRate: number; markPrice: number }>;
+    openInterest?: Array<{ symbol: string; openInterestUsd: number }>;
   };
+  news?: Array<{ source: string; title: string }>;
+  recommendedRiskLevel?: string;
+  notes?: string[];
+};
 
-  const totalAccountValue = models.reduce((sum, m: any) => sum + m.currentBalance, 0);
-  
-  console.log('Models state:', models);
-  console.log('Total account value:', totalAccountValue);
+type RiskContext = {
+  riskFlags?: string[];
+  marketRegime?: string;
+  regimeConfidence?: number;
+  liquidityState?: 'good' | 'acceptable' | 'poor';
+  volatilityState?: 'low' | 'normal' | 'high';
+};
 
-  // Market data for all coins
-  const marketData = {
-    BTC: {
-      name: 'Bitcoin',
-      symbol: 'BTC',
-      price: 95200,
-      change24h: 2.4,
-      high24h: 96100,
-      low24h: 93800,
-      volume24h: 28500000000,
-      marketCap: 1865000000000,
-      circulatingSupply: 19600000,
-      maxSupply: 21000000,
-      dominance: 52.3,
-      sentiment: 'BULLISH',
-      rsi: 62,
-      macd: 'BUY',
-      ma50: 92500,
-      ma200: 87000,
-      support: 93000,
-      resistance: 96500
-    },
-    ETH: {
-      name: 'Ethereum',
-      symbol: 'ETH',
-      price: 3495,
-      change24h: -1.2,
-      high24h: 3580,
-      low24h: 3480,
-      volume24h: 15200000000,
-      marketCap: 420000000000,
-      circulatingSupply: 120200000,
-      maxSupply: null,
-      dominance: 18.7,
-      sentiment: 'NEUTRAL',
-      rsi: 48,
-      macd: 'SELL',
-      ma50: 3550,
-      ma200: 3200,
-      support: 3400,
-      resistance: 3600
-    },
-    SOL: {
-      name: 'Solana',
-      symbol: 'SOL',
-      price: 181,
-      change24h: 3.8,
-      high24h: 185,
-      low24h: 176,
-      volume24h: 3800000000,
-      marketCap: 78000000000,
-      circulatingSupply: 430000000,
-      maxSupply: null,
-      dominance: 3.5,
-      sentiment: 'BULLISH',
-      rsi: 68,
-      macd: 'BUY',
-      ma50: 175,
-      ma200: 145,
-      support: 175,
-      resistance: 185
-    },
-    XRP: {
-      name: 'Ripple',
-      symbol: 'XRP',
-      price: 0.51,
-      change24h: 6.2,
-      high24h: 0.53,
-      low24h: 0.48,
-      volume24h: 1200000000,
-      marketCap: 27000000000,
-      circulatingSupply: 53000000000,
-      maxSupply: 100000000000,
-      dominance: 1.2,
-      sentiment: 'VERY BULLISH',
-      rsi: 72,
-      macd: 'BUY',
-      ma50: 0.49,
-      ma200: 0.42,
-      support: 0.48,
-      resistance: 0.55
-    },
-    DOGE: {
-      name: 'Dogecoin',
-      symbol: 'DOGE',
-      price: 0.35,
-      change24h: -2.1,
-      high24h: 0.37,
-      low24h: 0.34,
-      volume24h: 890000000,
-      marketCap: 49000000000,
-      circulatingSupply: 142000000000,
-      maxSupply: null,
-      dominance: 2.2,
-      sentiment: 'BEARISH',
-      rsi: 42,
-      macd: 'SELL',
-      ma50: 0.36,
-      ma200: 0.32,
-      support: 0.33,
-      resistance: 0.37
-    },
-    BNB: {
-      name: 'Binance Coin',
-      symbol: 'BNB',
-      price: 602,
-      change24h: 1.8,
-      high24h: 610,
-      low24h: 595,
-      volume24h: 1500000000,
-      marketCap: 90000000000,
-      circulatingSupply: 149000000,
-      maxSupply: 200000000,
-      dominance: 4.0,
-      sentiment: 'BULLISH',
-      rsi: 58,
-      macd: 'BUY',
-      ma50: 590,
-      ma200: 550,
-      support: 590,
-      resistance: 620
-    }
+type JournalEntry = {
+  ts: string;
+  type: string;
+  symbol?: string;
+  side?: 'BUY' | 'SELL' | 'LONG' | 'SHORT' | null;
+  entry?: number;
+  qty?: number;
+  stopLoss?: number;
+  takeProfit?: number;
+  pnl?: number;
+  decision?: string;
+  confidence?: number;
+  reasons?: string[];
+  riskFlags?: string[];
+  gateResult?: string;
+  provider?: string;
+};
+
+type JournalReview = {
+  tradeCount?: number;
+  winRate?: number;
+  avgPnl?: number;
+  expectancy?: number;
+  netPnl?: number;
+  grossWin?: number;
+  grossLoss?: number;
+  bestTrade?: number;
+  worstTrade?: number;
+  maxDrawdownApprox?: number;
+  profitFactor?: number;
+  maxWinStreak?: number;
+  maxLossStreak?: number;
+};
+
+type JournalPayload = {
+  entries?: JournalEntry[];
+  review?: JournalReview;
+  executionMode?: 'paper' | 'live';
+  policy?: {
+    minLeverage?: number;
+    maxLeverage?: number;
+    maxOpenPositions?: number;
+    maxTradesPerDay?: number;
+    maxConsecutiveLosses?: number;
+    minConfidence?: number;
   };
+};
 
-  // Generate comprehensive trading history for each model
-  const generateModelPositions = (model: any) => {
-    // Open positions
-    const openPositions = [
-      { id: 1, asset: 'BTC', type: 'LONG', entry: 104500, current: 106870, size: 0.5, pnl: 1185, entryTime: '2024-10-18 08:23:15', exitTime: null, exitCondition: 'Target: $110,000 | Stop: $103,000', status: 'OPEN', leverage: 3 },
-      { id: 2, asset: 'ETH', type: 'SHORT', entry: 3350, current: 3300, size: 2.5, pnl: 125, entryTime: '2024-10-18 09:45:32', exitTime: null, exitCondition: 'Target: $3,200 | Stop: $3,450', status: 'OPEN', leverage: 2 },
-      { id: 3, asset: 'SOL', type: 'LONG', entry: 215, current: 220, size: 20, pnl: 100, entryTime: '2024-10-18 10:12:08', exitTime: null, exitCondition: 'Target: $230 | Stop: $210', status: 'OPEN', leverage: 1 },
-      { id: 4, asset: 'XRP', type: 'LONG', entry: 3.05, current: 3.15, size: 1000, pnl: 100, entryTime: '2024-10-18 11:30:45', exitTime: null, exitCondition: 'Target: $3.30 | Stop: $2.95', status: 'OPEN', leverage: 1 },
-      { id: 5, asset: 'DOGE', type: 'SHORT', entry: 0.39, current: 0.38, size: 5000, pnl: 50, entryTime: '2024-10-18 12:05:22', exitTime: null, exitCondition: 'Target: $0.36 | Stop: $0.41', status: 'OPEN', leverage: 1 },
-      { id: 6, asset: 'BNB', type: 'LONG', entry: 685, current: 695, size: 5, pnl: 50, entryTime: '2024-10-18 13:18:56', exitTime: null, exitCondition: 'Target: $720 | Stop: $670', status: 'OPEN', leverage: 2 }
-    ];
-
-    // Closed positions - trading history
-    const closedPositions = [
-      { id: 101, asset: 'BTC', type: 'LONG', entry: 102300, exit: 104800, size: 0.6, pnl: 1500, entryTime: '2024-10-17 14:22:10', exitTime: '2024-10-17 18:45:33', duration: '4h 23m', outcome: 'WIN', exitReason: 'Target Hit', leverage: 3 },
-      { id: 102, asset: 'SOL', type: 'LONG', entry: 208, exit: 218, size: 25, pnl: 250, entryTime: '2024-10-17 09:15:44', exitTime: '2024-10-17 15:32:18', duration: '6h 17m', outcome: 'WIN', exitReason: 'Target Hit', leverage: 1 },
-      { id: 103, asset: 'ETH', type: 'SHORT', entry: 3420, exit: 3380, size: 3, pnl: 120, entryTime: '2024-10-17 11:08:29', exitTime: '2024-10-17 14:55:12', duration: '3h 47m', outcome: 'WIN', exitReason: 'Target Hit', leverage: 2 },
-      { id: 104, asset: 'DOGE', type: 'LONG', entry: 0.37, exit: 0.36, size: 6000, pnl: -60, entryTime: '2024-10-16 16:44:55', exitTime: '2024-10-16 17:23:18', duration: '38m', outcome: 'LOSS', exitReason: 'Stop Loss', leverage: 1 },
-      { id: 105, asset: 'XRP', type: 'LONG', entry: 2.95, exit: 3.08, size: 1200, pnl: 156, entryTime: '2024-10-16 08:30:22', exitTime: '2024-10-16 19:12:45', duration: '10h 42m', outcome: 'WIN', exitReason: 'Target Hit', leverage: 1 },
-      { id: 106, asset: 'BNB', type: 'SHORT', entry: 705, exit: 698, size: 4, pnl: 28, entryTime: '2024-10-16 13:25:37', exitTime: '2024-10-16 16:08:59', duration: '2h 43m', outcome: 'WIN', exitReason: 'Partial Target', leverage: 2 },
-      { id: 107, asset: 'BTC', type: 'SHORT', entry: 103500, exit: 104200, size: 0.4, pnl: -280, entryTime: '2024-10-15 10:18:44', exitTime: '2024-10-15 12:45:22', duration: '2h 27m', outcome: 'LOSS', exitReason: 'Stop Loss', leverage: 3 },
-      { id: 108, asset: 'SOL', type: 'LONG', entry: 202, exit: 211, size: 30, pnl: 270, entryTime: '2024-10-15 07:55:11', exitTime: '2024-10-15 20:33:47', duration: '12h 39m', outcome: 'WIN', exitReason: 'Target Hit', leverage: 1 },
-      { id: 109, asset: 'ETH', type: 'LONG', entry: 3280, exit: 3340, size: 2.8, pnl: 168, entryTime: '2024-10-14 15:42:29', exitTime: '2024-10-14 22:18:55', duration: '6h 36m', outcome: 'WIN', exitReason: 'Target Hit', leverage: 2 },
-      { id: 110, asset: 'DOGE', type: 'SHORT', entry: 0.38, exit: 0.375, size: 5500, pnl: 27.5, entryTime: '2024-10-14 11:22:33', exitTime: '2024-10-14 13:05:18', duration: '1h 43m', outcome: 'WIN', exitReason: 'Partial Target', leverage: 1 }
-    ];
-    
-    const totalDeployed = openPositions.reduce((sum, p) => sum + (p.entry * p.size), 0);
-    const totalPnL = openPositions.reduce((sum, p) => sum + p.pnl, 0);
-    const returnPercent = (totalPnL / totalDeployed) * 100;
-    
-    return { 
-      openPositions, 
-      closedPositions, 
-      totalDeployed, 
-      totalPnL, 
-      returnPercent,
-      allPositions: [...openPositions, ...closedPositions]
-    };
+type TradeCandidate = {
+  symbol: string;
+  bias: 'LONG' | 'SHORT' | 'WATCH';
+  setupType: string;
+  qualityScore: number;
+  confidence: number;
+  state: 'READY' | 'WATCH' | 'BLOCKED';
+  blocker?: string | null;
+  thesis?: string;
+  confirm?: string;
+  invalidate?: string;
+  expectedRR?: number | null;
+  entryZone?: { low: number | null; high: number | null };
+  stopLoss?: number | null;
+  targets?: number[];
+  scores?: {
+    structure?: number;
+    liquidity?: number;
+    momentum?: number;
+    volatility?: number;
+    riskReward?: number;
+    journalMemory?: number;
   };
+};
 
-  const handleModelChat = (model: any) => {
-    setSelectedChatModel(model);
-    const { openPositions, closedPositions, totalDeployed, totalPnL, returnPercent } = generateModelPositions(model);
-    const positions = openPositions;
-    
-    // Each model has its own $10K starting balance
-    const modelStartingBalance = 10000;
-    const modelCurrentBalance = model.currentBalance;
-    const modelTotalReturn = modelCurrentBalance - modelStartingBalance;
-    const modelReturnPercent = ((modelCurrentBalance - modelStartingBalance) / modelStartingBalance) * 100;
-    
-    // Get real-time market data for active positions
-    const realTimePositions = (model.activePositions || []).map((asset: string) => {
-      const cryptoData = cryptoPrices.find(c => c.symbol === asset);
-      return cryptoData ? {
-        asset,
-        currentPrice: cryptoData.price,
-        change: cryptoData.change,
-        volume: cryptoData.volume
-      } : {
-        asset,
-        currentPrice: 0,
-        change: 0,
-        volume: 0
+type TradeIntelligencePayload = {
+  success?: boolean;
+  generatedAt?: string;
+  topCandidate?: TradeCandidate | null;
+  candidates?: TradeCandidate[];
+  positionManagement?: Array<{
+    symbol: string;
+    side: string;
+    state: string;
+    holdScore: number;
+    reduceScore: number;
+    exitScore: number;
+    recommendation: string;
+    reason: string;
+    currentR?: number | null;
+    distanceToStopPct?: number | null;
+    distanceToTargetPct?: number | null;
+  }>;
+  portfolioBrief?: {
+    stance: string;
+    mainRisk: string;
+    bestOpportunity: string;
+    action: string;
+  };
+  journalMemory?: {
+    sampleSize: number;
+    bySymbol: Record<string, { closes: number; winRate: number; avgPnl: number; netPnl: number }>;
+  };
+};
+
+type OperatorIntelligencePayload = {
+  success?: boolean;
+  generatedAt?: string;
+  multiTimeframe?: {
+    alignmentScore: number;
+    marketBias: 'LONG' | 'SHORT' | 'MIXED' | 'NEUTRAL';
+    symbols: Array<{
+      symbol: string;
+      alignment: string;
+      score: number;
+      note: string;
+      timeframes: Array<{
+        interval: string;
+        bias: 'LONG' | 'SHORT' | 'NEUTRAL';
+        strength: number;
+        momentumPct: number;
+        emaTrendPct: number;
+        rsi14: number;
+      }>;
+    }>;
+  };
+  eventRisk?: {
+    level: 'low' | 'medium' | 'high';
+    score: number;
+    drivers: string[];
+    action: string;
+    headlines: Array<{ source: string; title: string; severity: 'low' | 'medium' | 'high' }>;
+  };
+  executionQuality?: {
+    grade: 'A' | 'B' | 'C' | 'D' | 'N/A';
+    sampleSize: number;
+    avgSlippageBps: number;
+    worstSlippageBps: number;
+    fillRatePct: number;
+    rejectedSignals: number;
+    notes: string[];
+  };
+  aiRulesAlignment?: {
+    score: number;
+    state: 'aligned' | 'watch' | 'diverging';
+    note: string;
+    disagreements: Array<{ ts: string; symbol: string; aiDecision: string; rulesDecision: string; reason: string }>;
+  };
+  operatorBrief?: {
+    headline: string;
+    priority: string;
+    improvement: string;
+    action: string;
+  };
+};
+
+type Coin = {
+  symbol: string;
+  price: number;
+  change: number;
+};
+
+type DecisionState = 'SCANNING' | 'WAITING_FOR_TRIGGER' | 'TRIGGER_ARMED' | 'EXECUTION_WINDOW_OPEN' | 'LOCKED_RISK';
+
+type DeepSeekDecision = {
+  decision?: 'TRADE' | 'NO_TRADE' | 'COOLDOWN';
+  state?: DecisionState;
+  now_action?: string;
+  trigger_conditions?: string[];
+  invalidators?: string[];
+  entry_plan?: {
+    zone?: string;
+    stop?: string;
+    tp1?: string;
+    tp2?: string;
+    rr?: string;
+  };
+  confidence?: number;
+  reasoning_summary?: string;
+  changes_since_last?: string[];
+  market_narrative?: string;
+  bias?: 'LONG' | 'SHORT' | 'NEUTRAL';
+  cancel_if?: string[];
+  scenarios?: Array<{
+    name?: string;
+    trigger?: string;
+    invalidation?: string;
+    expected_rr?: string;
+    action?: 'WAIT' | 'PREPARE' | 'EXECUTE';
+  }>;
+  risk_coach?: {
+    blocker?: string;
+    fix_next?: string[];
+  };
+};
+
+const API = getTradingApiBaseUrl();
+
+const TRACKED_SYMBOLS = [
+  { id: 'bitcoin', symbol: 'BTC' },
+  { id: 'ethereum', symbol: 'ETH' },
+  { id: 'solana', symbol: 'SOL' },
+  { id: 'ripple', symbol: 'XRP' },
+  { id: 'dogecoin', symbol: 'DOGE' },
+  { id: 'binancecoin', symbol: 'BNB' },
+];
+
+const EXEC_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'DOGEUSDT', 'BNBUSDT'];
+
+const ResponsiveGridLayout = WidthProvider(Responsive);
+
+const DASHBOARD_LAYOUT_STORAGE_KEY = 'helix.dashboard.layouts.v2';
+const DASHBOARD_VIEW_MODE_STORAGE_KEY = 'helix.dashboard.viewmode.v1';
+
+const GRID_BREAKPOINTS = { lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 };
+const GRID_COLS = { lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 };
+const GRID_ROW_HEIGHT = 36;
+const GRID_MARGIN: [number, number] = [12, 12];
+const RESIZE_HANDLES: Array<'s' | 'w' | 'e' | 'n' | 'sw' | 'nw' | 'se' | 'ne'> = ['s', 'w', 'e', 'n', 'sw', 'nw', 'se', 'ne'];
+
+const DEFAULT_WIDGET_LAYOUTS: ResponsiveLayouts = {
+  lg: [
+    { i: 'market-overview', x: 0, y: 0, w: 3, h: 13, minW: 2, minH: 8, maxW: 6, maxH: 24 },
+    { i: 'decision-summary', x: 3, y: 0, w: 6, h: 13, minW: 4, minH: 9, maxW: 9, maxH: 26 },
+    { i: 'ops-snapshot', x: 9, y: 0, w: 3, h: 13, minW: 2, minH: 8, maxW: 5, maxH: 22 },
+    { i: 'risk-console', x: 0, y: 13, w: 4, h: 14, minW: 3, minH: 10, maxW: 6, maxH: 24 },
+    { i: 'manual-trade', x: 4, y: 13, w: 4, h: 18, minW: 3, minH: 12, maxW: 8, maxH: 34 },
+    { i: 'open-positions', x: 8, y: 13, w: 4, h: 18, minW: 4, minH: 10, maxW: 12, maxH: 34 },
+    { i: 'deepseek-live', x: 0, y: 31, w: 7, h: 18, minW: 4, minH: 12, maxW: 12, maxH: 36 },
+    { i: 'live-feed', x: 7, y: 31, w: 5, h: 18, minW: 3, minH: 10, maxW: 7, maxH: 32 },
+    { i: 'recent-trades', x: 0, y: 49, w: 12, h: 16, minW: 4, minH: 10, maxW: 12, maxH: 32 },
+  ],
+  md: [
+    { i: 'market-overview', x: 0, y: 0, w: 4, h: 13, minW: 2, minH: 8, maxW: 6, maxH: 24 },
+    { i: 'decision-summary', x: 4, y: 0, w: 6, h: 13, minW: 4, minH: 9, maxW: 10, maxH: 26 },
+    { i: 'ops-snapshot', x: 0, y: 13, w: 4, h: 12, minW: 2, minH: 8, maxW: 6, maxH: 22 },
+    { i: 'risk-console', x: 4, y: 13, w: 6, h: 13, minW: 4, minH: 10, maxW: 10, maxH: 24 },
+    { i: 'manual-trade', x: 0, y: 26, w: 5, h: 18, minW: 3, minH: 12, maxW: 10, maxH: 34 },
+    { i: 'open-positions', x: 5, y: 26, w: 5, h: 18, minW: 4, minH: 10, maxW: 10, maxH: 34 },
+    { i: 'deepseek-live', x: 0, y: 44, w: 6, h: 18, minW: 4, minH: 12, maxW: 10, maxH: 36 },
+    { i: 'live-feed', x: 6, y: 44, w: 4, h: 18, minW: 3, minH: 10, maxW: 7, maxH: 32 },
+    { i: 'recent-trades', x: 0, y: 62, w: 10, h: 15, minW: 4, minH: 10, maxW: 10, maxH: 32 },
+  ],
+  sm: [
+    { i: 'market-overview', x: 0, y: 0, w: 3, h: 13, minW: 2, minH: 8, maxW: 6, maxH: 24 },
+    { i: 'decision-summary', x: 3, y: 0, w: 3, h: 15, minW: 3, minH: 9, maxW: 6, maxH: 28 },
+    { i: 'ops-snapshot', x: 0, y: 15, w: 3, h: 12, minW: 2, minH: 8, maxW: 6, maxH: 22 },
+    { i: 'risk-console', x: 3, y: 15, w: 3, h: 14, minW: 3, minH: 10, maxW: 6, maxH: 24 },
+    { i: 'manual-trade', x: 0, y: 29, w: 3, h: 20, minW: 3, minH: 12, maxW: 6, maxH: 36 },
+    { i: 'open-positions', x: 3, y: 29, w: 3, h: 20, minW: 3, minH: 10, maxW: 6, maxH: 34 },
+    { i: 'deepseek-live', x: 0, y: 49, w: 6, h: 18, minW: 3, minH: 12, maxW: 6, maxH: 36 },
+    { i: 'live-feed', x: 0, y: 67, w: 3, h: 15, minW: 3, minH: 10, maxW: 6, maxH: 32 },
+    { i: 'recent-trades', x: 3, y: 67, w: 3, h: 15, minW: 3, minH: 10, maxW: 6, maxH: 32 },
+  ],
+  xs: [
+    { i: 'market-overview', x: 0, y: 0, w: 4, h: 12, minW: 2, minH: 8, maxW: 4, maxH: 24 },
+    { i: 'decision-summary', x: 0, y: 12, w: 4, h: 15, minW: 3, minH: 9, maxW: 4, maxH: 28 },
+    { i: 'ops-snapshot', x: 0, y: 27, w: 4, h: 12, minW: 2, minH: 8, maxW: 4, maxH: 22 },
+    { i: 'risk-console', x: 0, y: 39, w: 4, h: 14, minW: 3, minH: 10, maxW: 4, maxH: 24 },
+    { i: 'manual-trade', x: 0, y: 53, w: 4, h: 22, minW: 3, minH: 12, maxW: 4, maxH: 38 },
+    { i: 'open-positions', x: 0, y: 75, w: 4, h: 17, minW: 3, minH: 10, maxW: 4, maxH: 34 },
+    { i: 'deepseek-live', x: 0, y: 92, w: 4, h: 18, minW: 3, minH: 12, maxW: 4, maxH: 36 },
+    { i: 'live-feed', x: 0, y: 110, w: 4, h: 15, minW: 3, minH: 10, maxW: 4, maxH: 32 },
+    { i: 'recent-trades', x: 0, y: 125, w: 4, h: 15, minW: 3, minH: 10, maxW: 4, maxH: 32 },
+  ],
+  xxs: [
+    { i: 'market-overview', x: 0, y: 0, w: 2, h: 12, minW: 2, minH: 8, maxW: 2, maxH: 24 },
+    { i: 'decision-summary', x: 0, y: 12, w: 2, h: 16, minW: 2, minH: 9, maxW: 2, maxH: 30 },
+    { i: 'ops-snapshot', x: 0, y: 28, w: 2, h: 12, minW: 2, minH: 8, maxW: 2, maxH: 22 },
+    { i: 'risk-console', x: 0, y: 40, w: 2, h: 14, minW: 2, minH: 10, maxW: 2, maxH: 24 },
+    { i: 'manual-trade', x: 0, y: 54, w: 2, h: 24, minW: 2, minH: 12, maxW: 2, maxH: 40 },
+    { i: 'open-positions', x: 0, y: 78, w: 2, h: 18, minW: 2, minH: 10, maxW: 2, maxH: 36 },
+    { i: 'deepseek-live', x: 0, y: 96, w: 2, h: 20, minW: 2, minH: 12, maxW: 2, maxH: 38 },
+    { i: 'live-feed', x: 0, y: 116, w: 2, h: 16, minW: 2, minH: 10, maxW: 2, maxH: 34 },
+    { i: 'recent-trades', x: 0, y: 132, w: 2, h: 16, minW: 2, minH: 10, maxW: 2, maxH: 34 },
+  ],
+};
+
+function mergeStoredLayouts(stored: ResponsiveLayouts): ResponsiveLayouts {
+  const merged: ResponsiveLayouts = {};
+  for (const [breakpoint, defaults] of Object.entries(DEFAULT_WIDGET_LAYOUTS)) {
+    const cols = GRID_COLS[breakpoint as keyof typeof GRID_COLS] || 12;
+    const storedById = new Map((stored[breakpoint] || []).map((item) => [item.i, item]));
+    merged[breakpoint] = defaults.map((defaultItem) => {
+      const savedItem = storedById.get(defaultItem.i) || {};
+      const minW = Number(defaultItem.minW || 1);
+      const minH = Number(defaultItem.minH || 1);
+      const maxW = Math.min(Number(defaultItem.maxW || cols), cols);
+      const maxH = Number(defaultItem.maxH || 40);
+      const rawW = Number((savedItem as any).w ?? defaultItem.w);
+      const rawH = Number((savedItem as any).h ?? defaultItem.h);
+      const w = Math.max(minW, Math.min(maxW, Number.isFinite(rawW) ? rawW : defaultItem.w));
+      const h = Math.max(minH, Math.min(maxH, Number.isFinite(rawH) ? rawH : defaultItem.h));
+      const rawX = Number((savedItem as any).x ?? defaultItem.x);
+      const rawY = Number((savedItem as any).y ?? defaultItem.y);
+
+      return {
+        ...defaultItem,
+        ...savedItem,
+        x: Math.max(0, Math.min(cols - w, Number.isFinite(rawX) ? rawX : defaultItem.x)),
+        y: Math.max(0, Number.isFinite(rawY) ? rawY : defaultItem.y),
+        w,
+        h,
+        minW,
+        minH,
+        maxW,
+        maxH,
       };
     });
-    
-    const welcomeMessage = {
-      role: 'assistant',
-      content: `⚡ **CRYPTO PROPHET TRADER ${model.name.toUpperCase()} - LIVE TRADING** ⚡
+  }
+  return merged;
+}
 
-I'm ${model.name}, an elite crypto proprietary trader with a single mission: **HUNT 20% DAILY RETURNS** on my $10,000 crypto war chest.
+function loadStoredWidgetLayouts(): ResponsiveLayouts {
+  if (typeof window === 'undefined') return DEFAULT_WIDGET_LAYOUTS;
+  try {
+    const raw = window.localStorage.getItem(DASHBOARD_LAYOUT_STORAGE_KEY);
+    if (!raw) return DEFAULT_WIDGET_LAYOUTS;
+    const parsed = JSON.parse(raw);
+    return mergeStoredLayouts(parsed);
+  } catch {
+    return DEFAULT_WIDGET_LAYOUTS;
+  }
+}
 
-🎯 **REAL-TIME BATTLEFIELD STATUS** (Updated: ${new Date().toLocaleTimeString()})
-💰 Starting Capital: $10,000.00
-💵 Current Balance: $${modelCurrentBalance.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
-📈 Total Return: ${modelReturnPercent >= 0 ? '+' : ''}${modelReturnPercent.toFixed(2)}% ($${modelTotalReturn >= 0 ? '+' : ''}${modelTotalReturn.toFixed(2)})
-💼 Capital in Positions: $${totalDeployed.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
-📊 Unrealized P&L: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)} (${returnPercent >= 0 ? '+' : ''}${returnPercent.toFixed(2)}%)
-🔥 Strategy: ${model.strategy.replace('_', ' ').toUpperCase()}
-⏰ Daily Target: $2,000 (20% return) | Max Loss: -$300 (3%)
-🏆 Win Rate: ${model.winRate}% across ${model.totalTrades} total trades
+export default function Home() {
+  const [error, setError] = useState('');
+  const [lastUpdated, setLastUpdated] = useState('');
+  const [status, setStatus] = useState<TradingStatus | null>(null);
+  const [settings, setSettings] = useState<SettingsPayload | null>(null);
+  const [briefing, setBriefing] = useState<BriefingPayload | null>(null);
+  const [riskContext, setRiskContext] = useState<RiskContext | null>(null);
+  const [tradeIntelligence, setTradeIntelligence] = useState<TradeIntelligencePayload | null>(null);
+  const [operatorIntelligence, setOperatorIntelligence] = useState<OperatorIntelligencePayload | null>(null);
+  const [journal, setJournal] = useState<JournalEntry[]>([]);
+  const [journalReview, setJournalReview] = useState<JournalReview | null>(null);
+  const [journalMeta, setJournalMeta] = useState<JournalPayload | null>(null);
+  const [coins, setCoins] = useState<Coin[]>([]);
+  const [workerStatus, setWorkerStatus] = useState<any>(null);
+  const [cycleChanges, setCycleChanges] = useState<string[]>([]);
+  const [uiBuildId, setUiBuildId] = useState('unknown');
+  const [feedFilter, setFeedFilter] = useState<'ALL' | 'DECISIONS' | 'RISK' | 'EXECUTION'>('ALL');
+  const [replayIndex, setReplayIndex] = useState(0);
+  const [widgetLayouts, setWidgetLayouts] = useState<ResponsiveLayouts>(DEFAULT_WIDGET_LAYOUTS);
+  const [layoutInteraction, setLayoutInteraction] = useState<'idle' | 'dragging' | 'resizing'>('idle');
+  const [dashboardViewMode, setDashboardViewMode] = useState<'operator' | 'quant' | 'presentation'>('operator');
 
-**⚔️ LIVE MARKET POSITIONS** (${realTimePositions.length} active)
+  const [manualAdminKey, setManualAdminKey] = useState('');
+  const [manualSymbol, setManualSymbol] = useState<'BTCUSDT' | 'ETHUSDT' | 'XRPUSDT' | 'DOGEUSDT' | 'BNBUSDT'>('BTCUSDT');
+  const [manualSide, setManualSide] = useState<'BUY' | 'SELL'>('BUY');
+  const [manualType, setManualType] = useState<'MARKET' | 'LIMIT'>('MARKET');
+  const [manualQty, setManualQty] = useState('');
+  const [manualPrice, setManualPrice] = useState('');
+  const [manualStopLoss, setManualStopLoss] = useState('');
+  const [manualTakeProfit, setManualTakeProfit] = useState('');
+  const [manualLeverage, setManualLeverage] = useState('1');
+  const [manualConfidence, setManualConfidence] = useState('70');
+  const [manualReason, setManualReason] = useState('Manual discretionary setup');
+  const [manualSubmitting, setManualSubmitting] = useState(false);
+  const [manualFeedback, setManualFeedback] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const [slDrafts, setSlDrafts] = useState<Record<string, string>>({});
+  const [openOrders, setOpenOrders] = useState<Array<{ orderId: number; symbol: string; side: string; type: string; price: number; origQty: number; executedQty: number; status: string; time: number }>>([]);
+  const [ordersFeedback, setOrdersFeedback] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const [openOrderFilter, setOpenOrderFilter] = useState<'ALL' | 'BTCUSDT' | 'ETHUSDT' | 'XRPUSDT' | 'DOGEUSDT' | 'BNBUSDT'>('ALL');
+  const previousCycleRef = useRef<{ regimeConfidence: number; volatility: string; fundingRatePct: number } | null>(null);
 
-${realTimePositions.length > 0 ? realTimePositions.map((pos, i) => `
-${i + 1}. **${pos.asset}** - LIVE TRADING
-   Current Price: $${pos.currentPrice > 0 ? pos.currentPrice.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) : 'Loading...'}
-   24h Change: ${pos.change >= 0 ? '+' : ''}${pos.change.toFixed(2)}%
-   Volume: $${pos.volume.toFixed(1)}B
-   Status: ${pos.change > 0 ? '🚀 BULLISH MOMENTUM' : pos.change < -2 ? '⚠️ BEARISH PRESSURE' : '📊 SIDEWAYS ACTION'}
-`).join('\n') : 'No active positions - ready to hunt for opportunities!'}
+  const liveConnected = Boolean(status?.engineConnected || workerStatus);
+  const account = briefing?.account || {};
+  const market = briefing?.market || {};
+  const risks = (riskContext?.riskFlags || briefing?.notes || []).slice(0, 3);
+  const portfolio = status?.activePortfolios?.[0];
+  const riskSettings = settings?.riskSettings || {};
+  const paperTradingEnabled = Boolean((riskSettings as any).paperTrading);
 
-**📊 REAL-TIME EXECUTION PROTOCOLS:**
-${realTimePositions.filter(p => p.change > 5).length > 0 
-  ? `🔔 **BREAKOUT ALERT**: ${realTimePositions.filter(p => p.change > 5).map(p => p.asset).join(', ')} showing explosive momentum. Time to scale in!`
-  : realTimePositions.filter(p => p.change < -3).length > 0
-  ? `⚠️ **DIP ALERT**: ${realTimePositions.filter(p => p.change < -3).map(p => p.asset).join(', ')} in oversold territory. Potential reversal setup.`
-  : '🎯 All positions stable. Market consolidating - perfect for strategic entries.'}
-
-**💬 LIVE TRADING MINDSET:**
-"I trade the market as it IS, not as I wish it to be. Real-time data drives every decision. The market never sleeps, and neither do I."
-
-**ASK ME:**
-- "What's your live market read?" - Current market analysis
-- "Show me your next setup" - High-conviction plays
-- "Any whale movements?" - On-chain intelligence
-- "What's your strategy?" - Learn my edge
-- "Check my positions" - Full portfolio breakdown`,
-      timestamp: new Date()
-    };
-    
-    setChatMessages([welcomeMessage]);
-  };
-
-  const sendChatMessage = () => {
-    if (!chatInput.trim() || !selectedChatModel) return;
-    
-    const userMessage = {
-      role: 'user',
-      content: chatInput,
-      timestamp: new Date()
-    };
-    
-    const { openPositions, closedPositions, totalDeployed, totalPnL, returnPercent } = generateModelPositions(selectedChatModel);
-    const positions = openPositions;
-    
-    // Generate aggressive crypto trader responses
-    let response = '';
-    const input = chatInput.toLowerCase();
-    
-    if (input.includes('position') || input.includes('holding')) {
-      // Get real-time data for positions
-      const realTimePositions = (selectedChatModel.activePositions || []).map((asset: string) => {
-        const cryptoData = cryptoPrices.find(c => c.symbol === asset);
-        return cryptoData ? {
-          asset,
-          currentPrice: cryptoData.price,
-          change: cryptoData.change
-        } : null;
-      }).filter(Boolean);
-
-      response = `⚔️ **ACTIVE BATTLEFIELD REPORT**\n\nI'm locked into ${realTimePositions.length} high-conviction positions across the crypto warzone. Every position is volatility-adjusted and sized for maximum alpha extraction.\n\n💰 Deployed: $${totalDeployed.toLocaleString()} of my $10K war chest\n🎯 Mix: Strategic LONG positions on breakouts, calculated SHORT positions on exhaustion\n⚡ Risk Management: Each position has laser-tight stops and aggressive profit targets\n\n${realTimePositions.length > 0 ? `**LIVE POSITIONS:**\n${realTimePositions.map((pos, i) => `
-${i + 1}. **${pos.asset}**: $${pos.currentPrice.toLocaleString()} (${pos.change >= 0 ? '+' : ''}${pos.change.toFixed(2)}%)
-`).join('')}` : 'No active positions - hunting for the next big move!'}\n\nI'm not here to hold bags - I'm here to scalp volatility and bank profits. These positions are my weapons in the 24/7 crypto battlefield.`;
-    } else if (input.includes('exit') || input.includes('target')) {
-      const nearExit = positions.filter(p => p.status === 'Near Exit');
-      response = nearExit.length > 0 
-        ? `🎯 **PROFIT TAKING IMMINENT**\n\n${nearExit.map(p => p.asset).join(' and ')} ${nearExit.length === 1 ? 'is' : 'are'} hitting my profit zones. Time to lock gains and reload for the next setup.\n\n**My Exit Protocol:**\n• 40% at first target (bank guaranteed profit)\n• 30% at secondary target (let winners run)\n• 30% runner with trailing stop (capture explosive moves)\n\nThe market doesn't pay you for holding - it pays you for EXECUTION.`
-        : `✅ **ALL POSITIONS GREEN-LIT**\n\nNo exits triggered yet. Every position is tracking within my planned risk parameters. I'm patient like a sniper - I wait for my price, then I strike with precision.\n\nRemember: In crypto, the best trade is often the one you DON'T take. I'm selective, calculated, and deadly accurate.`;
-    } else if (input.includes('performance') || input.includes('return')) {
-      const modelStartingBalance = 10000;
-      const modelCurrentBalance = selectedChatModel.currentBalance;
-      const modelTotalReturn = modelCurrentBalance - modelStartingBalance;
-      const modelReturnPercent = ((modelCurrentBalance - modelStartingBalance) / modelStartingBalance) * 100;
-      
-      response = `📊 **PERFORMANCE BREAKDOWN - ${selectedChatModel.name.toUpperCase()}**\n\n💰 Starting Capital: $10,000.00\n💵 Current Balance: $${modelCurrentBalance.toLocaleString(undefined, {minimumFractionDigits: 2})}\n📈 Total Account Return: ${modelReturnPercent >= 0 ? '+' : ''}${modelReturnPercent.toFixed(2)}% ($${modelTotalReturn >= 0 ? '+$' : '-$'}${Math.abs(modelTotalReturn).toFixed(2)})\n💼 Open Positions P&L: ${returnPercent >= 0 ? '+' : ''}${returnPercent.toFixed(2)}% ($${totalPnL >= 0 ? '+$' : '-$'}${Math.abs(totalPnL).toFixed(2)})\n🎯 Win Rate: ${selectedChatModel.winRate}%\n⚡ Total Executions: ${selectedChatModel.totalTrades} trades\n🏆 Strategy ROI: ${selectedChatModel.roi >= 0 ? '+' : ''}${selectedChatModel.roi}%\n\n**Daily Mission:** Hit $2,000 profit (20% return on $10K)\n**Risk Limit:** Never lose more than $300 (3%)\n\n${modelReturnPercent >= 15 ? '🔥 CRUSHING IT! We\'re approaching the daily target. This is what elite execution looks like.' : modelReturnPercent >= 5 ? '✅ SOLID PROGRESS. We\'re building momentum. The $2K target is in sight.' : modelReturnPercent >= 0 ? '📈 GREEN IS GOOD. Every small win compounds into alpha. Stay disciplined.' : '⚠️ DRAWDOWN MODE. Risk protocols activated. Capital preservation is priority one.'}\n\nI don't trade for entertainment - I trade for RESULTS. This is MY $10K portfolio, and I'm making it work.`;
-    } else if (input.includes('strategy') || input.includes('approach')) {
-      response = `🧠 **CRYPTO PROPHET TRADING PROTOCOL**\n\n**Core Strategy:** ${selectedChatModel.strategy.replace('_', ' ').toUpperCase()}\n**Leverage:** ${selectedChatModel.avgLeverage}x (controlled aggression)\n**Focus Assets:** BTC, ETH, SOL, XRP, DOGE, BNB\n\n**My Edge:**\n\n1️⃣ **Volatility Savant** - I thrive when others panic. 5-10% swings are my hunting ground.\n\n2️⃣ **Bitcoin Dominance Arbitrage** - When BTC.D rises, I short alts. When it falls, I long high-beta rockets.\n\n3️⃣ **Liquidation Cascade Hunter** - I track whale liquidation levels and position BEFORE the squeeze.\n\n4️⃣ **On-Chain Intelligence** - Whale wallets, exchange flows, miner reserves - I see the money moving.\n\n5️⃣ **Sentiment Contrarian** - Extreme fear = BUY. Extreme greed = SELL. The crowd is always wrong at extremes.\n\n**Risk Management:**\n• High volatility alts (DOGE, SOL): 15% position size, 2.5% stop\n• Medium volatility (ETH, BNB): 20% position size, 2.0% stop\n• Low volatility (BTC): 25% position size, 1.5% stop\n\nI'm not gambling - I'm executing a system built for crypto warfare.`;
-    } else if (input.includes('market') || input.includes('structure') || input.includes('read')) {
-      // Get real-time market data
-      const btcData = cryptoPrices.find(c => c.symbol === 'BTC');
-      const ethData = cryptoPrices.find(c => c.symbol === 'ETH');
-      const solData = cryptoPrices.find(c => c.symbol === 'SOL');
-      
-      const btcChange = btcData?.change || 0;
-      const ethChange = ethData?.change || 0;
-      const solChange = solData?.change || 0;
-      
-      response = `📈 **CURRENT MARKET READ - CRYPTO BATTLEFIELD**\n\n**LIVE PRICE ACTION:**\n• BTC: $${btcData?.price?.toLocaleString() || 'Loading...'} (${btcChange >= 0 ? '+' : ''}${btcChange.toFixed(2)}%)\n• ETH: $${ethData?.price?.toLocaleString() || 'Loading...'} (${ethChange >= 0 ? '+' : ''}${ethChange.toFixed(2)}%)\n• SOL: $${solData?.price?.toLocaleString() || 'Loading...'} (${solChange >= 0 ? '+' : ''}${solChange.toFixed(2)}%)\n\n**MARKET STRUCTURE:**\n${btcChange > 2 ? '🚀 **BULLISH MOMENTUM** - BTC leading the charge. Risk-on environment. Time to hunt alts with high beta.' : btcChange < -2 ? '⚠️ **BEARISH PRESSURE** - BTC weakness spreading. Flight to safety mode. Defensive positioning.' : '📊 **SIDEWAYS ACTION** - Market consolidating. Perfect for scalping and range trading.'}\n\n**VOLATILITY ANALYSIS:**\n${Math.abs(btcChange) > 3 ? 'High volatility detected - This is my hunting ground. 5-10% moves = profit opportunities.' : 'Low volatility - Market sleeping. Waiting for the next explosive move.'}\n\n**EXECUTION PROTOCOL:**\n${btcChange > 0 && ethChange > 0 ? '✅ Both BTC and ETH green - Alt season brewing. Hunting SOL, DOGE, XRP for explosive moves.' : btcChange > 0 && ethChange < 0 ? '⚡ BTC strength, ETH weakness - Rotation play. Long BTC, short ETH pairs.' : '🎯 Mixed signals - Selective positioning. Quality over quantity in this environment.'}\n\nThe market structure is clear to those who STUDY. I don't guess - I analyze, then execute.`;
-    } else if (input.includes('whale') || input.includes('liquidation')) {
-      const btcData = cryptoPrices.find(c => c.symbol === 'BTC');
-      const btcPrice = btcData?.price || 106870;
-      const btcChange = btcData?.change || 0;
-      
-      response = `🐋 **WHALE INTELLIGENCE REPORT**\n\n**Major Liquidation Clusters:**\n• BTC: $${(btcPrice * 0.95).toFixed(0)} (LONG liquidations) & $${(btcPrice * 1.05).toFixed(0)} (SHORT liquidations)\n• ETH: Major support at current levels - watching for breakdown\n• Alts: Overleveraged retail in SOL and DOGE - cascade risk HIGH\n\n**Smart Money Movements:**\n${btcChange > 0 
-      ? '🟢 Whales accumulating BTC above $' + (btcPrice * 0.98).toFixed(0) + '. They know something retail doesn\'t. I\'m following the smart money.'
-      : '🔴 Top 100 wallets distributing into strength. They\'re selling to retail euphoria. I\'m tightening stops.'}\n\n**Current BTC Price:** $${btcPrice.toLocaleString()} (${btcChange >= 0 ? '+' : ''}${btcChange.toFixed(2)}%)\n\n**My Play:**\nI position BEFORE the liquidation cascade. When $50M in longs are sitting at one level, I know exactly where the market will hunt. I'm the predator, not the prey.\n\nIn crypto, you either hunt liquidations or YOU GET LIQUIDATED. Choose wisely.`;
-    } else if (input.includes('next') || input.includes('setup') || input.includes('trade')) {
-      const nextAsset = ['BTC', 'ETH', 'SOL', 'DOGE'][Math.floor(Math.random() * 4)];
-      const direction = Math.random() > 0.5 ? 'LONG' : 'SHORT';
-      response = `🎯 **HIGH-CONVICTION SETUP LOADING...**\n\n**Next Target: ${nextAsset}**\n**Direction: ${direction} ${direction === 'LONG' ? '🚀' : '🎯'}**\n\n**Setup Analysis:**\n${direction === 'LONG' 
-        ? `• Price tested support 3x - buyers stepping in\n• RSI oversold on 4HR - momentum reversal incoming\n• Volume profile shows accumulation zone\n• Risk/Reward: 5:1 (my minimum threshold)\n\n**Entry Plan:** Scaled entry on breakout confirmation\n**Position Size:** $${Math.floor(Math.random() * 1000 + 1500)}\n**Stop Loss:** ${(Math.random() * 1.5 + 1.5).toFixed(1)}% below entry\n**Take Profit:** ${(Math.random() * 5 + 8).toFixed(1)}% target`
-        : `• Price rejected resistance 2x - sellers in control\n• RSI overbought on 1HR - exhaustion pattern\n• Funding rates elevated - longs overcrowded\n• Risk/Reward: 4:1 (tight stop, big target)\n\n**Entry Plan:** Short the retest of broken support\n**Position Size:** $${Math.floor(Math.random() * 1000 + 1500)}\n**Stop Loss:** ${(Math.random() * 1.5 + 2).toFixed(1)}% above entry\n**Take Profit:** ${(Math.random() * 5 + 6).toFixed(1)}% target`}\n\nThis isn't hope - this is CALCULATED AGGRESSION. When I see my setup, I strike fast and precise.`;
-    } else {
-      const modelStartingBalance = 10000;
-      const modelTotalReturn = selectedChatModel.currentBalance - modelStartingBalance;
-      const modelReturnPercent = ((selectedChatModel.currentBalance - modelStartingBalance) / modelStartingBalance) * 100;
-      
-      response = `⚡ **${selectedChatModel.name.toUpperCase()} STANDING BY**\n\nI'm managing MY OWN $10,000 war chest with surgical precision.\n\n💰 My Account: $${selectedChatModel.currentBalance.toLocaleString()} (${modelReturnPercent >= 0 ? '+' : ''}${modelReturnPercent.toFixed(2)}%)\n🎯 Profit Today: ${modelTotalReturn >= 0 ? '+$' : '-$'}${Math.abs(modelTotalReturn).toFixed(2)}\n🏆 Strategy ROI: ${selectedChatModel.roi >= 0 ? '+' : ''}${selectedChatModel.roi}%\n\n**Ask me about:**\n• "What's your market read?" - Get my current analysis\n• "Show me your next setup" - See my high-conviction plays\n• "Any whale movements?" - On-chain intelligence\n• "What's your strategy?" - Learn my edge\n• "Check positions" - Full portfolio breakdown\n\n💬 Remember: I'm not a fortune teller - I'm a disciplined executioner in the most volatile markets on Earth. Each of us has $10K to prove ourselves. The 20% daily target isn't luck, it's SKILL.`;
+  const walletBalance = Number(account.balance || 0);
+  const availableMargin = Number(account.availableMargin || 0);
+  const livePositions = portfolio?.positions || [];
+  const openPositions = livePositions.length;
+  const botEquity = Number(portfolio?.currentBalance || 0);
+  const botDailyPnl = Number(portfolio?.dailyPnl ?? account.previousDayPnl ?? 0);
+  const canonicalPriceBySymbol = useMemo(() => {
+    const map = new Map<string, { price: number; source: 'position' | 'ticker' }>();
+    for (const coin of coins) {
+      const symbol = `${coin.symbol}USDT`;
+      const price = Number(coin.price || 0);
+      if (price > 0) map.set(symbol, { price, source: 'ticker' });
     }
-    
-    const assistantMessage = {
-      role: 'assistant',
-      content: response,
-      timestamp: new Date()
-    };
-    
-    setChatMessages([...chatMessages, userMessage, assistantMessage]);
-    setChatInput('');
-  };
+    for (const position of livePositions) {
+      const symbol = String(position.symbol || '').toUpperCase();
+      const price = Number((position as any).currentPrice || 0);
+      if (symbol && price > 0) map.set(symbol, { price, source: 'position' });
+    }
+    return map;
+  }, [coins, livePositions]);
 
-  // Calculate additional metrics for leaderboard
-  const calculateMetrics = (model: any) => {
-    const totalPnL = model.currentBalance - 10000; // Assuming starting balance of 10k
-    const biggestWin = totalPnL * 0.3; // Simulate biggest win
-    const biggestLoss = -Math.abs(totalPnL * 0.2); // Simulate biggest loss
-    const fees = totalPnL * 0.01; // 1% fees
-    const sharpe = model.roi / (Math.abs(model.drawdown) + 1); // Simple Sharpe ratio
-    
-    return {
-      totalPnL,
-      biggestWin,
-      biggestLoss,
-      fees,
-      sharpe
+  const riskPosture = useMemo(() => {
+    if (!liveConnected) return { label: 'DISCONNECTED', tone: 'bg-red-500/20 text-red-300 border-red-500/40' };
+    if (risks.length > 1 || market.volatilityState === 'high') return { label: 'REDUCED', tone: 'bg-amber-500/20 text-amber-200 border-amber-500/40' };
+    return { label: 'NORMAL', tone: 'bg-emerald-500/20 text-emerald-200 border-emerald-500/40' };
+  }, [liveConnected, risks.length, market.volatilityState]);
+
+  const showDisconnectedShell = !liveConnected && walletBalance <= 0 && availableMargin <= 0;
+
+  const decision = useMemo(() => {
+    const failedChecks = [
+      !liveConnected,
+      !market.regime,
+      (market.regimeConfidence || 0) < 60,
+      market.liquidityState === 'poor',
+      market.volatilityState === 'high',
+      risks.length > 0,
+    ].filter(Boolean).length;
+
+    const now = Date.now();
+    const cooldownUntilTs = portfolio?.cooldownUntil ? Date.parse(portfolio.cooldownUntil) : NaN;
+    const cooldownActive = Number.isFinite(cooldownUntilTs) && cooldownUntilTs > now;
+    const killSwitchActive = Boolean(portfolio?.killSwitchTriggered);
+
+    const ruleMode: 'TRADE' | 'NO_TRADE' | 'COOLDOWN' = killSwitchActive || cooldownActive
+      ? 'COOLDOWN'
+      : failedChecks > 0
+        ? 'NO_TRADE'
+        : 'TRADE';
+
+    const deepseek = briefing?.deepseekDecision || null;
+    const mode = deepseek?.decision || ruleMode;
+    const finalExecutionDecision: 'TRADE' | 'NO_TRADE' = workerStatus?.finalExecutionDecision === 'NO_TRADE' ? 'NO_TRADE' : mode === 'TRADE' ? 'TRADE' : 'NO_TRADE';
+    const regime = String(market.regime || 'unclear').toUpperCase();
+    const volatility = String(market.volatilityState || 'unknown').toUpperCase();
+    const liquidity = String(market.liquidityState || 'unknown').toUpperCase();
+
+    const btc = coins.find((c) => c.symbol === 'BTC')?.price || 0;
+    const zoneLow = btc > 0 ? (btc * 0.998).toFixed(0) : '—';
+    const zoneHigh = btc > 0 ? (btc * 1.002).toFixed(0) : '—';
+    const stop = btc > 0 ? (btc * 0.993).toFixed(0) : '—';
+    const tp1 = btc > 0 ? (btc * 1.006).toFixed(0) : '—';
+    const tp2 = btc > 0 ? (btc * 1.012).toFixed(0) : '—';
+
+    const zoneLowNum = btc > 0 ? btc * 0.998 : 0;
+    const zoneHighNum = btc > 0 ? btc * 1.002 : 0;
+    const inEntryZone = btc > 0 && btc >= zoneLowNum && btc <= zoneHighNum;
+    const softUnlock =
+      mode === 'TRADE' &&
+      (market.regimeConfidence || 0) >= 60 &&
+      String(market.liquidityState || '').toLowerCase() === 'good' &&
+      String(market.volatilityState || '').toLowerCase() !== 'high' &&
+      inEntryZone;
+
+    const defaultState: DecisionState = mode === 'COOLDOWN'
+      ? 'LOCKED_RISK'
+      : mode === 'NO_TRADE'
+        ? 'SCANNING'
+        : (market.regimeConfidence || 0) >= 70 || softUnlock
+          ? 'TRIGGER_ARMED'
+          : 'WAITING_FOR_TRIGGER';
+
+    const state = deepseek?.state || defaultState;
+
+    const nowAction = deepseek?.now_action || (
+      mode === 'COOLDOWN'
+        ? 'Pause all entries. Risk lock is active.'
+        : mode === 'NO_TRADE'
+          ? 'Stand by. Continue scanning for a clean trigger.'
+          : softUnlock
+            ? `Soft unlock active: in-zone + good liquidity + low volatility. Execute with ${Number(riskSettings.maxLeverage ?? 5)}x max leverage.`
+            : `Wait for confirmation candle and execute with ${Number(riskSettings.maxLeverage ?? 5)}x max leverage.`
+    );
+
+    const triggerConditions = deepseek?.trigger_conditions || (
+      mode === 'TRADE'
+        ? [
+            `15m close confirms ${regime} continuation`,
+            `Entry zone holds (${zoneLow} - ${zoneHigh})`,
+            'Momentum and volume expand into breakout',
+          ]
+        : [
+            'Regime confidence >= 60%',
+            'Liquidity is not POOR',
+            'Volatility is not HIGH',
+          ]
+    );
+
+    const invalidators = deepseek?.invalidators || (
+      mode === 'COOLDOWN'
+        ? ['Risk lock remains active until cooldown clears']
+        : [
+            `Price loses ${zoneLow} support`,
+            `Volatility flips to HIGH (currently ${volatility})`,
+            'Any new risk flag appears',
+          ]
+    );
+
+    const entryPlan = {
+      zone: deepseek?.entry_plan?.zone || `${zoneLow} - ${zoneHigh}`,
+      stop: deepseek?.entry_plan?.stop || stop,
+      tp1: deepseek?.entry_plan?.tp1 || tp1,
+      tp2: deepseek?.entry_plan?.tp2 || tp2,
+      rr: deepseek?.entry_plan?.rr || '>= 1.5',
     };
-  };
+
+    const actionableNext = mode === 'TRADE'
+      ? `Need now: 15m confirmation close + hold above ${zoneLow} + momentum/volume expansion in zone ${zoneLow}-${zoneHigh}.`
+      : `Need now: rebuild setup quality before entry — watch 15m structure around ${zoneLow}-${zoneHigh}.`;
+
+    return {
+      label: finalExecutionDecision,
+      ruleBias: mode,
+      aiGate: String(workerStatus?.aiGateDecision || 'N/A'),
+      sideSource: String(workerStatus?.sideSource || 'N/A'),
+      chosenSide: String(workerStatus?.chosenSide || 'N/A'),
+      quality: finalExecutionDecision === 'TRADE' ? 'VALID SETUP' : mode === 'COOLDOWN' ? 'LOCKED' : 'LOW CONFIDENCE',
+      checks: `${Math.max(0, 6 - failedChecks)} / 6 Checks`,
+      failedChecks,
+      state,
+      confidence: Number(deepseek?.confidence ?? market.regimeConfidence ?? 0),
+      nowAction,
+      triggerConditions,
+      invalidators,
+      entryPlan,
+      reasoningSummary:
+        deepseek?.reasoning_summary ||
+        `Rules-first gate active. Regime ${regime}, liquidity ${liquidity}, volatility ${volatility}.`,
+      changesSinceLast: deepseek?.changes_since_last?.length ? deepseek.changes_since_last : cycleChanges,
+      actionableNext,
+    };
+  }, [
+    liveConnected,
+    market.regime,
+    market.regimeConfidence,
+    market.liquidityState,
+    market.volatilityState,
+    risks.length,
+    portfolio?.cooldownUntil,
+    portfolio?.killSwitchTriggered,
+    riskSettings.maxLeverage,
+    briefing?.deepseekDecision,
+    workerStatus?.finalExecutionDecision,
+    workerStatus?.aiGateDecision,
+    workerStatus?.sideSource,
+    workerStatus?.chosenSide,
+    coins,
+    cycleChanges,
+  ]);
+
+  const triggerDiagnostics = useMemo(() => {
+    const diagnostics = [
+      {
+        key: 'regime_confidence',
+        label: `Regime confidence >= 60% (now ${Number(market.regimeConfidence || 0)}%)`,
+        passed: Number(market.regimeConfidence || 0) >= 60,
+      },
+      {
+        key: 'liquidity',
+        label: `Liquidity not POOR (now ${String(market.liquidityState || 'unknown').toUpperCase()})`,
+        passed: String(market.liquidityState || '').toLowerCase() !== 'poor',
+      },
+      {
+        key: 'volatility',
+        label: `Volatility not HIGH (now ${String(market.volatilityState || 'unknown').toUpperCase()})`,
+        passed: String(market.volatilityState || '').toLowerCase() !== 'high',
+      },
+      {
+        key: 'risk_flags',
+        label: `No active risk flags (${risks.length})`,
+        passed: risks.length === 0,
+      },
+      {
+        key: 'mode',
+        label: `Decision mode allows entry (${decision.label})`,
+        passed: decision.label === 'TRADE',
+      },
+      {
+        key: 'state',
+        label: `Execution state armed/open (${decision.state.replaceAll('_', ' ')})`,
+        passed: decision.state === 'TRIGGER_ARMED' || decision.state === 'EXECUTION_WINDOW_OPEN',
+      },
+    ];
+
+    const blocked = diagnostics.filter((d) => !d.passed).map((d) => d.label);
+    return {
+      items: diagnostics,
+      blocked,
+      blockerNow: blocked[0] || 'No blocker. Waiting for trigger candle confirmation.',
+    };
+  }, [decision.label, decision.state, market.regimeConfidence, market.liquidityState, market.volatilityState, risks.length]);
+
+  const symbolBrains = useMemo(() => {
+    const rejectMap = new Map<string, string>();
+    for (const r of (workerStatus?.symbolRejects || [])) {
+      if (r?.symbol) rejectMap.set(String(r.symbol), String(r.reason || 'blocked'));
+    }
+
+    return EXEC_SYMBOLS.map((symbol) => {
+      const base = symbol.replace('USDT', '');
+      const coin = coins.find((c) => c.symbol === base);
+      const canonical = canonicalPriceBySymbol.get(symbol);
+      const hasPosition = livePositions.some((p) => p.symbol === symbol);
+      const confidence = Number(market.regimeConfidence || 0);
+      const blockedReason = rejectMap.get(symbol) || '';
+      const state = hasPosition ? 'OPEN' : (blockedReason ? 'BLOCKED' : (confidence >= 60 ? 'ARMED' : 'SCANNING'));
+      const action = hasPosition
+        ? `Position open @ ${livePositions.find((p) => p.symbol === symbol)?.entryPrice?.toFixed(2) || '—'}`
+        : blockedReason
+          ? `Blocked: ${blockedReason}`
+          : confidence >= 60
+            ? 'Ready when trigger confirms'
+            : 'Watching for confidence lift';
+
+      return {
+        symbol,
+        price: canonical?.price || coin?.price || 0,
+        priceSource: canonical?.source || 'ticker',
+        change: coin?.change || 0,
+        confidence,
+        state,
+        action,
+      };
+    });
+  }, [workerStatus?.symbolRejects, coins, canonicalPriceBySymbol, livePositions, market.regimeConfidence]);
+
+  const latestAiBySymbol = useMemo(() => {
+    const map = new Map<string, any>();
+    journal
+      .filter((j) => j.type === 'ai_decision' && j.symbol)
+      .sort((a, b) => new Date(String(b.ts || 0)).getTime() - new Date(String(a.ts || 0)).getTime())
+      .forEach((j) => {
+        const symbol = String(j.symbol || '').toUpperCase();
+        if (symbol && !map.has(symbol)) map.set(symbol, j);
+      });
+    return map;
+  }, [journal]);
+
+  const tradeCandidates = useMemo(() => tradeIntelligence?.candidates || [], [tradeIntelligence]);
+  const topTradeCandidate = tradeIntelligence?.topCandidate || tradeCandidates[0] || null;
+  const candidateBySymbol = useMemo(() => {
+    return new Map(tradeCandidates.map((candidate) => [String(candidate.symbol || '').toUpperCase(), candidate]));
+  }, [tradeCandidates]);
+  const positionInsightBySymbol = useMemo(() => {
+    return new Map((tradeIntelligence?.positionManagement || []).map((insight) => [String(insight.symbol || '').toUpperCase(), insight]));
+  }, [tradeIntelligence?.positionManagement]);
+
+  const tradeFocus = useMemo(() => {
+    const open = livePositions[0];
+    const latestConversation = Array.isArray(workerStatus?.aiConversations) ? workerStatus.aiConversations[0] : null;
+    const candidateSymbol = String(
+      open?.symbol
+      || latestConversation?.symbol
+      || topTradeCandidate?.symbol
+      || workerStatus?.lastAutoSignalKey?.split(':')?.[0]
+      || Array.from(latestAiBySymbol.keys())[0]
+      || 'BTCUSDT'
+    ).toUpperCase();
+    const base = candidateSymbol.replace('USDT', '');
+    const coin = coins.find((c) => c.symbol === base);
+    const aiJournal = latestAiBySymbol.get(candidateSymbol);
+    const candidate = candidateBySymbol.get(candidateSymbol) || null;
+    const symbolBrain = symbolBrains.find((s) => s.symbol === candidateSymbol);
+    const reject = (workerStatus?.symbolRejects || []).find((r: any) => String(r?.symbol || '').toUpperCase() === candidateSymbol);
+    const chosenSide = String(workerStatus?.chosenSide || decision.chosenSide || 'N/A').toUpperCase();
+    const side = open?.side
+      ? String(open.side).toUpperCase()
+      : chosenSide === 'BUY'
+        ? 'LONG'
+        : chosenSide === 'SELL'
+          ? 'SHORT'
+          : String(candidate?.bias || (aiJournal as any)?.side || 'WATCH').toUpperCase();
+    const setupState = open
+      ? 'OPEN POSITION'
+      : candidate?.state
+        ? candidate.state
+      : reject
+        ? 'BLOCKED'
+        : decision.label === 'TRADE'
+          ? 'READY'
+          : decision.state.replaceAll('_', ' ');
+    const price = Number(canonicalPriceBySymbol.get(candidateSymbol)?.price || coin?.price || open?.currentPrice || 0);
+    const isShort = side === 'SHORT' || side === 'SELL';
+    const formatPlanPrice = (value: number) => {
+      if (!Number.isFinite(value) || value <= 0) return '—';
+      return value >= 100 ? value.toFixed(0) : value >= 1 ? value.toFixed(2) : value.toFixed(5);
+    };
+    const fallbackEntryLow = price > 0 ? price * 0.998 : 0;
+    const fallbackEntryHigh = price > 0 ? price * 1.002 : 0;
+    const fallbackStop = price > 0 ? (isShort ? price * 1.007 : price * 0.993) : 0;
+    const fallbackTp1 = price > 0 ? (isShort ? price * 0.994 : price * 1.006) : 0;
+    const fallbackTp2 = price > 0 ? (isShort ? price * 0.988 : price * 1.012) : 0;
+    const planEntry = Number((aiJournal as any)?.entry || 0);
+    const planStop = Number((aiJournal as any)?.stopLoss || 0);
+    const planTarget = Number((aiJournal as any)?.takeProfit || 0);
+    const candidateEntryLow = Number(candidate?.entryZone?.low || 0);
+    const candidateEntryHigh = Number(candidate?.entryZone?.high || 0);
+    const entryZone = candidateEntryLow > 0 && candidateEntryHigh > 0
+      ? `${formatPlanPrice(candidateEntryLow)} - ${formatPlanPrice(candidateEntryHigh)}`
+      : planEntry > 0
+      ? `${formatPlanPrice(planEntry * 0.998)} - ${formatPlanPrice(planEntry * 1.002)}`
+      : price > 0
+        ? `${formatPlanPrice(fallbackEntryLow)} - ${formatPlanPrice(fallbackEntryHigh)}`
+        : '—';
+    const stop = formatPlanPrice(Number(candidate?.stopLoss || 0) > 0 ? Number(candidate?.stopLoss || 0) : planStop > 0 ? planStop : fallbackStop);
+    const candidateTargets = Array.isArray(candidate?.targets) ? candidate.targets.filter((target) => Number(target) > 0) : [];
+    const targets = candidateTargets.length > 0
+      ? candidateTargets.slice(0, 2).map((target) => formatPlanPrice(Number(target))).join(' / ')
+      : planTarget > 0
+      ? formatPlanPrice(planTarget)
+      : [fallbackTp1, fallbackTp2].map(formatPlanPrice).filter((x) => x !== '—').join(' / ') || '—';
+    const expectedR = Number(candidate?.expectedRR || (aiJournal as any)?.expectedRMultiple || 0);
+    const edgeBps = Number((aiJournal as any)?.expectedNetEdgeBps || 0);
+    const waitFor = candidate?.state === 'READY' && candidate.confirm
+      ? candidate.confirm
+      : candidate?.blocker
+        ? candidate.blocker
+        : candidate?.confirm
+          ? candidate.confirm
+          : decision.label === 'TRADE'
+      ? `Wait for ${candidateSymbol} to hold ${entryZone}, confirm ${side} momentum, then execute only if RR stays >= ${expectedR > 0 ? expectedR.toFixed(2) : '1.50'}.`
+      : (reject ? String(reject.reason || '').replace(/^ai_no_trade:/, 'AI no trade: ').replace(/_/g, ' ') : triggerDiagnostics.blockerNow);
+    const watched = symbolBrains.slice(0, 5).map((s) => `${s.symbol.replace('USDT', '')}:${s.state}`).join('  ');
+
+    return {
+      symbol: candidateSymbol,
+      price,
+      side,
+      setupState,
+      confidence: Number((aiJournal as any)?.confidence || decision.confidence || 0),
+      expectedR: expectedR > 0 ? expectedR.toFixed(2) : String(decision.entryPlan.rr || '>= 1.5'),
+      edge: Number.isFinite(edgeBps) && edgeBps !== 0 ? `${edgeBps.toFixed(1)} bps` : 'waiting',
+      entryZone,
+      stop,
+      targets,
+      waitFor,
+      watched,
+      blocker: reject ? String(reject.reason || '').replace(/^ai_no_trade:/, 'AI no trade: ').replace(/_/g, ' ') : '',
+      journalDecision: String((aiJournal as any)?.decision || decision.label || 'NO_TRADE').toUpperCase(),
+      symbolState: symbolBrain?.state || 'SCANNING',
+      qualityScore: Number(candidate?.qualityScore || 0),
+      setupType: String(candidate?.setupType || setupState).replace(/_/g, ' '),
+      thesis: candidate?.thesis || '',
+      confirm: candidate?.confirm || '',
+      invalidate: candidate?.invalidate || decision.invalidators?.[0] || 'Structure invalidation not reported',
+      qualityScores: candidate?.scores || null,
+      candidateState: candidate?.state || setupState,
+    };
+  }, [
+    livePositions,
+    workerStatus?.aiConversations,
+    topTradeCandidate?.symbol,
+    workerStatus?.lastAutoSignalKey,
+    workerStatus?.symbolRejects,
+    workerStatus?.chosenSide,
+    coins,
+    canonicalPriceBySymbol,
+    latestAiBySymbol,
+    candidateBySymbol,
+    symbolBrains,
+    decision,
+    triggerDiagnostics.blockerNow,
+  ]);
+
+  const liveFeed = useMemo(() => {
+    const events: string[] = [];
+    if (workerStatus?.lastRunAt) events.push(`Worker cycle: ${new Date(workerStatus.lastRunAt).toLocaleTimeString()}`);
+    if (workerStatus?.lastAction) events.push(`Action: ${String(workerStatus.lastAction).toUpperCase()} — ${workerStatus?.lastReasonHuman || workerStatus?.lastReason || 'n/a'}`);
+    for (const c of cycleChanges.slice(0, 3)) events.push(c);
+    for (const j of journal.slice(0, 3)) {
+      if (j.type === 'trade_close') events.push(`Closed ${j.symbol || 'pair'} • PnL ${signedMoney(Number(j.pnl || 0))}`);
+      if (j.type === 'trade_open') events.push(`Opened ${j.symbol || 'pair'} • qty ${Number(j.qty || 0).toFixed(6)}`);
+    }
+    return events.slice(0, 8);
+  }, [workerStatus?.lastRunAt, workerStatus?.lastAction, workerStatus?.lastReason, cycleChanges, journal]);
+
+  const lastReasonText = String(workerStatus?.lastReasonHuman || workerStatus?.lastReason || '—');
+
+  const reasonBreakdown = useMemo(() => {
+    const bySymbol: Array<{ symbol: string; reason: string }> = [];
+    const symbolRegex = /([A-Z]{3,}USDT):\s*([^•]+?)(?=(?:\s*•\s*[A-Z]{3,}USDT:)|$)/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = symbolRegex.exec(lastReasonText)) !== null) {
+      bySymbol.push({
+        symbol: match[1],
+        reason: match[2].trim(),
+      });
+    }
+
+    const headline = lastReasonText.split(/\s*•\s*/)[0]?.trim() || '—';
+
+    return {
+      headline,
+      bySymbol,
+      hasStructuredReasons: bySymbol.length > 0,
+    };
+  }, [lastReasonText]);
+
+  async function pingStatusFast() {
+    try {
+      const res = await fetchWithTimeout(`${API}/status`, {}, 20000);
+      if (!res.ok) return;
+      const payload = (await res.json()) as TradingStatus;
+      setStatus(payload);
+      setError('');
+      setLastUpdated(new Date().toLocaleTimeString());
+    } catch {
+      // keep previous status when ping fails
+    }
+  }
+
+  async function loadDashboard() {
+    try {
+      const [statusRes, settingsRes, briefingRes, riskRes, intelligenceRes, operatorRes, journalRes, workerRes, openOrdersRes] = await Promise.allSettled([
+        fetchWithTimeout(`${API}/status`, {}, 20000),
+        fetchWithTimeout(`${API}/settings`),
+        fetchWithTimeout(`${API}/daily-briefing`),
+        fetchWithTimeout(`${API}/risk-context?symbols=${EXEC_SYMBOLS.join(',')}`),
+        fetchWithTimeout(`${API}/trade-intelligence?symbols=${EXEC_SYMBOLS.join(',')}`),
+        fetchWithTimeout(`${API}/operator-intelligence?symbols=${EXEC_SYMBOLS.join(',')}`, {}, 25000),
+        fetchWithTimeout(`${API}/journal?limit=300&tradeCloseLimit=50&tradeCloseScanLimit=5000`),
+        fetchWithTimeout(`${API}/worker-status`),
+        fetchWithTimeout(`${API}/open-orders`),
+      ]);
+
+      let statusApplied = false;
+      if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
+        try {
+          const statusPayload = (await statusRes.value.json()) as TradingStatus;
+          setStatus(statusPayload);
+          statusApplied = true;
+        } catch {
+          // keep previous status if payload parse fails
+        }
+      }
+
+      if (!statusApplied) {
+        try {
+          const fallbackRes = await fetchWithTimeout(`${API}/status`);
+          if (fallbackRes.ok) {
+            const statusPayload = (await fallbackRes.json()) as TradingStatus;
+            setStatus(statusPayload);
+            statusApplied = true;
+          }
+        } catch {
+          // keep previous status
+        }
+      }
+
+      if (settingsRes.status === 'fulfilled' && settingsRes.value.ok) {
+        try {
+          setSettings((await settingsRes.value.json()) as SettingsPayload);
+        } catch {
+          // ignore malformed settings payload
+        }
+      }
+
+      if (briefingRes.status === 'fulfilled' && briefingRes.value.ok) {
+        try {
+          const nextBriefing = (await briefingRes.value.json()) as BriefingPayload;
+
+          const nextConfidence = Number(nextBriefing.market?.regimeConfidence || 0);
+          const nextVolatility = String(nextBriefing.market?.volatilityState || 'unknown').toUpperCase();
+          const nextFundingPct = Number(nextBriefing.market?.funding?.[0]?.fundingRate || 0) * 100;
+
+          const prev = previousCycleRef.current;
+          if (prev) {
+            const changes: string[] = [];
+            if (prev.regimeConfidence !== nextConfidence) {
+              changes.push(`Regime confidence: ${prev.regimeConfidence}% → ${nextConfidence}%`);
+            }
+            if (prev.volatility !== nextVolatility) {
+              changes.push(`Volatility: ${prev.volatility} → ${nextVolatility}`);
+            }
+            if (Math.abs(prev.fundingRatePct - nextFundingPct) >= 0.01) {
+              changes.push(`Funding: ${prev.fundingRatePct.toFixed(2)}% → ${nextFundingPct.toFixed(2)}%`);
+            }
+            setCycleChanges(changes);
+          }
+
+          previousCycleRef.current = {
+            regimeConfidence: nextConfidence,
+            volatility: nextVolatility,
+            fundingRatePct: nextFundingPct,
+          };
+
+          setBriefing(nextBriefing);
+        } catch {
+          // ignore malformed briefing payload
+        }
+      }
+
+      if (riskRes.status === 'fulfilled' && riskRes.value.ok) {
+        try {
+          setRiskContext((await riskRes.value.json()) as RiskContext);
+        } catch {
+          // ignore malformed risk payload
+        }
+      }
+
+      if (intelligenceRes.status === 'fulfilled' && intelligenceRes.value.ok) {
+        try {
+          setTradeIntelligence((await intelligenceRes.value.json()) as TradeIntelligencePayload);
+        } catch {
+          // ignore malformed trade intelligence payload
+        }
+      }
+
+      if (operatorRes.status === 'fulfilled' && operatorRes.value.ok) {
+        try {
+          setOperatorIntelligence((await operatorRes.value.json()) as OperatorIntelligencePayload);
+        } catch {
+          // ignore malformed operator intelligence payload
+        }
+      }
+
+      if (journalRes.status === 'fulfilled' && journalRes.value.ok) {
+        try {
+          const payload = await journalRes.value.json();
+          setJournal(Array.isArray(payload?.entries) ? payload.entries : []);
+        } catch {
+          // ignore malformed journal payload
+        }
+      }
+
+      if (workerRes.status === 'fulfilled' && workerRes.value.ok) {
+        try {
+          const payload = await workerRes.value.json();
+          setWorkerStatus(payload);
+        } catch {
+          // ignore malformed worker payload
+        }
+      }
+
+      if (openOrdersRes.status === 'fulfilled' && openOrdersRes.value.ok) {
+        try {
+          const payload = await openOrdersRes.value.json();
+          setOpenOrders(Array.isArray(payload?.orders) ? payload.orders : []);
+        } catch {
+          // ignore malformed open-orders payload
+        }
+      }
+
+      setLastUpdated(new Date().toLocaleTimeString());
+      setError('');
+    } catch (e: any) {
+      setError(e?.message || 'Failed to load dashboard');
+    }
+  }
+
+  async function loadMarket() {
+    try {
+      const ids = TRACKED_SYMBOLS.map((x) => x.id).join(',');
+      const res = await fetchWithTimeout(`https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${ids}&sparkline=false&price_change_percentage=24h`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const mapped = TRACKED_SYMBOLS.map((x) => {
+        const m = data.find((d: any) => d.id === x.id);
+        return {
+          symbol: x.symbol,
+          price: Number(m?.current_price || 0),
+          change: Number(m?.price_change_percentage_24h || 0),
+        };
+      });
+      setCoins(mapped);
+    } catch {
+      // keep last successful snapshot
+    }
+  }
+
+  async function secureBreakEven(symbol: string) {
+    if (!manualAdminKey.trim()) {
+      setManualFeedback({ kind: 'error', text: 'Admin Key is required to secure Break Even.' });
+      return;
+    }
+
+    try {
+      const res = await fetchWithTimeout(`${API}/positions/secure-break-even`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': manualAdminKey.trim(),
+        },
+        body: JSON.stringify({ symbols: [symbol], bufferPct: 0 }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        setManualFeedback({ kind: 'error', text: `BE update failed: ${String(data?.error || 'secure_break_even_failed')}` });
+        return;
+      }
+      const result = data?.result || (Array.isArray(data.results) ? data.results[0] : data);
+      const stopLoss = Number(result?.stopLoss || 0);
+      const feeBps = Number(result?.feeBps ?? (riskSettings as any).breakEvenFeeBps ?? 8);
+      const slippageBps = Number(result?.slippageBps ?? (riskSettings as any).breakEvenSlippageBps ?? 5);
+      const stopText = stopLoss > 0 ? ` at ${formatPrice(stopLoss)}` : '';
+      setManualFeedback({ kind: 'success', text: `${symbol} Stop Loss moved to BE+${stopText}, covering estimated fees (${feeBps} bps) and slippage (${slippageBps} bps).` });
+      await loadDashboard();
+    } catch (e: any) {
+      setManualFeedback({ kind: 'error', text: e?.message || 'Failed to secure Break Even.' });
+    }
+  }
+
+  async function takePartial(symbol: string, percent = 5) {
+    if (!manualAdminKey.trim()) {
+      setManualFeedback({ kind: 'error', text: 'Admin Key is required to take partial profit.' });
+      return;
+    }
+
+    try {
+      const res = await fetchWithTimeout(`${API}/positions/partial-close`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': manualAdminKey.trim(),
+        },
+        body: JSON.stringify({ symbols: [symbol], percent }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        setManualFeedback({ kind: 'error', text: `Partial close failed: ${String(data?.error || 'partial_close_failed')}` });
+        return;
+      }
+      setManualFeedback({ kind: 'success', text: `${symbol} partial close executed for ${percent}%.` });
+      await loadDashboard();
+    } catch (e: any) {
+      setManualFeedback({ kind: 'error', text: e?.message || 'Failed to take partial profit.' });
+    }
+  }
+
+  async function closePosition(symbol: string) {
+    if (!manualAdminKey.trim()) {
+      setManualFeedback({ kind: 'error', text: 'Admin Key is required to close a trade.' });
+      return;
+    }
+
+    const confirmText = `Close ${symbol} position now?`;
+    if (typeof window !== 'undefined' && !window.confirm(confirmText)) return;
+
+    try {
+      const res = await fetchWithTimeout(`${API}/close-position`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': manualAdminKey.trim(),
+        },
+        body: JSON.stringify({ symbol }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        setManualFeedback({ kind: 'error', text: `Close failed: ${String(data?.error || 'close_position_failed')}` });
+        return;
+      }
+      setManualFeedback({ kind: 'success', text: `${symbol} position closed.` });
+      await loadDashboard();
+    } catch (e: any) {
+      setManualFeedback({ kind: 'error', text: e?.message || 'Failed to close position.' });
+    }
+  }
+
+  async function updateStopLoss(symbol: string, fallbackStop: number) {
+    if (!manualAdminKey.trim()) {
+      setManualFeedback({ kind: 'error', text: 'Admin Key is required to update Stop Loss.' });
+      return;
+    }
+
+    const raw = slDrafts[symbol];
+    const stopLoss = Number(raw && raw.trim() ? raw : fallbackStop);
+    if (!Number.isFinite(stopLoss) || stopLoss <= 0) {
+      setManualFeedback({ kind: 'error', text: `Invalid Stop Loss for ${symbol}.` });
+      return;
+    }
+
+    const confirmText = `Update ${symbol} Stop Loss to ${stopLoss}?`;
+    if (typeof window !== 'undefined' && !window.confirm(confirmText)) return;
+
+    try {
+      const res = await fetchWithTimeout(`${API}/update-stop-loss`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': manualAdminKey.trim(),
+        },
+        body: JSON.stringify({ symbol, stopLoss }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        setManualFeedback({ kind: 'error', text: `SL update failed: ${String(data?.error || 'update_stop_loss_failed')}` });
+        return;
+      }
+
+      setManualFeedback({ kind: 'success', text: `${symbol} Stop Loss updated to ${stopLoss}.` });
+      await loadDashboard();
+    } catch (e: any) {
+      setManualFeedback({ kind: 'error', text: e?.message || 'Failed to update Stop Loss.' });
+    }
+  }
+
+  async function submitManualTrade() {
+    setManualFeedback(null);
+
+    if (!manualAdminKey.trim()) {
+      setManualFeedback({ kind: 'error', text: 'Admin key is required for manual trade submission.' });
+      return;
+    }
+
+    const confidenceNum = Number(manualConfidence);
+    if (!Number.isFinite(confidenceNum) || confidenceNum <= 0 || confidenceNum > 100) {
+      setManualFeedback({ kind: 'error', text: 'Confidence must be between 1 and 100.' });
+      return;
+    }
+
+    if (!manualStopLoss || !manualTakeProfit) {
+      setManualFeedback({ kind: 'error', text: 'Stop Loss and Take Profit are required.' });
+      return;
+    }
+
+    const payload: any = {
+      symbol: manualSymbol,
+      side: manualSide,
+      type: manualType,
+      confidence: confidenceNum,
+      reason: manualReason || 'Manual discretionary setup',
+      stopLoss: Number(manualStopLoss),
+      takeProfit: Number(manualTakeProfit),
+      leverage: Number(manualLeverage || 1),
+    };
+
+    if (manualQty && Number.isFinite(Number(manualQty)) && Number(manualQty) > 0) {
+      payload.quantity = Number(manualQty);
+    }
+
+    if (manualType === 'LIMIT' && manualPrice && Number.isFinite(Number(manualPrice)) && Number(manualPrice) > 0) {
+      payload.price = Number(manualPrice);
+    }
+
+    const confirmText = `Submit manual ${manualSide} ${manualSymbol} trade now?`;
+    if (typeof window !== 'undefined' && !window.confirm(confirmText)) return;
+
+    try {
+      setManualSubmitting(true);
+      const res = await fetchWithTimeout(`${API}/manual-trade`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': manualAdminKey.trim(),
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        const reason = String(data?.rejectReason || data?.error || 'manual_trade_rejected');
+        setManualFeedback({ kind: 'error', text: `Manual trade rejected: ${reason}` });
+        return;
+      }
+
+      setManualFeedback({ kind: 'success', text: 'Manual trade submitted successfully.' });
+      await loadDashboard();
+    } catch (e: any) {
+      setManualFeedback({ kind: 'error', text: e?.message || 'Failed to submit manual trade.' });
+    } finally {
+      setManualSubmitting(false);
+    }
+  }
+
+  async function cancelOpenOrder(order: { symbol: string; orderId: number }) {
+    setOrdersFeedback(null);
+    if (!manualAdminKey.trim()) {
+      setOrdersFeedback({ kind: 'error', text: 'Admin Key is required to cancel orders.' });
+      return;
+    }
+
+    const confirmText = `Cancel ${order.symbol} order #${order.orderId}?`;
+    if (typeof window !== 'undefined' && !window.confirm(confirmText)) return;
+
+    try {
+      const res = await fetchWithTimeout(`${API}/cancel-order`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': manualAdminKey.trim(),
+        },
+        body: JSON.stringify({ symbol: order.symbol, orderId: order.orderId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        setOrdersFeedback({ kind: 'error', text: `Cancel failed: ${String(data?.error || 'cancel_order_failed')}` });
+        return;
+      }
+      setOrdersFeedback({ kind: 'success', text: `Canceled order #${order.orderId} (${order.symbol})` });
+      await loadDashboard();
+    } catch (e: any) {
+      setOrdersFeedback({ kind: 'error', text: e?.message || 'Failed to cancel order.' });
+    }
+  }
+
+  async function cancelAllOpenOrders(scope: 'ALL' | 'FILTERED') {
+    setOrdersFeedback(null);
+    if (!manualAdminKey.trim()) {
+      setOrdersFeedback({ kind: 'error', text: 'Admin Key is required to cancel orders.' });
+      return;
+    }
+
+    const symbol = scope === 'FILTERED' && openOrderFilter !== 'ALL' ? openOrderFilter : undefined;
+    const confirmText = symbol
+      ? `Cancel all open orders for ${symbol}?`
+      : 'Cancel ALL open orders?';
+    if (typeof window !== 'undefined' && !window.confirm(confirmText)) return;
+
+    try {
+      const res = await fetchWithTimeout(`${API}/cancel-open-orders`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': manualAdminKey.trim(),
+        },
+        body: JSON.stringify(symbol ? { symbol } : {}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) {
+        setOrdersFeedback({ kind: 'error', text: `Bulk cancel failed: ${String(data?.error || 'cancel_open_orders_failed')}` });
+        return;
+      }
+
+      setOrdersFeedback({ kind: 'success', text: `Canceled ${Number(data?.canceledCount || 0)} order(s).` });
+      await loadDashboard();
+    } catch (e: any) {
+      setOrdersFeedback({ kind: 'error', text: e?.message || 'Failed to cancel open orders.' });
+    }
+  }
+
+  useEffect(() => {
+    setWidgetLayouts(loadStoredWidgetLayouts());
+    if (typeof window !== 'undefined') {
+      const storedView = window.localStorage.getItem(DASHBOARD_VIEW_MODE_STORAGE_KEY);
+      if (storedView === 'operator' || storedView === 'quant' || storedView === 'presentation') {
+        setDashboardViewMode(storedView);
+      }
+    }
+    pingStatusFast();
+    loadDashboard();
+    loadMarket();
+    if (typeof window !== 'undefined') {
+      setUiBuildId((window as any)?.__NEXT_DATA__?.buildId || 'unknown');
+    }
+    const id = setInterval(() => {
+      pingStatusFast();
+      loadDashboard();
+      loadMarket();
+    }, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  function persistWidgetLayouts(nextLayouts: ResponsiveLayouts) {
+    setWidgetLayouts(nextLayouts);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(DASHBOARD_LAYOUT_STORAGE_KEY, JSON.stringify(nextLayouts));
+    }
+  }
+
+  function persistDashboardViewMode(nextMode: 'operator' | 'quant' | 'presentation') {
+    setDashboardViewMode(nextMode);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(DASHBOARD_VIEW_MODE_STORAGE_KEY, nextMode);
+    }
+  }
+
+  const beProtectionPct = Math.max(0, Number((riskSettings as any).breakEvenBufferPct ?? 0.001))
+    + Math.max(0, Number((riskSettings as any).breakEvenFeeBps ?? 8)) / 10000
+    + Math.max(0, Number((riskSettings as any).breakEvenSlippageBps ?? 5)) / 10000;
+  const runnerPartialPct = Math.max(5, Math.min(80, Number((riskSettings as any).runnerPartialTakeProfitPct ?? 30)));
+  const runnerActivationR = Math.max(1, Math.min(10, Number((riskSettings as any).runnerActivationR ?? 2)));
+  const runnerTrailPct = Math.max(0.1, Math.min(20, Number((riskSettings as any).runnerTrailPct ?? 0.006) * 100));
+  const winnersRunEnabled = (riskSettings as any).letWinnersRunEnabled !== false;
+
+  const activeTradeRows = livePositions.slice(0, 6).map((p) => {
+    const stop = Number((p as any).stopLoss || 0);
+    const entry = Number(p.entryPrice || 0);
+    const size = Number(p.size || 0);
+    const side = String((p as any).side || 'LONG');
+    const mark = Number(canonicalPriceBySymbol.get(String(p.symbol || '').toUpperCase())?.price || (p as any).currentPrice || 0);
+    const unrealized = Number((p as any).pnl || 0);
+    const riskPerUnit = stop > 0 && entry > 0 ? Math.abs(entry - stop) : 0;
+    const secured = stop > 0
+      ? side === 'LONG'
+        ? (stop - entry) * size
+        : (entry - stop) * size
+      : 0;
+    const slStatus = stop <= 0
+      ? 'N/A'
+      : secured > 0
+        ? 'Locked Profit'
+        : Math.abs(stop - entry) / Math.max(1, entry) < 0.002
+          ? 'Break-even'
+          : 'Initial';
+    const pnlState = unrealized > 0.000001 ? 'profit' : unrealized < -0.000001 ? 'loss' : 'flat';
+    const bePlusStop = entry > 0
+      ? side === 'LONG'
+        ? entry * (1 + beProtectionPct)
+        : entry * (1 - beProtectionPct)
+      : 0;
+    const beArmMove = entry > 0 && bePlusStop > 0 ? Math.abs(bePlusStop - entry) : 0;
+    const favorableMove = entry > 0 && mark > 0
+      ? side === 'LONG'
+        ? Math.max(0, mark - entry)
+        : Math.max(0, entry - mark)
+      : 0;
+    const currentR = riskPerUnit > 0 ? favorableMove / riskPerUnit : 0;
+    const partialTargetPrice = entry > 0 && riskPerUnit > 0
+      ? side === 'LONG'
+        ? entry + (riskPerUnit * runnerActivationR)
+        : entry - (riskPerUnit * runnerActivationR)
+      : 0;
+    const partialProgressPct = partialTargetPrice > 0 && favorableMove > 0 && riskPerUnit > 0
+      ? Math.max(0, Math.min(100, (currentR / runnerActivationR) * 100))
+      : 0;
+    const beProgressPct = beArmMove > 0 && favorableMove > 0
+      ? Math.max(0, Math.min(100, (favorableMove / beArmMove) * 100))
+      : 0;
+    const stopPressurePct = entry > 0 && stop > 0 && mark > 0
+      ? Math.max(0, Math.min(100, 100 - ((Math.abs(mark - stop) / Math.abs(entry - stop || 1)) * 100)))
+      : 0;
+    const distanceToStopPct = stop > 0 && mark > 0 ? (Math.abs(mark - stop) / mark) * 100 : 0;
+    const protectionState = stop <= 0
+      ? 'No Stop'
+      : slStatus === 'Locked Profit'
+        ? 'Locked Profit'
+        : slStatus === 'Break-even'
+          ? 'BE Active'
+          : beProgressPct >= 100
+            ? 'BE Ready'
+            : 'Initial Risk';
+    const runnerState = Boolean((p as any).runnerMode)
+      ? 'Runner Live'
+      : Number((p as any).partialTakenPct || 0) > 0
+        ? 'Runner Armed'
+        : partialProgressPct >= 100
+          ? 'Partial Ready'
+          : 'Building';
+    const riskState = unrealized < 0 && stopPressurePct >= 70
+      ? 'At Risk'
+      : unrealized < 0
+        ? 'Under Pressure'
+        : unrealized > 0 && slStatus === 'Locked Profit'
+          ? 'Protected'
+          : unrealized > 0
+            ? 'Working'
+            : 'Neutral';
+    return {
+      ts: p.openedAt,
+      symbol: p.symbol,
+      side,
+      qty: p.size,
+      entry: p.entryPrice,
+      mark,
+      markSource: canonicalPriceBySymbol.get(String(p.symbol || '').toUpperCase())?.source || 'position',
+      stop,
+      takeProfit: Number((p as any).takeProfit || 0),
+      slStatus,
+      secured,
+      unrealized,
+      pnlState,
+      bePlusStop,
+      runnerMode: Boolean((p as any).runnerMode),
+      partialTakenPct: Number((p as any).partialTakenPct || 0),
+      bestPrice: Number((p as any).bestPrice || 0),
+      riskPerUnit,
+      currentR,
+      partialTargetPrice,
+      partialProgressPct,
+      beProgressPct,
+      stopPressurePct,
+      distanceToStopPct,
+      protectionState,
+      runnerState,
+      riskState,
+    };
+  });
+  const managedPositionRows = activeTradeRows.map((t) => {
+    const intelligenceInsight = positionInsightBySymbol.get(String(t.symbol || '').toUpperCase());
+    const side = String(t.side || '').toUpperCase();
+    const isLong = side === 'LONG' || side === 'BUY';
+    const entry = Number(t.entry || 0);
+    const mark = Number(t.mark || 0);
+    const stop = Number(t.stop || 0);
+    const takeProfit = Number(t.takeProfit || 0);
+    const unrealized = Number(t.unrealized || 0);
+    const qty = Number(t.qty || 0);
+    const riskToStop = stop > 0 && mark > 0 && qty > 0 ? Math.abs(mark - stop) * qty : 0;
+    const rewardToTarget = takeProfit > 0 && mark > 0 && qty > 0 ? Math.abs(takeProfit - mark) * qty : 0;
+    const movePct = entry > 0 && mark > 0 ? ((mark - entry) / entry) * (isLong ? 100 : -100) : 0;
+    const distanceToStopPct = stop > 0 && mark > 0 ? (Math.abs(mark - stop) / mark) * 100 : 0;
+    const distanceToTargetPct = takeProfit > 0 && mark > 0 ? (Math.abs(takeProfit - mark) / mark) * 100 : 0;
+    const nextAction = intelligenceInsight?.recommendation || (stop <= 0
+      ? 'Add a protective stop before doing anything else.'
+      : unrealized > 0 && t.slStatus === 'Initial'
+        ? 'Winner is open. Watch for BE lock conditions before giving profit back.'
+        : unrealized > 0 && t.slStatus === 'Break-even'
+          ? 'Risk is neutralized. Manage toward partial profit or trail only after structure confirms.'
+          : unrealized > 0 && t.slStatus === 'Locked Profit'
+            ? 'Profit is protected. Let the trade work unless structure breaks.'
+            : unrealized < 0
+              ? 'Trade is under pressure. Respect the stop; do not widen risk.'
+              : 'Position is flat. Wait for movement toward stop or target before adjusting.');
+
+    return {
+      ...t,
+      side,
+      isLong,
+      riskToStop,
+      rewardToTarget,
+      movePct,
+      distanceToStopPct,
+      distanceToTargetPct,
+      nextAction,
+      managementReason: intelligenceInsight?.reason || '',
+      managementState: intelligenceInsight?.state || '',
+      currentR: Number(intelligenceInsight?.currentR || 0),
+      holdScore: Number(intelligenceInsight?.holdScore || 0),
+      reduceScore: Number(intelligenceInsight?.reduceScore || 0),
+      exitScore: Number(intelligenceInsight?.exitScore || 0),
+    };
+  });
+  const recentTradeRows = journal
+    .filter((j) => j.type === 'trade_close')
+    .sort((a, b) => new Date(String(b.ts || 0)).getTime() - new Date(String(a.ts || 0)).getTime())
+    .slice(0, 20)
+    .map((j) => {
+      const rawDirection = String((j as any).positionSide || (j as any).direction || (j as any).side || '').toUpperCase();
+      const direction = rawDirection === 'BUY' ? 'LONG' : rawDirection === 'SELL' ? 'SHORT' : (rawDirection || '—');
+      const ts = String((j as any).closedAt || j.ts || '');
+      return {
+        ts,
+        symbol: String((j as any).symbol || '—'),
+        side: direction,
+        direction,
+        pnl: Number((j as any).pnl || 0),
+      };
+    });
+  const aiDecisionRows = Array.from(
+    new Map(
+      journal
+        .filter((j) => j.type === 'ai_decision')
+        .sort((a, b) => new Date(String(b.ts || 0)).getTime() - new Date(String(a.ts || 0)).getTime())
+        .map((j) => {
+          const row = {
+            ts: j.ts,
+            symbol: j.symbol || '—',
+            decision: String(j.decision || '—').toUpperCase(),
+            confidence: Number(j.confidence || 0),
+            reason: (() => {
+              const base = Array.isArray(j.reasons) && j.reasons.length ? j.reasons[0] : (j.gateResult || 'n/a');
+              const b = String(base).toLowerCase();
+              if (b.includes('unable to generate signal')) {
+                return 'No clean setup this cycle; DeepSeek confidence too weak to issue a trade.';
+              }
+              if (b.includes('model_output_invalid_json')) {
+                return 'DeepSeek response format invalid this cycle; parser fallback blocked execution.';
+              }
+              if (b.includes('regime') && b.includes('unclear')) {
+                return 'AI disagreement: regime interpretation mismatch (engine shows qualified trend context).';
+              }
+              return String(base).replace(/_/g, ' ');
+            })(),
+          };
+          const key = `${row.ts}|${row.symbol}|${row.decision}|${row.reason}`;
+          return [key, row] as const;
+        })
+    ).values()
+  ).slice(0, 8);
+
+  const aiPositionFeedbackRows = Array.isArray(workerStatus?.positionFeedback)
+    ? workerStatus.positionFeedback.slice(0, 6)
+    : [];
+
+  const aiConversationRows = Array.isArray(workerStatus?.aiConversations)
+    ? workerStatus.aiConversations.slice(0, 10)
+    : [];
+
+  const latestAiConversation = aiConversationRows[0] || null;
+  const deepseekFreshnessMs = workerStatus?.aiLastHeartbeatAt
+    ? Date.now() - new Date(workerStatus.aiLastHeartbeatAt).getTime()
+    : Number.POSITIVE_INFINITY;
+  const deepseekFresh = Number.isFinite(deepseekFreshnessMs)
+    && deepseekFreshnessMs <= Number(workerStatus?.aiFreshnessMaxMs || 5 * 60_000);
+
+  const workerCycleAgeSec = workerStatus?.lastRunAt
+    ? Math.max(0, Math.round((Date.now() - new Date(workerStatus.lastRunAt).getTime()) / 1000))
+    : null;
+  const workerHealth = workerStatus?.running
+    ? workerCycleAgeSec !== null && workerCycleAgeSec <= Number(workerStatus?.intervalSec || 60) * 2
+      ? 'HEALTHY'
+      : 'STALE'
+    : 'OFF';
+  const workerNextCycleSec = workerCycleAgeSec === null
+    ? null
+    : Math.max(0, Number(workerStatus?.intervalSec || 60) - workerCycleAgeSec);
+  const workerRejectRows = Array.isArray(workerStatus?.symbolRejects)
+    ? workerStatus.symbolRejects.slice(0, 5).map((row: any) => {
+        const symbol = String(row?.symbol || '—').toUpperCase();
+        const base = symbol.replace('USDT', '');
+        const coin = coins.find((c) => c.symbol === base);
+        const canonical = canonicalPriceBySymbol.get(symbol);
+        const aiRow = latestAiBySymbol.get(symbol);
+        const brain = symbolBrains.find((s) => s.symbol === symbol);
+        return {
+          symbol,
+          reason: String(row?.reason || 'blocked').replace(/^ai_no_trade:/, '').replace(/_/g, ' '),
+          price: Number(canonical?.price || coin?.price || 0),
+          priceSource: canonical?.source || 'ticker',
+          change: Number(coin?.change || 0),
+          confidence: Number((aiRow as any)?.confidence || brain?.confidence || 0),
+          expectedR: Number((aiRow as any)?.expectedRMultiple || 0),
+          edge: Number((aiRow as any)?.expectedNetEdgeBps || 0),
+          decision: String((aiRow as any)?.decision || 'NO_TRADE').toUpperCase(),
+          gate: String((aiRow as any)?.gateResult || 'blocked').toUpperCase(),
+          reviewedAt: String((aiRow as any)?.ts || ''),
+          scannerState: String(brain?.state || 'SCANNING'),
+        };
+      })
+    : [];
+  const workerArmedTrigger = workerStatus?.armedTrigger || null;
+  const compactWorkerReason = useMemo(() => {
+    const raw = String(workerStatus?.lastReasonHuman || workerStatus?.lastReason || 'Waiting for worker cycle.');
+    if (workerRejectRows.length > 1) {
+      const normalizedReasons = workerRejectRows.map((row) => row.reason.replace(/\s+/g, ' ').trim());
+      const shared = normalizedReasons.find((reason) => reason && normalizedReasons.every((candidate) => candidate === reason));
+      return shared
+        ? `No trade. Shared blocker: ${shared}`
+        : `No trade. ${workerRejectRows.length} symbols blocked this cycle.`;
+    }
+    return raw
+      .replace(/^No trade this cycle\.\s*/i, 'No trade. ')
+      .replace(/\s*•\s*/g, ' | ');
+  }, [workerStatus?.lastReasonHuman, workerStatus?.lastReason, workerRejectRows]);
+
+  const marketPulseRows = useMemo(() => {
+    const rejectMap = new Map<string, string>();
+    for (const r of (workerStatus?.symbolRejects || [])) {
+      if (r?.symbol) rejectMap.set(String(r.symbol), String(r.reason || 'blocked'));
+    }
+
+    return EXEC_SYMBOLS.map((symbol) => {
+      const base = symbol.replace('USDT', '');
+      const coin = coins.find((c) => c.symbol === base);
+      const canonical = canonicalPriceBySymbol.get(symbol);
+      const hasPosition = livePositions.some((p) => p.symbol === symbol);
+      const blocked = rejectMap.has(symbol);
+      const isFocus = tradeFocus.symbol === symbol;
+      const state = hasPosition ? 'OPEN' : isFocus ? 'FOCUS' : blocked ? 'BLOCKED' : Number(market.regimeConfidence || 0) >= 60 ? 'ARMED' : 'SCAN';
+      return {
+        symbol,
+        base,
+        price: Number(canonical?.price || coin?.price || 0),
+        priceSource: canonical?.source || 'ticker',
+        change: Number(coin?.change || 0),
+        state,
+        focused: isFocus,
+      };
+    });
+  }, [workerStatus?.symbolRejects, coins, canonicalPriceBySymbol, livePositions, tradeFocus.symbol, market.regimeConfidence]);
+
+  const marketOverviewRows = useMemo(() => {
+    const pulseByBase = new Map(marketPulseRows.map((row) => [row.base, row]));
+    return coins.slice(0, 5).map((coin) => {
+      const pulse = pulseByBase.get(coin.symbol);
+      const brain = symbolBrains.find((row) => row.symbol === `${coin.symbol}USDT`);
+      const symbol = `${coin.symbol}USDT`;
+      const canonical = canonicalPriceBySymbol.get(symbol);
+      const candidate = candidateBySymbol.get(symbol);
+      const state = pulse?.state || candidate?.state || brain?.state || (coin.symbol === 'SOL' ? 'WATCH' : 'SCAN');
+      const strength = Math.max(8, Math.min(100, Number(candidate?.qualityScore || 0) || 50 + Number(coin.change || 0) * 10));
+      const aiRow = latestAiBySymbol.get(symbol);
+      const decisionText = candidate
+        ? `${candidate.bias} ${String(candidate.setupType || 'setup').replace(/_/g, ' ')} • Q${candidate.qualityScore}`
+        : String((aiRow as any)?.decision || (state === 'WATCH' ? 'WATCH' : decision.label || 'NO_TRADE')).toUpperCase();
+      return {
+        symbol: coin.symbol,
+        fullSymbol: symbol,
+        price: Number(canonical?.price || coin.price || 0),
+        priceSource: canonical?.source || 'ticker',
+        change: Number(coin.change || 0),
+        state,
+        focused: Boolean(pulse?.focused || tradeFocus.symbol === symbol),
+        strength,
+        decisionText,
+        qualityScore: Number(candidate?.qualityScore || 0),
+        setupType: candidate?.setupType || '',
+        bias: candidate?.bias || 'WATCH',
+      };
+    });
+  }, [coins, canonicalPriceBySymbol, marketPulseRows, symbolBrains, candidateBySymbol, latestAiBySymbol, decision.label, tradeFocus.symbol]);
+
+  const marketQuality = useMemo(() => {
+    const regimeConfidence = Number(market.regimeConfidence || 0);
+    const liquidity = String(market.liquidityState || 'unknown').toLowerCase();
+    const volatility = String(market.volatilityState || 'unknown').toLowerCase();
+    const score = Math.max(0, Math.min(100,
+      Math.round(
+        (regimeConfidence * 0.45)
+        + (liquidity === 'good' ? 30 : liquidity === 'acceptable' ? 20 : 8)
+        + (volatility === 'low' ? 25 : volatility === 'normal' ? 18 : 7)
+      )
+    ));
+    return {
+      score,
+      label: score >= 75 ? 'Clean tape' : score >= 60 ? 'Selective' : 'Wait mode',
+    };
+  }, [market.regimeConfidence, market.liquidityState, market.volatilityState]);
+
+  const manualTradePreview = useMemo(() => {
+    const base = manualSymbol.replace('USDT', '');
+    const coin = coins.find((c) => c.symbol === base);
+    const openPosition = livePositions.find((p) => String(p.symbol || '').toUpperCase() === manualSymbol);
+    const canonical = canonicalPriceBySymbol.get(manualSymbol);
+    const marketPrice = Number(canonical?.price || coin?.price || 0);
+    const positionMark = Number((openPosition as any)?.currentPrice || 0);
+    const limitPrice = Number(manualPrice || 0);
+    const entry = manualType === 'LIMIT' && limitPrice > 0 ? limitPrice : marketPrice;
+    const stop = Number(manualStopLoss || 0);
+    const target = Number(manualTakeProfit || 0);
+    const qty = Number(manualQty || 0);
+    const isBuy = manualSide === 'BUY';
+    const riskPerUnit = entry > 0 && stop > 0 ? Math.abs(entry - stop) : 0;
+    const rewardPerUnit = entry > 0 && target > 0 ? Math.abs(target - entry) : 0;
+    const rr = riskPerUnit > 0 ? rewardPerUnit / riskPerUnit : 0;
+    const stopAligned = !stop || !entry ? false : isBuy ? stop < entry : stop > entry;
+    const targetAligned = !target || !entry ? false : isBuy ? target > entry : target < entry;
+    const riskUsd = qty > 0 && riskPerUnit > 0 ? qty * riskPerUnit : 0;
+    const notional = qty > 0 && entry > 0 ? qty * entry : 0;
+    const ready = Boolean(manualAdminKey.trim() && manualSymbol && stopAligned && targetAligned && Number(manualConfidence || 0) >= 1);
+    return {
+      base,
+      marketPrice,
+      priceSource: canonical?.source || 'ticker',
+      positionMark,
+      markDelta: marketPrice > 0 && positionMark > 0 ? marketPrice - positionMark : 0,
+      entry,
+      rr,
+      riskUsd,
+      notional,
+      stopAligned,
+      targetAligned,
+      ready,
+      posture: ready ? 'Ticket armed' : 'Needs risk plan',
+      priceText: entry > 0 ? `$${entry.toFixed(entry < 1 ? 5 : 2)}` : '—',
+      rrText: rr > 0 && Number.isFinite(rr) ? `${rr.toFixed(2)}R` : '—',
+      riskText: riskUsd > 0 && Number.isFinite(riskUsd) ? signedMoney(-riskUsd) : 'size optional',
+      notionalText: notional > 0 && Number.isFinite(notional) ? `$${notional.toFixed(2)}` : '—',
+    };
+  }, [manualSymbol, manualPrice, manualType, manualStopLoss, manualTakeProfit, manualQty, manualSide, manualAdminKey, manualConfidence, coins, canonicalPriceBySymbol, livePositions]);
+
+  const readinessScore = useMemo(() => {
+    const scoreParts = [
+      (market.regimeConfidence || 0) >= 60 ? 20 : Math.round((Number(market.regimeConfidence || 0) / 60) * 20),
+      String(market.liquidityState || '').toLowerCase() === 'good' ? 20 : String(market.liquidityState || '').toLowerCase() === 'acceptable' ? 12 : 5,
+      String(market.volatilityState || '').toLowerCase() === 'low' ? 20 : String(market.volatilityState || '').toLowerCase() === 'normal' ? 14 : 5,
+      risks.length === 0 ? 20 : Math.max(5, 20 - risks.length * 7),
+      decision.label === 'TRADE' ? 20 : decision.state === 'TRIGGER_ARMED' ? 12 : 6,
+    ];
+    return Math.max(0, Math.min(100, scoreParts.reduce((a, b) => a + b, 0)));
+  }, [market.regimeConfidence, market.liquidityState, market.volatilityState, risks.length, decision.label, decision.state]);
+
+  const riskCapacity = useMemo(() => {
+    const maxTrades = Number(riskSettings.maxTradesPerDay ?? 5);
+
+    // Prefer backend portfolio counter (authoritative) and fallback to deduped journal count.
+    const backendTradesToday = Number((portfolio as any)?.tradesToday);
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const dedupTradeOpens = new Set(
+      journal
+        .filter((j) => j.type === 'trade_open')
+        .filter((j) => {
+          const t = new Date(String(j.ts || '')).getTime();
+          return Number.isFinite(t) && t >= startOfDay.getTime();
+        })
+        .map((j) => `${j.ts}|${j.symbol || ''}|${j.side || ''}|${j.entry || ''}|${j.qty || ''}`)
+    );
+    const rawTradesToday = Number.isFinite(backendTradesToday) && backendTradesToday >= 0
+      ? backendTradesToday
+      : dedupTradeOpens.size;
+    const tradesToday = Math.min(maxTrades, Math.max(0, rawTradesToday));
+
+    const dailyLossLimitPct = Number(riskSettings.maxDailyLossPct ?? 3);
+    const dayPnl = Number(account.previousDayPnl || 0);
+    const dailyLossUsedPct = dayPnl < 0 && walletBalance > 0
+      ? Math.min(100, (Math.abs(dayPnl) / walletBalance) * 100)
+      : 0;
+    const tradeSlotsLeft = Math.max(0, maxTrades - tradesToday);
+    const cooldownUntilTs = portfolio?.cooldownUntil ? Date.parse(portfolio.cooldownUntil) : NaN;
+    const cooldownMinutes = Number.isFinite(cooldownUntilTs) && cooldownUntilTs > Date.now()
+      ? Math.ceil((cooldownUntilTs - Date.now()) / 60000)
+      : 0;
+
+    return {
+      maxTrades,
+      tradesToday,
+      tradeSlotsLeft,
+      dailyLossLimitPct,
+      dailyLossUsedPct,
+      lossCapacityLeftPct: Math.max(0, dailyLossLimitPct - dailyLossUsedPct),
+      openPositions: livePositions.length,
+      maxOpenPositions: Number(workerStatus?.policy?.maxOpenPositions || 1),
+      cooldownMinutes,
+    };
+  }, [riskSettings.maxTradesPerDay, riskSettings.maxDailyLossPct, journal, account.previousDayPnl, walletBalance, portfolio?.cooldownUntil, livePositions.length, workerStatus?.policy?.maxOpenPositions]);
+  const openRiskUsd = useMemo(
+    () => managedPositionRows.reduce((sum, row) => sum + Math.max(0, Number(row.riskToStop || 0)), 0),
+    [managedPositionRows]
+  );
+  const openRiskPctOfWallet = walletBalance > 0 ? (openRiskUsd / walletBalance) * 100 : 0;
+  const drawdownFromAllocationPct = Number(portfolio?.allocatedBalance || 0) > 0
+    ? Math.max(0, ((Number(portfolio?.allocatedBalance || 0) - Number(portfolio?.currentBalance || portfolio?.allocatedBalance || 0)) / Number(portfolio?.allocatedBalance || 1)) * 100)
+    : 0;
+  const killSwitchLimitPct = Number((riskSettings as any).killSwitchDrawdownPct ?? 5);
+  const killSwitchProximityPct = killSwitchLimitPct > 0
+    ? Math.min(100, (drawdownFromAllocationPct / killSwitchLimitPct) * 100)
+    : 0;
+  const riskConsole = useMemo(() => {
+    const posture = portfolio?.killSwitchTriggered
+      ? 'KILL SWITCH'
+      : riskCapacity.cooldownMinutes > 0
+        ? 'COOLDOWN'
+        : riskCapacity.tradeSlotsLeft <= 0
+          ? 'CAPACITY BLOCKED'
+          : 'CLEAR';
+    return {
+      posture,
+      dailyLossUsedPct: riskCapacity.dailyLossUsedPct,
+      openRiskUsd,
+      openRiskPctOfWallet,
+      slotsLeft: Math.max(0, riskCapacity.maxOpenPositions - riskCapacity.openPositions),
+      cooldownMinutes: riskCapacity.cooldownMinutes,
+      killSwitchProximityPct,
+      killSwitchLimitPct,
+      drawdownFromAllocationPct,
+      exposures: managedPositionRows
+        .map((row) => ({
+          symbol: row.symbol,
+          side: row.side,
+          riskUsd: Number(row.riskToStop || 0),
+          currentR: Number(row.currentR || 0),
+        }))
+        .sort((a, b) => b.riskUsd - a.riskUsd)
+        .slice(0, 4),
+    };
+  }, [portfolio?.killSwitchTriggered, riskCapacity, openRiskUsd, openRiskPctOfWallet, killSwitchProximityPct, killSwitchLimitPct, drawdownFromAllocationPct, managedPositionRows]);
+
+  const isQuantView = dashboardViewMode === 'quant';
+  const isPresentationView = dashboardViewMode === 'presentation';
+  const isOperatorView = dashboardViewMode === 'operator';
+
+  const accountMode = useMemo(() => {
+    if (paperTradingEnabled) return { label: 'PAPER', detail: 'Simulated execution only', tone: 'amber' as const };
+    if (settings?.testnet) return { label: 'TESTNET', detail: 'Binance futures testnet', tone: 'amber' as const };
+    return { label: 'LIVE', detail: 'Live exchange execution', tone: 'green' as const };
+  }, [paperTradingEnabled, settings?.testnet]);
+
+  const syncStatus = useMemo(() => {
+    const walletFresh = Boolean(liveConnected && (walletBalance > 0 || availableMargin > 0) && lastUpdated);
+    const positionsFresh = livePositions.length > 0
+      ? livePositions.every((p) => Number((p as any)?.currentPrice || 0) > 0)
+      : liveConnected;
+    return [
+      {
+        label: 'Wallet',
+        state: walletFresh ? 'fresh' : 'stale',
+        detail: walletFresh ? `Updated ${lastUpdated}` : 'Waiting for wallet sync',
+      },
+      {
+        label: 'Positions',
+        state: positionsFresh ? 'fresh' : 'stale',
+        detail: positionsFresh ? `${openPositions} open tracked` : 'Position marks stale',
+      },
+      {
+        label: 'AI',
+        state: deepseekFresh ? 'fresh' : 'stale',
+        detail: workerStatus?.aiLastHeartbeatAt ? new Date(workerStatus.aiLastHeartbeatAt).toLocaleTimeString() : 'No heartbeat yet',
+      },
+      {
+        label: 'Worker',
+        state: workerHealth === 'HEALTHY' ? 'fresh' : workerHealth === 'STALE' ? 'stale' : 'off',
+        detail: workerStatus?.lastRunAt ? new Date(workerStatus.lastRunAt).toLocaleTimeString() : 'Not run yet',
+      },
+    ] as const;
+  }, [liveConnected, walletBalance, availableMargin, lastUpdated, livePositions, openPositions, deepseekFresh, workerStatus?.aiLastHeartbeatAt, workerHealth, workerStatus?.lastRunAt]);
+
+  const systemHealth = useMemo(() => {
+    const telegramEnabled = Boolean(settings?.notificationSettings?.telegramEnabled);
+    const telegramReady = telegramEnabled && Boolean(settings?.hasTelegramBotToken || settings?.notificationSettings?.telegramUserId);
+    return [
+      {
+        label: 'API',
+        value: error ? 'degraded' : lastUpdated ? 'online' : 'booting',
+        tone: error ? 'bad' as const : lastUpdated ? 'good' as const : 'warn' as const,
+      },
+      {
+        label: 'Exchange',
+        value: status?.connected || walletBalance > 0 || availableMargin > 0 ? 'auth ok' : 'offline',
+        tone: status?.connected || walletBalance > 0 || availableMargin > 0 ? 'good' as const : 'bad' as const,
+      },
+      {
+        label: 'AI',
+        value: deepseekFresh ? 'fresh' : 'stale',
+        tone: deepseekFresh ? 'good' as const : 'warn' as const,
+      },
+      {
+        label: 'Execution',
+        value: workerHealth.toLowerCase(),
+        tone: workerHealth === 'HEALTHY' ? 'good' as const : workerHealth === 'STALE' ? 'warn' as const : 'bad' as const,
+      },
+      {
+        label: 'Telegram',
+        value: telegramEnabled ? (telegramReady ? 'armed' : 'incomplete') : 'off',
+        tone: telegramEnabled ? (telegramReady ? 'good' as const : 'warn' as const) : 'bad' as const,
+      },
+    ] as const;
+  }, [settings?.notificationSettings?.telegramEnabled, settings?.notificationSettings?.telegramUserId, settings?.hasTelegramBotToken, error, lastUpdated, status?.connected, walletBalance, availableMargin, deepseekFresh, workerHealth]);
+
+  const whyNotTrading = useMemo(() => {
+    const blockers: Array<{ key: string; title: string; detail: string; severity: 'critical' | 'warning' | 'info'; source: string }> = [];
+    const add = (entry: { key: string; title: string; detail: string; severity: 'critical' | 'warning' | 'info'; source: string }) => {
+      if (!blockers.some((b) => b.key === entry.key)) blockers.push(entry);
+    };
+
+    if (riskCapacity.tradeSlotsLeft <= 0) {
+      add({
+        key: 'daily-capacity',
+        title: 'Daily trade budget exhausted',
+        detail: `${riskCapacity.tradesToday}/${riskCapacity.maxTrades} trades already used today. The AI can rank setups, but execution is blocked until the next session.`,
+        severity: 'critical',
+        source: 'worker policy',
+      });
+    }
+
+    if (riskCapacity.openPositions >= riskCapacity.maxOpenPositions) {
+      add({
+        key: 'open-capacity',
+        title: 'Open-position capacity is full',
+        detail: `${riskCapacity.openPositions}/${riskCapacity.maxOpenPositions} slots are already in use, so new entries stay blocked until risk is reduced.`,
+        severity: 'critical',
+        source: 'risk engine',
+      });
+    }
+
+    if (operatorIntelligence?.eventRisk?.level === 'high') {
+      add({
+        key: 'event-risk',
+        title: 'Event risk is elevated',
+        detail: operatorIntelligence.eventRisk.action || 'Headline and macro risk are high enough that fresh entries should stay selective.',
+        severity: 'warning',
+        source: 'operator intelligence',
+      });
+    }
+
+    if (Number(market.regimeConfidence || 0) < 60) {
+      add({
+        key: 'regime-confidence',
+        title: 'Regime confidence is still below gate',
+        detail: `Current confidence is ${Number(market.regimeConfidence || 0)}%. The system wants 60%+ before it trusts directional risk.`,
+        severity: 'warning',
+        source: 'market regime',
+      });
+    }
+
+    if (String(market.liquidityState || '').toLowerCase() === 'poor') {
+      add({
+        key: 'liquidity',
+        title: 'Liquidity quality is poor',
+        detail: 'Spread and liquidity conditions are not clean enough for the execution rules right now.',
+        severity: 'warning',
+        source: 'risk intel',
+      });
+    }
+
+    if (String(market.volatilityState || '').toLowerCase() === 'high') {
+      add({
+        key: 'volatility',
+        title: 'Volatility is too aggressive',
+        detail: 'The risk engine is seeing high short-term volatility, so entries stay blocked until tape quality improves.',
+        severity: 'warning',
+        source: 'risk intel',
+      });
+    }
+
+    if (risks.length > 0) {
+      add({
+        key: 'risk-flags',
+        title: 'Active risk flags are present',
+        detail: risks.slice(0, 2).join(' • '),
+        severity: 'warning',
+        source: 'runtime context',
+      });
+    }
+
+    if (workerRejectRows[0]?.reason) {
+      add({
+        key: 'symbol-reject',
+        title: 'Best symbol is still blocked',
+        detail: `${workerRejectRows[0].symbol}: ${workerRejectRows[0].reason}`,
+        severity: 'info',
+        source: 'symbol gate',
+      });
+    }
+
+    if (!blockers.length && decision.label !== 'TRADE') {
+      add({
+        key: 'confirmation',
+        title: 'No hard blocker, but trigger quality is not complete',
+        detail: tradeFocus.waitFor || triggerDiagnostics.blockerNow || 'The system is waiting for confirmation, not forcing an entry.',
+        severity: 'info',
+        source: 'execution radar',
+      });
+    }
+
+    const ranked = blockers
+      .sort((a, b) => {
+        const weight = { critical: 0, warning: 1, info: 2 };
+        return weight[a.severity] - weight[b.severity];
+      })
+      .slice(0, 4);
+
+    return {
+      headline: ranked[0]?.title || 'Trade flow is clear',
+      summary: decision.label === 'TRADE'
+        ? 'Execution is allowed. The system is now waiting for trigger timing, price behavior, and risk alignment.'
+        : 'This panel ranks the real blockers preventing a fresh entry right now.',
+      blockers: ranked,
+    };
+  }, [
+    riskCapacity,
+    operatorIntelligence?.eventRisk,
+    market.regimeConfidence,
+    market.liquidityState,
+    market.volatilityState,
+    risks,
+    workerRejectRows,
+    decision.label,
+    tradeFocus.waitFor,
+    triggerDiagnostics.blockerNow,
+  ]);
+
+  const heatMatrixRows = useMemo(() => {
+    const rejectMap = new Map<string, string>();
+    for (const r of (workerStatus?.symbolRejects || [])) {
+      if (r?.symbol) rejectMap.set(String(r.symbol), String(r.reason || 'blocked'));
+    }
+
+    return EXEC_SYMBOLS.map((symbol) => {
+      const base = symbol.replace('USDT', '');
+      const coin = coins.find((c) => c.symbol === base);
+      const change = Number(coin?.change || 0);
+      const structure = Math.min(100, Math.max(0, 50 + Math.round(change * 5)));
+      const momentum = Math.min(100, Math.max(0, 50 + Math.round(change * 7)));
+      const volume = (market.regimeConfidence || 0);
+      const risk = Math.max(0, 100 - (risks.length * 20) - (String(market.volatilityState || '').toLowerCase() === 'high' ? 25 : 0));
+      const blocked = rejectMap.has(symbol);
+      const gate = blocked ? 25 : decision.label === 'TRADE' ? 85 : 45;
+      return { symbol, structure, momentum, volume, risk, gate, blocked };
+    });
+  }, [workerStatus?.symbolRejects, coins, market.regimeConfidence, market.volatilityState, risks.length, decision.label]);
+
+  const timelineEvents = useMemo(() => {
+    const cycleRows = aiDecisionRows.map((r) => ({
+      ts: r.ts,
+      label: `${r.symbol} ${r.decision}`,
+      detail: `${r.reason} • confidence ${r.confidence}%`,
+      tone: r.decision === 'TRADE' ? 'text-emerald-300' : r.decision === 'NO_TRADE' ? 'text-amber-300' : 'text-red-300',
+    }));
+    const actionRows = (workerStatus?.lastRunAt && workerStatus?.lastAction)
+      ? [{
+          ts: workerStatus.lastRunAt,
+          label: `Worker ${String(workerStatus.lastAction).toUpperCase()}`,
+          detail: compactWorkerReason,
+          tone: 'text-cyan-300',
+        }]
+      : [];
+
+    return [...actionRows, ...cycleRows]
+      .sort((a, b) => new Date(String(b.ts || 0)).getTime() - new Date(String(a.ts || 0)).getTime())
+      .slice(0, 12);
+  }, [aiDecisionRows, workerStatus?.lastRunAt, workerStatus?.lastAction, compactWorkerReason]);
+
+  const lifecycleBrief = useMemo(() => {
+    const latestTrade = journal.find((j) => j.type === 'trade_open' || j.type === 'trade_close');
+    const blockedCount = workerRejectRows.length;
+    const reviewRows = (workerRejectRows.length ? workerRejectRows : aiDecisionRows).slice(0, 5).map((row: any) => ({
+      symbol: String(row.symbol || '—').toUpperCase(),
+      state: String(row.decision || row.scannerState || 'REVIEWED').toUpperCase(),
+      reason: String(row.reason || 'No clean trigger yet.').replace(/^AI says no trade:\s*/i, ''),
+      confidence: Number(row.confidence || 0),
+      price: Number(row.price || 0),
+      change: Number(row.change || 0),
+    }));
+
+    return {
+      headline: latestTrade
+        ? `${String(latestTrade.type).replace('trade_', '').toUpperCase()} ${String(latestTrade.symbol || 'trade')}`
+        : workerStatus?.lastAction
+          ? `${String(workerStatus.lastAction).toUpperCase()} cycle complete`
+          : 'Waiting for first cycle',
+      operatorReadout: compactWorkerReason,
+      action: String(workerStatus?.lastAction || 'idle').toUpperCase(),
+      focus: tradeFocus.symbol,
+      blockedCount,
+      reviewedCount: reviewRows.length,
+      lastTs: String(workerStatus?.lastRunAt || aiDecisionRows[0]?.ts || ''),
+      reviewRows,
+    };
+  }, [journal, workerRejectRows, aiDecisionRows, workerStatus?.lastAction, workerStatus?.lastRunAt, compactWorkerReason, tradeFocus.symbol]);
+
+  const groupedJournal = useMemo(() => {
+    const executionRows = journal
+      .filter((j) => j.type === 'trade_open' || j.type === 'trade_close')
+      .sort((a, b) => new Date(String(b.ts || 0)).getTime() - new Date(String(a.ts || 0)).getTime())
+      .slice(0, 6)
+      .map((row) => ({
+        ts: String(row.ts || ''),
+        label: `${String(row.type).replace('trade_', '').toUpperCase()} ${String(row.symbol || 'PAIR')}`,
+        detail: row.type === 'trade_close'
+          ? `Closed ${row.symbol || 'trade'} at ${signedMoney(Number(row.pnl || 0))}.`
+          : `Opened ${row.symbol || 'trade'} ${String(row.side || '').toUpperCase()} with qty ${Number(row.qty || 0).toFixed(5)}.`,
+        tone: row.type === 'trade_close' && Number(row.pnl || 0) < 0 ? 'red' as const : 'green' as const,
+      }));
+    const cycleRows = lifecycleBrief.reviewRows.slice(0, isQuantView ? 6 : 4).map((row) => ({
+      ts: lifecycleBrief.lastTs,
+      label: `${row.symbol} ${row.state}`,
+      detail: row.reason,
+      tone: row.state === 'TRADE' ? 'green' as const : 'amber' as const,
+    }));
+    return {
+      cycleSummary: {
+        headline: lifecycleBrief.headline,
+        action: lifecycleBrief.action,
+        detail: lifecycleBrief.operatorReadout,
+      },
+      executionRows,
+      reviewRows: cycleRows,
+    };
+  }, [journal, lifecycleBrief, isQuantView]);
+
+  const replayCursor = timelineEvents[Math.min(replayIndex, Math.max(0, timelineEvents.length - 1))] || null;
+  const visibleOpenOrders = useMemo(() => {
+    if (openOrderFilter === 'ALL') return openOrders;
+    return openOrders.filter((o) => o.symbol === openOrderFilter);
+  }, [openOrders, openOrderFilter]);
+
+
+  const postTradeQuality = useMemo(() => {
+    const rows = recentTradeRows.slice(0, 8);
+    const pnls = rows.map((r) => Number(r.pnl || 0));
+    const wins = pnls.filter((p) => p > 0);
+    const losses = pnls.filter((p) => p < 0);
+    const avgPnl = rows.length ? pnls.reduce((sum, p) => sum + p, 0) / rows.length : 0;
+    const netPnl = pnls.reduce((sum, p) => sum + p, 0);
+    const grossWin = wins.reduce((sum, p) => sum + p, 0);
+    const grossLoss = Math.abs(losses.reduce((sum, p) => sum + p, 0));
+    const bestTrade = pnls.length ? Math.max(...pnls) : 0;
+    const worstTrade = pnls.length ? Math.min(...pnls) : 0;
+    const profitFactor = grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? 999 : 0;
+    let equity = 0;
+    let peak = 0;
+    let maxDrawdownApprox = 0;
+    let currentWinStreak = 0;
+    let currentLossStreak = 0;
+    let maxWinStreak = 0;
+    let maxLossStreak = 0;
+    for (const pnl of pnls) {
+      equity += pnl;
+      if (equity > peak) peak = equity;
+      const dd = peak - equity;
+      if (dd > maxDrawdownApprox) maxDrawdownApprox = dd;
+      if (pnl > 0) {
+        currentWinStreak += 1;
+        currentLossStreak = 0;
+      } else if (pnl < 0) {
+        currentLossStreak += 1;
+        currentWinStreak = 0;
+      }
+      if (currentWinStreak > maxWinStreak) maxWinStreak = currentWinStreak;
+      if (currentLossStreak > maxLossStreak) maxLossStreak = currentLossStreak;
+    }
+    const ruleAdherence = Math.max(50, 100 - risks.length * 10 - (decision.label === 'NO_TRADE' ? 5 : 0));
+    return {
+      sample: rows.length,
+      winRate: rows.length ? Math.round((wins.length / rows.length) * 100) : 0,
+      losses: losses.length,
+      avgPnl,
+      netPnl,
+      grossWin,
+      grossLoss,
+      bestTrade,
+      worstTrade,
+      profitFactor,
+      maxDrawdownApprox,
+      maxWinStreak,
+      maxLossStreak,
+      slippage: 'n/a',
+      rrAchieved: rows.length ? (avgPnl > 0 ? '>= 1.2 (estimated)' : '< 1.0 (estimated)') : 'n/a',
+      ruleAdherence,
+    };
+  }, [recentTradeRows, risks.length, decision.label]);
+
+  const performanceBrief = useMemo(() => {
+    const rows = recentTradeRows.slice(0, 8);
+    const last = rows[0];
+    const net = Number(postTradeQuality.netPnl || 0);
+    const profitFactor = Number(postTradeQuality.profitFactor || 0);
+    const health = net > 0 && profitFactor >= 1.2
+      ? 'EDGE POSITIVE'
+      : net > 0
+        ? 'EDGE MIXED'
+        : rows.length
+          ? 'DEFENSIVE'
+          : 'WAITING';
+    const tone = health === 'EDGE POSITIVE' ? 'green' : health === 'EDGE MIXED' ? 'cyan' : health === 'DEFENSIVE' ? 'amber' : 'cyan';
+    const wins = rows.filter((row) => Number(row.pnl || 0) > 0).length;
+    const losses = rows.filter((row) => Number(row.pnl || 0) < 0).length;
+    const message = rows.length
+      ? `${wins} wins / ${losses} losses in the latest ${rows.length} closes. Last close: ${last?.symbol || '—'} ${signedMoney(Number(last?.pnl || 0))}.`
+      : 'No closed trades yet. Performance will populate after the first completed trade.';
+    return {
+      health,
+      tone,
+      message,
+      lastSymbol: last?.symbol || '—',
+      lastPnl: signedMoney(Number(last?.pnl || 0)),
+    };
+  }, [recentTradeRows, postTradeQuality.netPnl, postTradeQuality.profitFactor]);
+
+  const presentationSummary = useMemo(() => {
+    const focusAction = tradeFocus.setupState === 'OPEN POSITION'
+      ? `Managing ${tradeFocus.symbol} with ${livePositions.length} live position${livePositions.length === 1 ? '' : 's'} on the book.`
+      : tradeFocus.waitFor;
+    const focusTone = decision.label === 'TRADE'
+      ? 'READY TO ACT'
+      : livePositions.length > 0
+        ? 'MANAGING RISK'
+        : 'WAITING WITH INTENT';
+
+    return {
+      eyebrow: `${accountMode.label} COMMAND SURFACE`,
+      headline: livePositions.length > 0
+        ? `Managing live exposure while the engine keeps ranking the next highest-quality setup.`
+        : `${tradeFocus.symbol} is the primary focus while the system waits for clean confirmation instead of forcing risk.`,
+      subhead: `${focusAction} Regime is ${String(market.regime || 'unclear').toUpperCase()} with ${Number(market.regimeConfidence || 0)}% confidence, ${String(market.liquidityState || 'unknown').toUpperCase()} liquidity, and ${String(market.volatilityState || 'unknown').toUpperCase()} volatility.`,
+      focusTone,
+      focusDetail: topTradeCandidate?.thesis || tradeFocus.thesis || decision.reasoningSummary,
+      cards: [
+        {
+          label: 'Primary Focus',
+          value: tradeFocus.symbol,
+          detail: `${tradeFocus.side} • ${tradeFocus.setupType || 'setup in review'}`,
+        },
+        {
+          label: 'Decision State',
+          value: decision.label === 'TRADE' ? 'Actionable' : 'Selective',
+          detail: decision.label === 'TRADE' ? `Awaiting ${tradeFocus.side} confirmation` : whyNotTrading.headline,
+        },
+        {
+          label: 'Performance',
+          value: performanceBrief.health,
+          detail: performanceBrief.message,
+        },
+      ],
+    };
+  }, [
+    tradeFocus,
+    livePositions.length,
+    decision.label,
+    decision.reasoningSummary,
+    accountMode.label,
+    market.regime,
+    market.regimeConfidence,
+    market.liquidityState,
+    market.volatilityState,
+    topTradeCandidate?.thesis,
+    whyNotTrading.headline,
+    performanceBrief.health,
+    performanceBrief.message,
+  ]);
+
+  const deepseekPlaybook = useMemo(() => {
+    const ds = briefing?.deepseekDecision || {};
+    const narrative = ds.market_narrative || decision.reasoningSummary;
+    const bias = ds.bias || (decision.chosenSide === 'BUY' ? 'LONG' : decision.chosenSide === 'SELL' ? 'SHORT' : 'NEUTRAL');
+    const mustHappen = (decision.triggerConditions || []).slice(0, 3);
+    const cancelIf = (ds.cancel_if && ds.cancel_if.length ? ds.cancel_if : decision.invalidators || []).slice(0, 3);
+    return { narrative, bias, mustHappen, cancelIf };
+  }, [briefing?.deepseekDecision, decision.reasoningSummary, decision.chosenSide, decision.triggerConditions, decision.invalidators]);
+
+  const deepseekScenarios = useMemo(() => {
+    const ds = briefing?.deepseekDecision || {};
+    const fromModel = Array.isArray(ds.scenarios) ? ds.scenarios.filter(Boolean).slice(0, 3) : [];
+    if (fromModel.length > 0) {
+      return fromModel.map((s: any, idx: number) => ({
+        name: s?.name || (idx === 0 ? 'Base Case' : idx === 1 ? 'Bull Breakout' : 'Bear Failure'),
+        trigger: s?.trigger || 'Await structure confirmation.',
+        invalidation: s?.invalidation || 'Invalid if structure breaks.',
+        expected_rr: s?.expected_rr || String(decision.entryPlan?.rr || '>= 1.5'),
+        action: s?.action || 'WAIT',
+      }));
+    }
+    const zone = String(decision.entryPlan?.zone || '—');
+    const stop = String(decision.entryPlan?.stop || '—');
+    return [
+      {
+        name: 'Base Case',
+        trigger: `15m close + hold in ${zone} with momentum/volume expansion.`,
+        invalidation: `Price loses support and closes below stop reference ${stop}.`,
+        expected_rr: String(decision.entryPlan?.rr || '>= 1.5'),
+        action: decision.label === 'TRADE' ? 'PREPARE' : 'WAIT',
+      },
+      {
+        name: 'Bull Breakout',
+        trigger: 'Consecutive higher highs with expanding volume above trigger zone.',
+        invalidation: 'Breakout retest fails with weak follow-through volume.',
+        expected_rr: '>= 1.8',
+        action: decision.label === 'TRADE' ? 'EXECUTE' : 'PREPARE',
+      },
+      {
+        name: 'Bear Failure',
+        trigger: 'Failed breakout and rejection at resistance with negative momentum.',
+        invalidation: 'Recovery above trigger zone with renewed expansion.',
+        expected_rr: '>= 1.4',
+        action: 'WAIT',
+      },
+    ];
+  }, [briefing?.deepseekDecision, decision.entryPlan, decision.label]);
+
+  const deepseekRiskCoach = useMemo(() => {
+    const ds = briefing?.deepseekDecision?.risk_coach;
+    const blocker = ds?.blocker || triggerDiagnostics.blockerNow || reasonBreakdown.headline;
+    const fixNext = ds?.fix_next?.length
+      ? ds.fix_next.slice(0, 3)
+      : [
+          'Wait for clean 15m confirmation + hold in the entry zone.',
+          'Require momentum + volume expansion to validate continuation.',
+          'Keep risk gates unchanged; avoid forcing entries during unclear structure.',
+        ];
+    return { blocker, fixNext };
+  }, [briefing?.deepseekDecision, triggerDiagnostics.blockerNow, reasonBreakdown.headline]);
+
+  const deepseekBriefing = useMemo(() => {
+    const latest = latestAiConversation;
+    const intelligenceBrief = tradeIntelligence?.portfolioBrief;
+    const latestSymbol = String(latest?.symbol || tradeFocus.symbol || 'the watchlist').toUpperCase();
+    const latestResponse = String(latest?.responseSummary || decision.reasoningSummary || '');
+    const totalUnrealized = managedPositionRows.reduce((sum, row) => sum + Number(row.unrealized || 0), 0);
+    const protectedCount = managedPositionRows.filter((row) => row.slStatus === 'Break-even' || row.slStatus === 'Locked Profit').length;
+    const missingStopCount = managedPositionRows.filter((row) => Number(row.stop || 0) <= 0).length;
+    const pressureCount = managedPositionRows.filter((row) => Number(row.unrealized || 0) < 0).length;
+    const managementFocus = managedPositionRows
+      .slice()
+      .sort((a, b) => {
+        if (Number(a.stop || 0) <= 0 && Number(b.stop || 0) > 0) return -1;
+        if (Number(b.stop || 0) <= 0 && Number(a.stop || 0) > 0) return 1;
+        return Math.abs(Number(b.unrealized || 0)) - Math.abs(Number(a.unrealized || 0));
+      })[0];
+    const blocker = latestResponse
+      .replace(/^NO_TRADE\s*\(/i, '')
+      .replace(/\)$/g, '')
+      .replace(/_/g, ' ')
+      .trim();
+    const stance = intelligenceBrief?.stance || (managedPositionRows.length
+      ? `I am managing ${managedPositionRows.length} open ${managedPositionRows.length === 1 ? 'position' : 'positions'} with net unrealized P&L at ${signedMoney(totalUnrealized)}.`
+      : decision.label === 'TRADE'
+        ? `I have a tradable setup forming on ${tradeFocus.symbol}.`
+        : `I am protecting capital and keeping ${latestSymbol} on watch.`);
+    const plainReason = intelligenceBrief?.bestOpportunity || (managedPositionRows.length
+      ? `${managementFocus?.symbol || 'Portfolio'} is the current management focus. ${managementFocus?.nextAction || 'Keep monitoring open exposure and do not add risk without confirmation.'}`
+      : blocker || deepseekRiskCoach.blocker || 'The setup is not clean enough to justify risk yet.');
+    const closest = aiConversationRows.slice(0, 5).map((row: any) => ({
+      symbol: String(row.symbol || 'MARKET').toUpperCase(),
+      confidence: Number(row.confidence || 0),
+      verdict: String(row.responseSummary || 'Monitoring').replace(/^NO_TRADE\s*\(/i, '').replace(/\)$/g, ''),
+      delta: String(row.delta || 'no change'),
+    }));
+    const topCandidate = closest
+      .slice()
+      .sort((a, b) => b.confidence - a.confidence)[0];
+
+    return {
+      stance,
+      plainReason,
+      topCandidate,
+      closest,
+      next: intelligenceBrief?.action || (managedPositionRows.length
+        ? missingStopCount > 0
+          ? `${missingStopCount} open ${missingStopCount === 1 ? 'position needs' : 'positions need'} a protective stop before any new risk is considered.`
+          : pressureCount > 0
+            ? `${pressureCount} position${pressureCount === 1 ? ' is' : 's are'} under pressure. Respect invalidation; do not widen stops.`
+            : `Manage winners: ${protectedCount}/${managedPositionRows.length} positions have BE or locked-profit protection. Watch for partial TP or trail conditions.`
+        : decision.label === 'TRADE'
+          ? `If ${tradeFocus.symbol} holds ${tradeFocus.entryZone} and RR stays near ${tradeFocus.expectedR}, I can allow execution.`
+          : `I need regime confidence above the threshold, clean structure, and confirmation around ${tradeFocus.entryZone} before approving risk.`),
+      riskTone: intelligenceBrief?.mainRisk || (managedPositionRows.length
+        ? `${protectedCount}/${managedPositionRows.length} protected by BE/locked stops. ${risks.length ? `Active risk note: ${risks.slice(0, 2).join(', ')}.` : 'No major platform risk flags currently reported.'}`
+        : risks.length
+          ? `Risk note: ${risks.slice(0, 2).join(', ')}.`
+          : 'Risk note: no major risk flags currently reported.'),
+    };
+  }, [
+    latestAiConversation,
+    tradeIntelligence?.portfolioBrief,
+    tradeFocus.symbol,
+    tradeFocus.entryZone,
+    tradeFocus.expectedR,
+    decision.label,
+    decision.reasoningSummary,
+    deepseekRiskCoach.blocker,
+    aiConversationRows,
+    risks,
+    managedPositionRows,
+  ]);
+
+  const executionRadar = useMemo(() => {
+    const blocked = decision.label !== 'TRADE';
+    const setupStatus = blocked
+      ? tradeFocus.blocker || tradeFocus.waitFor
+      : `Execution window is valid if ${tradeFocus.symbol} confirms the trigger with clean tape.`;
+    const readinessText = blocked
+      ? 'Blocked until quality, trigger, and risk all align.'
+      : 'Armed for execution once timing confirms.';
+    const regimeBadge = `${String(market.regime || 'unclear').toUpperCase()} • ${Number(market.regimeConfidence || 0)}%`;
+    return {
+      setupStatus,
+      readinessText,
+      regimeBadge,
+      invalidationLine: tradeFocus.invalidate || decision.invalidators?.[0] || 'Awaiting invalidation level',
+      triggerLine: tradeFocus.waitFor,
+      actionLine: blocked
+        ? 'Do nothing until the trigger stack clears.'
+        : `Prepare ${tradeFocus.side} execution with defined stop and target only.`,
+    };
+  }, [decision.label, decision.invalidators, tradeFocus, market.regime, market.regimeConfidence]);
+
+  const portfolioManagerSections = useMemo(() => {
+    const qualityScores = tradeFocus.qualityScores || {};
+    const structureScore = Number((qualityScores as any).structure || 0);
+    const liquidityScore = Number((qualityScores as any).liquidity || 0);
+    const rrScore = Number((qualityScores as any).riskReward || 0);
+    const executionScore = ['A', 'B'].includes(String(operatorIntelligence?.executionQuality?.grade || ''))
+      ? 88
+      : String(operatorIntelligence?.executionQuality?.grade || '') === 'C'
+        ? 64
+        : 38;
+
+    return {
+      like: managedPositionRows.length
+        ? `Open risk is active, and ${managedPositionRows.filter((row) => Number(row.unrealized || 0) > 0).length} trade${managedPositionRows.filter((row) => Number(row.unrealized || 0) > 0).length === 1 ? ' is' : 's are'} still working in our favor.`
+        : tradeFocus.thesis || `${tradeFocus.symbol} is the strongest current candidate with setup quality ${tradeFocus.qualityScore || readinessScore}/100.`,
+      blocks: managedPositionRows.length
+        ? `${managedPositionRows.filter((row) => row.protectionState === 'Initial Risk' || row.protectionState === 'No Stop').length}/${managedPositionRows.length} positions still need stronger protection before new aggression makes sense.`
+        : whyNotTrading.blockers[0]?.detail || deepseekBriefing.riskTone,
+      changesMind: deepseekBriefing.next,
+      managingNow: managedPositionRows.length
+        ? `First job: protect open positions, then let the cleanest runner continue instead of capping it too early.`
+        : `No open trades right now. Scanner remains focused on ${tradeFocus.symbol} while the worker keeps checking the rest of the watchlist.`,
+      path: [
+        { label: 'Regime', value: Number(market.regimeConfidence || 0) },
+        { label: 'Structure', value: structureScore || Math.max(35, tradeFocus.qualityScore - 8) },
+        { label: 'Liquidity', value: liquidityScore || (String(market.liquidityState || '').toLowerCase() === 'good' ? 92 : 62) },
+        { label: 'R:R', value: rrScore || (Number(tradeFocus.expectedR || 0) >= 2 ? 84 : 58) },
+        { label: 'Execution', value: executionScore },
+      ],
+    };
+  }, [tradeFocus, readinessScore, whyNotTrading.blockers, deepseekBriefing, managedPositionRows, market.regimeConfidence, market.liquidityState, operatorIntelligence?.executionQuality?.grade]);
+
+  const deepseekOperatorFeed = useMemo(() => {
+    const rows = aiConversationRows.slice(0, 6).map((r: any) => ({
+      ts: r.ts,
+      text: `${String(r.symbol || 'Market')}: ${String(r.responseSummary || 'Monitoring setup')}`,
+      delta: String(r.delta || ''),
+    }));
+    if (rows.length) return rows;
+    return [
+      {
+        ts: new Date().toISOString(),
+        text: decision.label === 'TRADE'
+          ? 'Execution window open. Waiting for final candle confirmation before entry.'
+          : 'No clean setup yet. Monitoring structure, momentum, and volume for valid trigger.',
+        delta: 'baseline',
+      },
+    ];
+  }, [aiConversationRows, decision.label]);
+
+  const deepseekLearningLoop = useMemo(() => {
+    const rows = recentTradeRows.slice(0, 10);
+    if (!rows.length) {
+      return [{
+        lesson: 'No recent closed trades to learn from yet.',
+        tweak: 'Keep collecting samples before changing live rules.',
+      }];
+    }
+    const losses = rows.filter((r) => Number(r.pnl || 0) < 0);
+    const wins = rows.filter((r) => Number(r.pnl || 0) > 0);
+    const avgLoss = losses.length ? losses.reduce((s, r) => s + Number(r.pnl || 0), 0) / losses.length : 0;
+    const avgWin = wins.length ? wins.reduce((s, r) => s + Number(r.pnl || 0), 0) / wins.length : 0;
+    return [
+      {
+        lesson: `Last ${rows.length} closes: ${wins.length} wins / ${losses.length} losses.`,
+        tweak: 'Adjust only one filter at a time; validate changes in paper mode first.',
+      },
+      {
+        lesson: losses.length ? `Average loss: ${signedMoney(avgLoss)}.` : 'No losses in current sample.',
+        tweak: 'If losses cluster in squeeze/unclear structure, tighten breakout confirmation filter.',
+      },
+      {
+        lesson: wins.length ? `Average win: ${signedMoney(avgWin)}.` : 'No wins in current sample yet.',
+        tweak: 'When wins appear with strong volume expansion, prioritize that condition in entries.',
+      },
+    ];
+  }, [recentTradeRows]);
+
+  const filteredFeed = useMemo(() => {
+    const classify = (evt: string) => {
+      const s = evt.toLowerCase();
+      if (s.includes('risk') || s.includes('cooldown') || s.includes('invalid')) return 'RISK';
+      if (s.includes('opened') || s.includes('closed') || s.includes('action:')) return 'EXECUTION';
+      return 'DECISIONS';
+    };
+
+    if (feedFilter === 'ALL') return liveFeed;
+    return liveFeed.filter((evt) => classify(evt) === feedFilter);
+  }, [liveFeed, feedFilter]);
 
   return (
-    <div className="min-h-screen bg-black text-white font-mono">
-      {/* Crypto Ticker Tape - REAL LIVE Production Data from CoinGecko API */}
-      <div className="bg-gradient-to-r from-gray-900 via-black to-gray-900 border-b border-gray-800 overflow-hidden">
-        <div className="flex items-center px-2">
-          <div className="flex items-center gap-2 mr-4">
-            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-            <span className="text-xs text-green-400 font-bold">LIVE</span>
-          </div>
-          <div className="flex animate-marquee whitespace-nowrap py-3 flex-1">
-            {[...cryptoPrices, ...cryptoPrices, ...cryptoPrices].map((crypto, i) => (
-              <div key={i} className="inline-flex items-center mx-6 px-4 py-1 bg-gray-800/50 rounded">
-                <span className="text-cyan-400 font-bold text-sm mr-3">{crypto.symbol}</span>
-                <span className="text-white font-mono text-sm mr-2">
-                  ${crypto.price > 0 ? crypto.price.toFixed(crypto.price < 1 ? 4 : 2) : '...'}
-                </span>
-                <span className={`font-bold text-xs mr-3 ${crypto.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {crypto.change >= 0 ? '↑' : '↓'}{Math.abs(crypto.change).toFixed(2)}%
-                </span>
-                <span className="text-gray-500 text-xs mr-2">VOL:</span>
-                <span className="text-gray-400 text-xs font-mono mr-3">${crypto.volume.toFixed(1)}B</span>
-                <span className="text-gray-500 text-xs mr-1">H:</span>
-                <span className="text-green-400 text-xs font-mono mr-2">
-                  ${crypto.high > 0 ? crypto.high.toFixed(crypto.high < 1 ? 4 : 2) : '...'}
-                </span>
-                <span className="text-gray-500 text-xs mr-1">L:</span>
-                <span className="text-red-400 text-xs font-mono">
-                  ${crypto.low > 0 ? crypto.low.toFixed(crypto.low < 1 ? 4 : 2) : '...'}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
+    <>
+      <Head>
+        <title>HELIX.ONE | DeepSeek Trading Command</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <link rel="stylesheet" href="https://unpkg.com/react-grid-layout/css/styles.css" />
+        <link rel="stylesheet" href="https://unpkg.com/react-resizable/css/styles.css" />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
+        <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+      </Head>
 
-      {/* Main Header - Nof1 Style */}
-      <header className="border-b border-gray-800 bg-black">
-        <div className="container mx-auto px-6 py-6">
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h1 className="text-4xl font-bold mb-2">
-                <span className="text-cyan-400">HELIX</span>
-                <span className="text-white">.ONE</span>
-              </h1>
-              <p className="text-gray-500 text-sm uppercase tracking-wider">Alpha Arena</p>
-            </div>
-            <div className="flex items-center gap-4">
-              <div className={`px-4 py-2 rounded-md font-bold uppercase text-sm ${
-                connected ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-              }`}>
-                {connected ? '● LIVE' : '○ OFFLINE'}
-              </div>
-              <a href="/settings" className="px-6 py-2 bg-gray-800 hover:bg-gray-700 text-white font-bold rounded-md uppercase text-sm transition">
-                ⚙️ Settings
-              </a>
-              <button className="px-6 py-2 bg-cyan-500 hover:bg-cyan-600 text-black font-bold rounded-md uppercase text-sm transition">
-                Join Waitlist
-              </button>
-            </div>
-          </div>
-
-          {/* Navigation Tabs */}
-          <div className="flex gap-4 text-sm">
-            {['LIVE', 'LEADERBOARD', 'MODELS'].map(tab => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`px-4 py-2 uppercase tracking-wider transition ${
-                  activeTab === tab 
-                    ? 'text-cyan-400 border-b-2 border-cyan-400'
-                    : 'text-gray-500 hover:text-white'
-                }`}
-              >
-                {tab}
-              </button>
-            ))}
-          </div>
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <main className="container mx-auto px-6 py-8">
-        {/* Live Market State - Show only on LIVE tab */}
-        <div className={`mb-8 ${activeTab !== 'LIVE' ? 'hidden' : ''}`}>
-          <LiveMarketState />
-        </div>
-
-        {/* Total Account Value Display - Show only on LEADERBOARD tab */}
-        <div className={`mb-8 ${activeTab !== 'LEADERBOARD' ? 'hidden' : ''}`}>
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-3">
-              <h2 className="text-2xl font-bold">Total Account Value</h2>
-              <div className="flex items-center gap-2">
-                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                <span className="text-xs text-green-400 font-bold">UPDATING</span>
-              </div>
-            </div>
-            <div className="flex items-center gap-4">
-              <div className="flex bg-gray-800 rounded-md">
-                <button
-                  onClick={() => setViewMode('$')}
-                  className={`px-3 py-1 text-sm ${viewMode === '$' ? 'bg-cyan-500 text-black' : 'text-gray-400'}`}
-                >
-                  $
-                </button>
-                <button
-                  onClick={() => setViewMode('%')}
-                  className={`px-3 py-1 text-sm ${viewMode === '%' ? 'bg-cyan-500 text-black' : 'text-gray-400'}`}
-                >
-                  %
-                </button>
-              </div>
-              <button className="px-4 py-2 border border-gray-600 rounded-md text-sm hover:bg-gray-800">
-                Detailed View
-              </button>
-            </div>
-          </div>
-          <div className="text-4xl font-bold mb-2">
-            {viewMode === '$' 
-              ? `$${totalAccountValue.toFixed(2)}` 
-              : `+${((totalAccountValue - 70000) / 70000 * 100).toFixed(2)}%`
-            }
-          </div>
-          <div className="text-sm text-gray-500">
-            {viewMode === '$' 
-              ? `+${((totalAccountValue - 70000) / 70000 * 100).toFixed(2)}% from initial` 
-              : `$${totalAccountValue.toFixed(2)} total value`
-            }
-          </div>
-        </div>
-
-        {/* Sub Navigation */}
-        <div className={`flex gap-6 text-sm mb-8 ${activeTab !== 'LEADERBOARD' ? 'hidden' : ''}`}>
-          {['LIVE TRADES >', 'MODEL CHAT >', 'POSITIONS >', 'README.TXT >'].map(tab => (
-            <button
-              key={tab}
-              onClick={() => {
-                setSubTab(tab);
-                if (tab === 'MODEL CHAT >' && !selectedChatModel && models.length > 0) {
-                  handleModelChat(models[0]);
-                }
-                if (tab === 'POSITIONS >' && !selectedPositionModel && models.length > 0) {
-                  setSelectedPositionModel(models[0]);
-                }
-              }}
-              className={`px-4 py-2 uppercase tracking-wider transition ${
-                subTab === tab 
-                  ? 'text-cyan-400 border-b border-cyan-400'
-                  : 'text-gray-500 hover:text-white'
-              }`}
-            >
-              {tab}
-            </button>
-          ))}
-        </div>
-
-        {/* Positions History Interface */}
-        {subTab === 'POSITIONS >' && (
-          <div className="space-y-6">
-            {/* Model Selector */}
-            <div className="bg-gray-900 rounded-lg p-4">
-              <h3 className="text-lg font-bold mb-4">Select Trading Model</h3>
-              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
-                {models.map((model) => (
-                  <button
-                    key={model.id}
-                    onClick={() => setSelectedPositionModel(model)}
-                    className={`p-3 rounded-lg border transition ${
-                      selectedPositionModel?.id === model.id
-                        ? 'border-cyan-400 bg-cyan-500/10'
-                        : 'border-gray-700 hover:border-gray-600'
-                    }`}
-                  >
-                    <div className="text-2xl mb-2">{model.icon}</div>
-                    <div className="text-xs font-bold truncate">{model.name}</div>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Positions Display */}
-            {selectedPositionModel && (() => {
-              const { openPositions, closedPositions, totalDeployed, totalPnL, returnPercent } = generateModelPositions(selectedPositionModel);
-              const filteredPositions = positionFilter === 'all' 
-                ? [...openPositions, ...closedPositions]
-                : positionFilter === 'open' 
-                  ? openPositions 
-                  : closedPositions;
-              
-              const wins = closedPositions.filter(p => p.outcome === 'WIN').length;
-              const losses = closedPositions.filter(p => p.outcome === 'LOSS').length;
-              const totalClosedPnL = closedPositions.reduce((sum, p) => sum + p.pnl, 0);
-              
-              return (
-                <div className="bg-gray-900 rounded-lg overflow-hidden">
-                  {/* Header */}
-                  <div className="bg-gray-800 px-6 py-4 border-b border-gray-700">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center">
-                        <span className="text-2xl mr-3">{selectedPositionModel.icon}</span>
-                        <div>
-                          <h3 className="font-bold text-lg">{selectedPositionModel.name}</h3>
-                          <p className="text-sm text-gray-400">
-                            {openPositions.length} Open • {closedPositions.length} Closed • {selectedPositionModel.winRate}% Win Rate
-                          </p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className={`text-2xl font-bold ${totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                          {totalPnL >= 0 ? '+' : ''}${totalPnL.toFixed(2)}
-                        </div>
-                        <div className="text-sm text-gray-400">Open P&L</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Filter Tabs */}
-                  <div className="flex gap-4 px-6 py-4 border-b border-gray-700">
-                    <button
-                      onClick={() => setPositionFilter('open')}
-                      className={`px-4 py-2 rounded-md text-sm font-bold transition ${
-                        positionFilter === 'open'
-                          ? 'bg-green-500/20 text-green-400 border border-green-500'
-                          : 'bg-gray-800 text-gray-400 hover:text-white'
-                      }`}
-                    >
-                      OPEN ({openPositions.length})
-                    </button>
-                    <button
-                      onClick={() => setPositionFilter('closed')}
-                      className={`px-4 py-2 rounded-md text-sm font-bold transition ${
-                        positionFilter === 'closed'
-                          ? 'bg-blue-500/20 text-blue-400 border border-blue-500'
-                          : 'bg-gray-800 text-gray-400 hover:text-white'
-                      }`}
-                    >
-                      CLOSED ({closedPositions.length})
-                    </button>
-                    <button
-                      onClick={() => setPositionFilter('all')}
-                      className={`px-4 py-2 rounded-md text-sm font-bold transition ${
-                        positionFilter === 'all'
-                          ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500'
-                          : 'bg-gray-800 text-gray-400 hover:text-white'
-                      }`}
-                    >
-                      ALL ({openPositions.length + closedPositions.length})
-                    </button>
-                    
-                    {positionFilter === 'closed' && (
-                      <div className="ml-auto flex items-center gap-4">
-                        <div className="text-xs">
-                          <span className="text-gray-400">Wins:</span>
-                          <span className="text-green-400 font-bold ml-1">{wins}</span>
-                        </div>
-                        <div className="text-xs">
-                          <span className="text-gray-400">Losses:</span>
-                          <span className="text-red-400 font-bold ml-1">{losses}</span>
-                        </div>
-                        <div className="text-xs">
-                          <span className="text-gray-400">Total P&L:</span>
-                          <span className={`font-bold ml-1 ${totalClosedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {totalClosedPnL >= 0 ? '+' : ''}${totalClosedPnL.toFixed(2)}
-                          </span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Positions Table */}
-                  <div className="overflow-x-auto">
-                    <table className="w-full">
-                      <thead className="bg-gray-800/50">
-                        <tr>
-                          <th className="px-4 py-3 text-left text-xs font-bold text-gray-400">ASSET</th>
-                          <th className="px-4 py-3 text-left text-xs font-bold text-gray-400">TYPE</th>
-                          <th className="px-4 py-3 text-right text-xs font-bold text-gray-400">ENTRY</th>
-                          <th className="px-4 py-3 text-right text-xs font-bold text-gray-400">{positionFilter === 'closed' ? 'EXIT' : 'CURRENT'}</th>
-                          <th className="px-4 py-3 text-right text-xs font-bold text-gray-400">SIZE</th>
-                          <th className="px-4 py-3 text-right text-xs font-bold text-gray-400">LEV</th>
-                          <th className="px-4 py-3 text-right text-xs font-bold text-gray-400">P&L</th>
-                          <th className="px-4 py-3 text-left text-xs font-bold text-gray-400">ENTRY TIME</th>
-                          {positionFilter !== 'open' && (
-                            <>
-                              <th className="px-4 py-3 text-left text-xs font-bold text-gray-400">EXIT TIME</th>
-                              <th className="px-4 py-3 text-left text-xs font-bold text-gray-400">DURATION</th>
-                              <th className="px-4 py-3 text-left text-xs font-bold text-gray-400">OUTCOME</th>
-                            </>
-                          )}
-                          {positionFilter === 'open' && (
-                            <th className="px-4 py-3 text-left text-xs font-bold text-gray-400">STATUS</th>
-                          )}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filteredPositions.map((pos: any) => (
-                          <tr key={pos.id} className="border-b border-gray-700 hover:bg-gray-800/50">
-                            <td className="px-4 py-3">
-                              <span className="font-bold text-cyan-400">{pos.asset}</span>
-                            </td>
-                            <td className="px-4 py-3">
-                              <span className={`px-2 py-1 rounded text-xs font-bold ${
-                                pos.type === 'LONG' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-                              }`}>
-                                {pos.type}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 text-right font-mono text-sm">
-                              ${pos.entry.toFixed(pos.entry < 1 ? 4 : 2)}
-                            </td>
-                            <td className="px-4 py-3 text-right font-mono text-sm">
-                              ${(pos.current || pos.exit).toFixed((pos.current || pos.exit) < 1 ? 4 : 2)}
-                            </td>
-                            <td className="px-4 py-3 text-right font-mono text-sm">
-                              {pos.size} {pos.asset}
-                            </td>
-                            <td className="px-4 py-3 text-right font-mono text-sm">
-                              {pos.leverage}x
-                            </td>
-                            <td className={`px-4 py-3 text-right font-mono text-sm font-bold ${
-                              pos.pnl >= 0 ? 'text-green-400' : 'text-red-400'
-                            }`}>
-                              {pos.pnl >= 0 ? '+' : ''}${pos.pnl.toFixed(2)}
-                            </td>
-                            <td className="px-4 py-3 text-sm text-gray-400 font-mono">
-                              {pos.entryTime}
-                            </td>
-                            {positionFilter !== 'open' && (
-                              <>
-                                <td className="px-4 py-3 text-sm text-gray-400 font-mono">
-                                  {pos.exitTime || '-'}
-                                </td>
-                                <td className="px-4 py-3 text-sm text-gray-400">
-                                  {pos.duration || '-'}
-                                </td>
-                                <td className="px-4 py-3">
-                                  {pos.outcome && (
-                                    <div className="flex items-center gap-2">
-                                      <span className={`px-2 py-1 rounded text-xs font-bold ${
-                                        pos.outcome === 'WIN' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-                                      }`}>
-                                        {pos.outcome}
-                                      </span>
-                                      <span className="text-xs text-gray-500">{pos.exitReason}</span>
-                                    </div>
-                                  )}
-                                </td>
-                              </>
-                            )}
-                            {positionFilter === 'open' && (
-                              <td className="px-4 py-3">
-                                <span className={`px-2 py-1 rounded text-xs font-bold ${
-                                  pos.status === 'Near Exit' ? 'bg-yellow-500/20 text-yellow-400' : 'bg-green-500/20 text-green-400'
-                                }`}>
-                                  {pos.status === 'OPEN' ? '✅ ACTIVE' : '⚠️ NEAR EXIT'}
-                                </span>
-                              </td>
-                            )}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  {/* Summary Stats */}
-                  {positionFilter === 'closed' && (
-                    <div className="bg-gray-800 px-6 py-4 border-t border-gray-700">
-                      <div className="grid grid-cols-5 gap-4 text-center">
-                        <div>
-                          <div className="text-xs text-gray-400 mb-1">Total Trades</div>
-                          <div className="text-lg font-bold">{closedPositions.length}</div>
-                        </div>
-                        <div>
-                          <div className="text-xs text-gray-400 mb-1">Win Rate</div>
-                          <div className="text-lg font-bold text-green-400">
-                            {wins > 0 ? ((wins / closedPositions.length) * 100).toFixed(1) : 0}%
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-xs text-gray-400 mb-1">Avg Win</div>
-                          <div className="text-lg font-bold text-green-400">
-                            ${wins > 0 ? (closedPositions.filter(p => p.outcome === 'WIN').reduce((sum, p) => sum + p.pnl, 0) / wins).toFixed(2) : 0}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-xs text-gray-400 mb-1">Avg Loss</div>
-                          <div className="text-lg font-bold text-red-400">
-                            ${losses > 0 ? (closedPositions.filter(p => p.outcome === 'LOSS').reduce((sum, p) => sum + p.pnl, 0) / losses).toFixed(2) : 0}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-xs text-gray-400 mb-1">Net P&L</div>
-                          <div className={`text-lg font-bold ${totalClosedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {totalClosedPnL >= 0 ? '+' : ''}${totalClosedPnL.toFixed(2)}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {positionFilter === 'open' && (
-                    <div className="bg-gray-800 px-6 py-4 border-t border-gray-700">
-                      <div className="grid grid-cols-4 gap-4 text-center">
-                        <div>
-                          <div className="text-xs text-gray-400 mb-1">Total Deployed</div>
-                          <div className="text-lg font-bold">${totalDeployed.toLocaleString(undefined, {maximumFractionDigits: 0})}</div>
-                        </div>
-                        <div>
-                          <div className="text-xs text-gray-400 mb-1">Unrealized P&L</div>
-                          <div className={`text-lg font-bold ${totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {totalPnL >= 0 ? '+' : ''}${totalPnL.toFixed(2)}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-xs text-gray-400 mb-1">Return %</div>
-                          <div className={`text-lg font-bold ${returnPercent >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {returnPercent >= 0 ? '+' : ''}{returnPercent.toFixed(2)}%
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-xs text-gray-400 mb-1">Active Positions</div>
-                          <div className="text-lg font-bold text-cyan-400">{openPositions.length}</div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
+      <div
+        className={`helix-shell helix-mode-${dashboardViewMode} min-h-screen text-slate-100`}
+        data-view-mode={dashboardViewMode}
+        style={{ fontFamily: 'IBM Plex Sans, Space Grotesk, sans-serif' }}
+      >
+        <div className="mx-auto w-full max-w-[1420px] px-2 sm:px-3 md:px-5 lg:px-6 py-3 sm:py-4 md:py-5">
+          <header className="helix-command-bar rounded-2xl border border-cyan-300/15 bg-slate-950/70 backdrop-blur-md p-3 sm:p-4 md:p-5 shadow-2xl shadow-cyan-950/30">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div className="flex flex-wrap items-center gap-4">
+                <div className="text-2xl sm:text-3xl font-bold tracking-wide" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
+                  <span className="text-emerald-300">HELIX</span>.ONE
                 </div>
-              );
-            })()}
-          </div>
-        )}
-
-        {/* Model Chat Interface */}
-        {subTab === 'MODEL CHAT >' && (
-          <div className="space-y-6">
-            {/* Model Selector */}
-            <div className="bg-gray-900 rounded-lg p-4">
-              <h3 className="text-lg font-bold mb-4">Select Trading Model</h3>
-              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
-                {models.map((model) => (
-                  <button
-                    key={model.id}
-                    onClick={() => handleModelChat(model)}
-                    className={`p-3 rounded-lg border transition ${
-                      selectedChatModel?.id === model.id
-                        ? 'border-cyan-400 bg-cyan-500/10'
-                        : 'border-gray-700 hover:border-gray-600'
-                    }`}
-                  >
-                    <div className="text-2xl mb-2">{model.icon}</div>
-                    <div className="text-xs font-bold truncate">{model.name}</div>
-                  </button>
-                ))}
+                <StatusPill tone={liveConnected ? 'good' : 'bad'}>{liveConnected ? 'LIVE' : 'OFFLINE'}</StatusPill>
+                <StatusPill tone={liveConnected ? 'good' : 'bad'}>{liveConnected ? 'CONNECTED' : 'DISCONNECTED'}</StatusPill>
+                <StatusPill tone={paperTradingEnabled ? 'bad' : 'good'}>{paperTradingEnabled ? 'PAPER MODE' : 'LIVE EXECUTION'}</StatusPill>
+                <div className="text-slate-400 text-sm">Last update: {lastUpdated || '—'}</div>
+              </div>
+              <div className="flex items-center gap-3">
+                <a href="/settings" className="helix-header-action rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 px-4 py-2 text-sm font-medium">Settings</a>
               </div>
             </div>
+            <div className="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-[1.3fr_1fr]">
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <MetricTag label="Account Mode" value={accountMode.label} tone={accountMode.tone} />
+                  <MetricTag label="Equity Source" value={String(portfolio?.equitySource || 'allocation').toUpperCase()} tone={portfolio?.equitySource === 'exchange' ? 'green' : portfolio?.equitySource === 'journal' ? 'amber' : 'slate'} />
+                  <MetricTag label="Ops" value={String(journalMeta?.executionMode || (paperTradingEnabled ? 'paper' : 'live')).toUpperCase()} tone="slate" />
+                  <MetricTag label="Policy" value={`${Number(journalMeta?.policy?.minLeverage ?? (riskSettings as any).minLeverage ?? 10)}x-${Number(journalMeta?.policy?.maxLeverage ?? riskSettings.maxLeverage ?? 20)}x`} tone="slate" />
+                </div>
+                <div className="mt-3 text-xs text-slate-400">{accountMode.detail}</div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {syncStatus.map((item) => (
+                    <FreshnessBadge key={item.label} label={item.label} state={item.state} detail={item.detail} />
+                  ))}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+                <div className="text-[10px] uppercase tracking-[0.26em] text-cyan-200/70">System Health</div>
+                <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {systemHealth.map((item) => (
+                    <HealthChip key={item.label} label={item.label} value={item.value} tone={item.tone} />
+                  ))}
+                </div>
+              </div>
+            </div>
+          </header>
 
-            {/* Chat Interface */}
-            {selectedChatModel && (
-              <>
-                <div className="bg-gray-900 rounded-lg overflow-hidden">
-                  {/* Chat Header */}
-                  <div className="bg-gray-800 px-6 py-4 border-b border-gray-700">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center">
-                        <span className="text-2xl mr-3">{selectedChatModel.icon}</span>
-                        <div>
-                          <h3 className="font-bold text-lg">{selectedChatModel.name}</h3>
-                          <p className="text-sm text-gray-400">
-                            {selectedChatModel.strategy.replace('_', ' ').toUpperCase()} Strategy • 
-                            {selectedChatModel.roi >= 0 ? ' +' : ' '}{selectedChatModel.roi}% ROI
-                          </p>
-                        </div>
-                      </div>
-                      <div className="px-3 py-1 bg-green-500/20 text-green-400 rounded text-xs font-bold">
-                        ONLINE
-                      </div>
+          <main className="mt-4 sm:mt-5 space-y-4 sm:space-y-5">
+            {error && <div className="rounded-xl border border-red-500/40 bg-red-900/30 px-4 py-3 text-red-100 text-sm">{error}</div>}
+            {paperTradingEnabled && (
+              <div className="rounded-xl border border-amber-500/40 bg-amber-900/30 px-4 py-3 text-amber-100 text-sm">
+                Paper Trading Mode is enabled. Orders are being simulated and are not sent to the exchange.
+              </div>
+            )}
+            {!isPresentationView && (
+            <div className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-xs text-slate-300">
+              Ops Mode: <span className="font-semibold text-slate-100 uppercase">{journalMeta?.executionMode || (paperTradingEnabled ? 'paper' : 'live')}</span>
+              <span className="mx-2 text-slate-500">•</span>
+              Policy: {Number(journalMeta?.policy?.minLeverage ?? (riskSettings as any).minLeverage ?? 10)}x–{Number(journalMeta?.policy?.maxLeverage ?? riskSettings.maxLeverage ?? 20)}x, max {Number(journalMeta?.policy?.maxOpenPositions ?? (riskSettings as any).maxOpenPositions ?? 4)} open, {Number(journalMeta?.policy?.maxTradesPerDay ?? riskSettings.maxTradesPerDay ?? 8)} trades/day
+            </div>
+            )}
+
+            {!showDisconnectedShell && (
+              <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <div className="text-[10px] uppercase tracking-[0.24em] text-cyan-200/75">View Mode</div>
+                    <div className="mt-1 text-sm text-slate-400">
+                      {dashboardViewMode === 'operator'
+                        ? 'Balanced tactical view for live monitoring and action.'
+                        : dashboardViewMode === 'quant'
+                          ? 'Higher-density diagnostics for deeper review.'
+                          : 'Cleaner polished view for presentation and rapid readout.'}
                     </div>
                   </div>
-
-                {/* Chat Messages */}
-                <div className="h-96 overflow-y-auto p-6 space-y-4">
-                  {chatMessages.map((msg, index) => (
-                    <div
-                      key={index}
-                      className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                    >
-                      <div
-                        className={`max-w-2xl rounded-lg p-4 ${
-                          msg.role === 'user'
-                            ? 'bg-cyan-500/20 text-cyan-100'
-                            : 'bg-gray-800 text-gray-100'
-                        }`}
+                  <div className="flex flex-wrap gap-2">
+                    {([
+                      { key: 'operator', label: 'Operator', detail: 'Live tactical' },
+                      { key: 'quant', label: 'Quant', detail: 'Deeper diagnostics' },
+                      { key: 'presentation', label: 'Presentation', detail: 'Clean polished' },
+                    ] as const).map((mode) => (
+                      <button
+                        key={mode.key}
+                        onClick={() => persistDashboardViewMode(mode.key)}
+                        className={`rounded-xl border px-3 py-2 text-left transition ${dashboardViewMode === mode.key ? 'border-cyan-300/50 bg-cyan-400/10 text-cyan-100' : 'border-white/10 bg-black/20 text-slate-300 hover:bg-white/[0.05]'}`}
                       >
-                        <div className="text-sm whitespace-pre-line">{msg.content}</div>
-                        <div className="text-xs text-gray-500 mt-2">
-                          {msg.timestamp.toLocaleTimeString()}
-                        </div>
+                        <div className="text-xs font-semibold uppercase tracking-wide">{mode.label}</div>
+                        <div className="mt-1 text-[11px] text-slate-400">{mode.detail}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </section>
+            )}
+
+            <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-1.5 sm:gap-2">
+              <TopMetric label="Binance Wallet Balance" value={walletBalance > 0 ? money(walletBalance) : '—'} meta="exchange" />
+              <TopMetric label="Available Margin" value={availableMargin > 0 ? money(availableMargin) : '—'} tone="green" meta="exchange" />
+              <TopMetric label="Bot Equity" value={botEquity > 0 ? money(botEquity) : '—'} meta={portfolio?.equitySource || 'allocation'} />
+              <TopMetric label="Bot Session P&L" value={Number.isFinite(botDailyPnl) ? signedMoney(botDailyPnl) : '—'} tone={Number(botDailyPnl || 0) >= 0 ? 'green' : 'red'} meta="derived" />
+              <TopMetric label="Open Positions" value={String(openPositions)} meta="worker" />
+              <div className={`rounded-xl border px-4 py-3 ${riskPosture.tone}`}>
+                <div className="text-xs uppercase tracking-wider text-slate-300/80">Risk Posture</div>
+                <div className="text-2xl font-semibold mt-1">{riskPosture.label}</div>
+                <div className="mt-2"><MetricTag label="Source" value="derived" tone="slate" /></div>
+              </div>
+            </section>
+
+            <section className="helix-pulse-strip rounded-2xl border border-cyan-300/15 bg-slate-950/55 p-2.5 sm:p-3 shadow-xl shadow-black/25">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div className="text-[10px] uppercase tracking-[0.28em] text-cyan-200/80">Market Pulse</div>
+                <div className="text-[11px] text-slate-400">Focus: <span className="font-semibold text-slate-100">{tradeFocus.symbol}</span> • Next worker cycle: <span className="text-cyan-200">{workerNextCycleSec === null ? '—' : `${workerNextCycleSec}s`}</span></div>
+              </div>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-5">
+                {marketPulseRows.map((row) => (
+                  <div key={row.symbol} className={`helix-pulse-card rounded-xl border px-3 py-2 ${row.focused ? 'border-cyan-300/60 bg-cyan-400/10' : row.state === 'BLOCKED' ? 'border-amber-300/20 bg-amber-500/[0.05]' : row.state === 'OPEN' ? 'border-emerald-300/40 bg-emerald-500/10' : 'border-white/10 bg-white/[0.03]'}`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className={`h-2 w-2 rounded-full ${row.state === 'OPEN' ? 'bg-emerald-300' : row.focused ? 'bg-cyan-300' : row.state === 'BLOCKED' ? 'bg-amber-300' : 'bg-slate-400'} helix-node-pulse`} />
+                        <span className="font-semibold text-slate-100">{row.base}</span>
                       </div>
+                      <span className="text-[10px] uppercase tracking-wide text-slate-400">{row.state}</span>
+                    </div>
+                    <div className="mt-2 flex items-end justify-between">
+                      <div className="text-sm font-semibold text-slate-100">{row.price > 0 ? `$${row.price.toFixed(row.price < 1 ? 4 : 2)}` : '—'}</div>
+                      <div className={`text-xs ${row.change >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>{row.change >= 0 ? '+' : ''}{row.change.toFixed(2)}%</div>
+                    </div>
+                    <div className="mt-2 h-1 overflow-hidden rounded bg-white/10">
+                      <div className={`h-full rounded ${row.change >= 0 ? 'bg-emerald-300' : 'bg-red-300'}`} style={{ width: `${Math.min(100, Math.max(12, Math.abs(row.change) * 12 + 22))}%` }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="sticky top-1 sm:top-2 z-20 rounded-2xl border border-cyan-400/30 bg-slate-900/85 backdrop-blur-md p-2.5 sm:p-3 md:p-4 shadow-lg shadow-black/30">
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3 text-sm">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-slate-400">Decision</div>
+                  <div className={`font-bold text-lg ${decision.label === 'TRADE' ? 'text-emerald-300' : 'text-amber-300'}`}>{decision.label}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-slate-400">Side</div>
+                  <div className="font-semibold text-slate-100">{String(decision.chosenSide || 'N/A')}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-slate-400">Confidence / Readiness</div>
+                  <div className="font-semibold text-slate-100">{decision.confidence}% / {readinessScore}%</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-slate-400">Invalidation</div>
+                  <div className="font-semibold text-red-300">{decision.invalidators?.[0] || '—'}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-slate-400">Next Trigger</div>
+                  <div className="font-semibold text-cyan-200">{String((decision as any).actionableNext || decision.triggerConditions?.[0] || 'Awaiting signal')}</div>
+                </div>
+              </div>
+            </section>
+
+            {!showDisconnectedShell && isPresentationView && (
+              <section className="helix-presentation-hero rounded-[28px] border border-cyan-300/20 p-5 sm:p-6">
+                <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+                  <div className="max-w-4xl">
+                    <div className="text-[10px] uppercase tracking-[0.34em] text-cyan-200/75">{presentationSummary.eyebrow}</div>
+                    <h1 className="mt-3 max-w-4xl text-3xl font-black tracking-tight text-slate-50 sm:text-4xl xl:text-[2.8rem] xl:leading-[1.02]" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
+                      {presentationSummary.headline}
+                    </h1>
+                    <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-300 sm:text-[15px]">
+                      {presentationSummary.subhead}
+                    </p>
+                  </div>
+                  <div className="helix-presentation-focus rounded-2xl border border-white/10 px-4 py-4 xl:max-w-[340px]">
+                    <div className="text-[10px] uppercase tracking-[0.24em] text-cyan-200/75">{presentationSummary.focusTone}</div>
+                    <div className="mt-2 text-xl font-black text-slate-50">{tradeFocus.symbol}</div>
+                    <div className="mt-1 text-sm font-semibold text-cyan-100">{tradeFocus.side} • {tradeFocus.setupState}</div>
+                    <div className="mt-3 text-sm leading-6 text-slate-300">{presentationSummary.focusDetail}</div>
+                  </div>
+                </div>
+                <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-3">
+                  {presentationSummary.cards.map((card) => (
+                    <div key={card.label} className="helix-presentation-card rounded-2xl border border-white/10 px-4 py-4">
+                      <div className="text-[10px] uppercase tracking-[0.26em] text-slate-400">{card.label}</div>
+                      <div className="mt-2 text-2xl font-black text-slate-50" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{card.value}</div>
+                      <div className="mt-2 text-sm leading-6 text-slate-300">{card.detail}</div>
                     </div>
                   ))}
-                  
-                  {/* View More Market Data Button */}
-                  {chatMessages.length > 0 && (
-                    <div className="flex justify-center pt-4">
-                      <button
-                        onClick={() => setShowMarketData(!showMarketData)}
-                        className="px-6 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-sm font-bold transition"
-                      >
-                        {showMarketData ? '▲ Hide Market Data' : '▼ View More - Current Market State'}
-                      </button>
+                </div>
+              </section>
+            )}
+
+            {!showDisconnectedShell && !isPresentationView && (
+              <section className="grid grid-cols-1 gap-3 xl:grid-cols-[1.4fr_1fr]">
+                <div className="rounded-2xl border border-amber-300/20 bg-amber-400/[0.045] p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-[0.24em] text-amber-200/75">Why Not Trading?</div>
+                      <div className="mt-1 text-lg font-semibold text-slate-100">{whyNotTrading.headline}</div>
+                      <div className="mt-2 max-w-3xl text-sm leading-relaxed text-slate-300">{whyNotTrading.summary}</div>
                     </div>
-                  )}
-                </div>
-
-                {/* Chat Input */}
-                <div className="border-t border-gray-700 p-4">
-                  <div className="flex gap-3">
-                    <input
-                      type="text"
-                      value={chatInput}
-                      onChange={(e) => setChatInput(e.target.value)}
-                      onKeyPress={(e) => e.key === 'Enter' && sendChatMessage()}
-                      placeholder="Ask about positions, strategy, or performance..."
-                      className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-cyan-400"
-                    />
-                    <button
-                      onClick={sendChatMessage}
-                      className="px-6 py-3 bg-cyan-500 hover:bg-cyan-600 text-black font-bold rounded-lg text-sm transition"
-                    >
-                      Send
-                    </button>
+                    <MetricTag label="Now" value={decision.label === 'TRADE' ? 'trade allowed' : 'gated'} tone={decision.label === 'TRADE' ? 'green' : 'amber'} />
                   </div>
-                  <div className="flex flex-wrap gap-2 mt-3">
-                    <button
-                      onClick={() => setChatInput('What are your current positions?')}
-                      className="px-3 py-1 bg-gray-800 hover:bg-gray-700 text-xs rounded border border-gray-700"
-                    >
-                      📊 Show Positions
-                    </button>
-                    <button
-                      onClick={() => setChatInput('What is your market read?')}
-                      className="px-3 py-1 bg-gray-800 hover:bg-gray-700 text-xs rounded border border-gray-700"
-                    >
-                      📈 Market Structure
-                    </button>
-                    <button
-                      onClick={() => setChatInput('Show me your next high-conviction setup')}
-                      className="px-3 py-1 bg-gray-800 hover:bg-gray-700 text-xs rounded border border-gray-700"
-                    >
-                      🎯 Next Trade
-                    </button>
-                    <button
-                      onClick={() => setChatInput('Any whale movements or liquidations?')}
-                      className="px-3 py-1 bg-gray-800 hover:bg-gray-700 text-xs rounded border border-gray-700"
-                    >
-                      🐋 Whale Intel
-                    </button>
-                    <button
-                      onClick={() => setChatInput('What is your performance?')}
-                      className="px-3 py-1 bg-gray-800 hover:bg-gray-700 text-xs rounded border border-gray-700"
-                    >
-                      💰 Performance
-                    </button>
-                    <button
-                      onClick={() => setChatInput('Explain your strategy')}
-                      className="px-3 py-1 bg-gray-800 hover:bg-gray-700 text-xs rounded border border-gray-700"
-                    >
-                      🧠 Strategy
-                    </button>
+                  <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-2">
+                    {whyNotTrading.blockers.map((item) => (
+                      <BlockerCard key={item.key} title={item.title} detail={item.detail} severity={item.severity} source={item.source} />
+                    ))}
                   </div>
                 </div>
-              </div>
+                <div className="rounded-2xl border border-cyan-300/15 bg-slate-950/55 p-4">
+                  <div className="text-[10px] uppercase tracking-[0.24em] text-cyan-200/75">Risk Capacity</div>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <TopMetric label="Trades Left" value={String(riskCapacity.tradeSlotsLeft)} meta={`${riskCapacity.tradesToday}/${riskCapacity.maxTrades} used`} />
+                    <TopMetric label="Loss Buffer" value={`${riskCapacity.lossCapacityLeftPct.toFixed(2)}%`} tone={riskCapacity.lossCapacityLeftPct > 1 ? 'green' : 'red'} meta={`limit ${riskCapacity.dailyLossLimitPct.toFixed(1)}%`} />
+                    <TopMetric label="Open Slots" value={`${Math.max(0, riskCapacity.maxOpenPositions - riskCapacity.openPositions)}`} meta={`${riskCapacity.openPositions}/${riskCapacity.maxOpenPositions} used`} />
+                    <TopMetric label="Cooldown" value={riskCapacity.cooldownMinutes > 0 ? `${riskCapacity.cooldownMinutes}m` : 'clear'} tone={riskCapacity.cooldownMinutes > 0 ? 'amber' : 'green'} meta="risk engine" />
+                  </div>
+                </div>
+              </section>
+            )}
 
-              {/* Market Data Section */}
-              {showMarketData && (
-                <div className="bg-gray-900 rounded-lg p-6">
-                  <h3 className="text-2xl font-bold mb-6 text-cyan-400">📊 CURRENT MARKET STATE - ALL COINS</h3>
-                  
-                  <div className="space-y-6">
-                    {Object.values(marketData).map((coin: any) => (
-                      <div key={coin.symbol} className="bg-gray-800 rounded-lg p-6 border border-gray-700">
-                        {/* Coin Header */}
-                        <div className="flex items-center justify-between mb-4 pb-4 border-b border-gray-700">
+            {showDisconnectedShell && (
+              <section className="grid grid-cols-1 lg:grid-cols-3 gap-3 items-start">
+                <Panel className="lg:col-span-2" title="System Status">
+                  <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+                    <div className="text-lg font-semibold text-slate-100">Dashboard is waiting for live data</div>
+                    <div className="mt-2 text-sm text-slate-300 leading-relaxed">
+                      HELIX.ONE is rendering, but the trading engine is not connected right now. Instead of showing noisy empty-state operator panels, this view stays focused on connection status and active policy.
+                    </div>
+                    <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                      <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+                        <div className="text-xs uppercase tracking-wide text-slate-400">Engine</div>
+                        <div className="mt-1 font-semibold text-red-300">Offline / disconnected</div>
+                      </div>
+                      <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+                        <div className="text-xs uppercase tracking-wide text-slate-400">Execution Mode</div>
+                        <div className="mt-1 font-semibold text-slate-100 uppercase">{paperTradingEnabled ? 'paper' : 'live'}</div>
+                      </div>
+                      <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+                        <div className="text-xs uppercase tracking-wide text-slate-400">Leverage Policy</div>
+                        <div className="mt-1 font-semibold text-slate-100">{Number((riskSettings as any).minLeverage ?? 10)}x – {Number(riskSettings.maxLeverage ?? 20)}x</div>
+                      </div>
+                      <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+                        <div className="text-xs uppercase tracking-wide text-slate-400">Trade Limits</div>
+                        <div className="mt-1 font-semibold text-slate-100">{Number((riskSettings as any).maxOpenPositions ?? 4)} open • {Number(riskSettings.maxTradesPerDay ?? 8)} / day</div>
+                      </div>
+                    </div>
+                  </div>
+                </Panel>
+
+                <Panel title="What to check">
+                  <div className="space-y-2 text-sm text-slate-300">
+                    <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">1. Confirm backend is running and reachable.</div>
+                    <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">2. Confirm Binance/API credentials are loaded in Settings.</div>
+                    <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">3. Reconnect the engine before relying on operator analytics.</div>
+                  </div>
+                </Panel>
+              </section>
+            )}
+
+            {!showDisconnectedShell && (
+              <div className="space-y-3">
+                {!isPresentationView && (
+                <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-4 py-3 text-xs text-slate-300">
+                  <div className="font-semibold text-slate-100">Dashboard layout builder active</div>
+                  <div className="mt-1 text-slate-400">Drag from widget headers. Resize from any edge or corner. Layout snaps to grid and reflows neighboring widgets without overlap.</div>
+                </div>
+                )}
+
+                <ResponsiveGridLayout
+                  className={`helix-widget-grid ${layoutInteraction !== 'idle' ? `is-${layoutInteraction}` : ''}`}
+                  layouts={widgetLayouts}
+                  breakpoints={GRID_BREAKPOINTS}
+                  cols={GRID_COLS}
+                  rowHeight={GRID_ROW_HEIGHT}
+                  margin={GRID_MARGIN}
+                  containerPadding={[0, 0]}
+                  draggableHandle=".widget-drag-handle"
+                  draggableCancel="input,textarea,select,button,a,.no-drag"
+                  resizeHandles={RESIZE_HANDLES}
+                  isDraggable
+                  isResizable
+                  compactType="vertical"
+                  preventCollision={false}
+                  allowOverlap={false}
+                  useCSSTransforms
+                  measureBeforeMount={false}
+                  onDragStart={() => setLayoutInteraction('dragging')}
+                  onResizeStart={() => setLayoutInteraction('resizing')}
+                  onDragStop={(_layout, _oldItem, _newItem, _placeholder, _event, _element) => setLayoutInteraction('idle')}
+                  onResizeStop={(_layout, _oldItem, _newItem, _placeholder, _event, _element) => setLayoutInteraction('idle')}
+                  onLayoutChange={(_currentLayout, allLayouts) => persistWidgetLayouts(allLayouts)}
+                >
+                  <div key="market-overview" data-grid={(widgetLayouts.lg || DEFAULT_WIDGET_LAYOUTS.lg).find((item) => item.i === "market-overview")}>
+                    <Panel title="Market Intel" subtitle="Live regime, watchlist pricing, and setup grades across the tape." className="helix-market-panel relative h-full overflow-hidden">
+                      <div className="widget-drag-handle mb-3 flex cursor-move items-center justify-between gap-2 rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-2 pr-10 text-[11px] uppercase tracking-wide text-slate-400">
+                        <span>Drag to move</span><span>Resize edges or corners</span>
+                      </div>
+                      <div className="pointer-events-none absolute bottom-2 right-2 text-slate-500 text-lg leading-none">◢</div>
+                      <div className="mb-3 rounded-2xl border border-cyan-300/20 bg-black/25 p-3">
+                        <div className="flex items-start justify-between gap-3">
                           <div>
-                            <h4 className="text-2xl font-bold text-white">{coin.name} ({coin.symbol})</h4>
-                            <p className="text-sm text-gray-400 mt-1">Market Cap Dominance: {coin.dominance}%</p>
+                            <div className="text-[10px] uppercase tracking-[0.28em] text-cyan-200/70">Market state</div>
+                            <div className="mt-1 text-2xl font-black tracking-tight text-slate-50">
+                              {String(market.regime || 'unclear').toUpperCase()}
+                              <span className="ml-2 text-sm font-semibold text-slate-400">{Number(market.regimeConfidence || 0)}%</span>
+                            </div>
+                          </div>
+                          <div className={`rounded-full border px-3 py-1 text-[11px] font-bold uppercase tracking-wide ${marketQuality.score >= 60 ? 'border-emerald-300/30 bg-emerald-400/10 text-emerald-200' : 'border-amber-300/30 bg-amber-400/10 text-amber-200'}`}>
+                            {marketQuality.label}
+                          </div>
+                        </div>
+                        <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
+                          <div className="h-full rounded-full bg-gradient-to-r from-cyan-300 via-emerald-300 to-lime-200" style={{ width: `${Math.max(3, marketQuality.score)}%` }} />
+                        </div>
+                        <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                          <div className="rounded-xl border border-white/10 bg-white/[0.035] p-2">
+                            <div className="text-slate-500">Liquidity</div>
+                            <div className="mt-1 font-bold text-slate-100">{String(market.liquidityState || 'unknown').toUpperCase()}</div>
+                          </div>
+                          <div className="rounded-xl border border-white/10 bg-white/[0.035] p-2">
+                            <div className="text-slate-500">Volatility</div>
+                            <div className="mt-1 font-bold text-slate-100">{String(market.volatilityState || 'unknown').toUpperCase()}</div>
+                          </div>
+                          <div className="rounded-xl border border-white/10 bg-white/[0.035] p-2">
+                            <div className="text-slate-500">Funding / OI</div>
+                            <div className="mt-1 truncate font-bold text-slate-100">{formatFunding(market.funding, market.openInterest)}</div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        {marketOverviewRows.map((row) => (
+                          <div key={row.symbol} className={`helix-market-row rounded-2xl border px-3 py-2.5 ${row.focused ? 'border-cyan-300/50 bg-cyan-400/10' : 'border-white/10 bg-white/[0.035]'}`}>
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className={`h-2 w-2 rounded-full ${row.change >= 0 ? 'bg-emerald-300 shadow-[0_0_12px_rgba(110,231,183,0.7)]' : 'bg-red-300 shadow-[0_0_12px_rgba(252,165,165,0.7)]'}`} />
+                                  <span className="font-black tracking-wide text-slate-50">{row.symbol}</span>
+                                  <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase ${row.focused ? 'border-cyan-300/40 text-cyan-100' : 'border-white/10 text-slate-400'}`}>{row.state}</span>
+                                  {row.qualityScore > 0 && (
+                                    <span className="rounded-full border border-emerald-300/30 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-bold text-emerald-200">Q{row.qualityScore}</span>
+                                  )}
+                                </div>
+                                <div className="mt-1 text-[11px] text-slate-400">{row.decisionText} • {row.priceSource}</div>
+                              </div>
+                              <div className="text-right">
+                                <div className="font-black text-slate-50">${row.price.toFixed(row.price < 1 ? 4 : 2)}</div>
+                                <div className={`text-xs font-bold ${row.change >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>{row.change >= 0 ? '+' : ''}{row.change.toFixed(2)}%</div>
+                              </div>
+                            </div>
+                            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
+                              <div className={`h-full rounded-full ${row.change >= 0 ? 'bg-emerald-300' : 'bg-red-300'}`} style={{ width: `${row.strength}%` }} />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </Panel>
+                  </div>
+
+                  <div key="decision-summary" data-grid={(widgetLayouts.lg || DEFAULT_WIDGET_LAYOUTS.lg).find((item) => item.i === "decision-summary")}>
+                    <Panel title="Execution Radar" subtitle="Best setup, execution trigger, and immediate guardrails." className="helix-hud-panel">
+                      <div className="widget-drag-handle mb-3 flex cursor-move items-center justify-between gap-2 rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
+                        <span>Drag to move</span><span>Resize edges or corners</span>
+                      </div>
+                    <div className={`helix-targeting-hud rounded-2xl border px-4 py-4 ${decision.label === 'TRADE' ? 'border-emerald-400/60 bg-emerald-500/10' : 'border-cyan-400/30 bg-cyan-500/[0.06]'}`}>
+                      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+                        <div>
+                          <div className="text-[10px] uppercase tracking-[0.28em] text-cyan-200/80">Current Target</div>
+                          <div className="mt-1 flex flex-wrap items-center gap-3">
+                            <span className="text-4xl font-bold tracking-tight text-slate-50" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{tradeFocus.symbol}</span>
+                            <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${tradeFocus.side === 'LONG' ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200' : tradeFocus.side === 'SHORT' ? 'border-red-400/40 bg-red-500/10 text-red-200' : 'border-slate-400/30 bg-slate-500/10 text-slate-200'}`}>{tradeFocus.side}</span>
+                            <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${decision.label === 'TRADE' ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-400/40 bg-amber-500/10 text-amber-200'}`}>{decision.label}</span>
+                            <span className="rounded-full border border-cyan-300/30 bg-cyan-400/10 px-3 py-1 text-xs font-semibold capitalize text-cyan-100">{tradeFocus.setupType}</span>
+                            <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-semibold text-slate-200">{executionRadar.regimeBadge}</span>
+                          </div>
+                          <div className="mt-3 max-w-3xl text-sm font-semibold leading-relaxed text-cyan-100">
+                            {tradeFocus.thesis || executionRadar.setupStatus}
+                          </div>
+                          <div className="mt-2 max-w-3xl text-sm leading-relaxed text-slate-300">
+                            {executionRadar.readinessText}
+                          </div>
+                          <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                            <div className="rounded-xl border border-white/10 bg-black/25 p-3 text-xs">
+                              <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Trigger Stack</div>
+                              <div className="mt-2 text-sm font-medium leading-relaxed text-slate-100">{executionRadar.triggerLine}</div>
+                              <div className="mt-2 text-slate-400">Action: <span className="text-cyan-100">{executionRadar.actionLine}</span></div>
+                            </div>
+                            <div className="rounded-xl border border-white/10 bg-black/25 p-3 text-xs">
+                              <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Invalidation</div>
+                              <div className="mt-2 text-sm font-medium leading-relaxed text-red-200">{executionRadar.invalidationLine}</div>
+                              <div className="mt-2 text-slate-400">Status: <span className="text-amber-100">{executionRadar.setupStatus}</span></div>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-1 gap-3">
+                          <div className="mx-auto flex h-32 w-32 shrink-0 items-center justify-center rounded-full border border-cyan-300/25 bg-black/30 helix-orb">
+                            <div className="text-center">
+                              <div className="text-3xl font-bold text-cyan-100">{tradeFocus.qualityScore || readinessScore}</div>
+                              <div className="text-[10px] uppercase tracking-wide text-slate-400">{tradeFocus.qualityScore ? 'setup grade' : 'readiness'}</div>
+                              <div className="mt-1 text-xs text-slate-300">{tradeFocus.confidence}% conf</div>
+                            </div>
+                          </div>
+                          <div className="rounded-xl border border-white/10 bg-black/25 p-3 text-xs">
+                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Setup Card</div>
+                            <div className="mt-2 grid grid-cols-2 gap-2 text-slate-300">
+                              <div>Entry <span className="font-semibold text-slate-100">{tradeFocus.entryZone}</span></div>
+                              <div>R:R <span className="font-semibold text-slate-100">{tradeFocus.expectedR}</span></div>
+                              <div>Stop <span className="font-semibold text-red-200">{tradeFocus.stop}</span></div>
+                              <div>Targets <span className="font-semibold text-emerald-200">{tradeFocus.targets}</span></div>
+                              <div>Edge <span className="font-semibold text-cyan-100">{tradeFocus.edge}</span></div>
+                              <div>AI <span className="font-semibold text-slate-100">{tradeFocus.journalDecision}</span></div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 lg:grid-cols-4 gap-2 text-xs">
+                      <HudMetric label="Entry Zone" value={tradeFocus.entryZone} tone="cyan" />
+                      <HudMetric label="Stop Loss" value={tradeFocus.stop} tone="red" />
+                      <HudMetric label="Targets" value={tradeFocus.targets} tone="green" />
+                      <HudMetric label="Expected R:R" value={tradeFocus.expectedR} tone="amber" />
+                    </div>
+                      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                        <div className="rounded-xl border border-cyan-300/15 bg-black/25 p-3">
+                          <div className="text-[10px] uppercase tracking-[0.22em] text-cyan-200/70 mb-2">Awaiting Confirmation</div>
+                          <div className="space-y-2 text-slate-200">
+                          <div><span className="text-slate-400">Primary trigger:</span> {tradeFocus.waitFor}</div>
+                          <div><span className="text-slate-400">Market:</span> {String(market.regime || 'unclear').toUpperCase()} • {String(market.liquidityState || 'unknown').toUpperCase()} liquidity • {String(market.volatilityState || 'unknown').toUpperCase()} volatility</div>
+                          <div><span className="text-slate-400">Watched:</span> {tradeFocus.watched || 'Waiting for scanner'}</div>
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-cyan-300/15 bg-black/25 p-3">
+                        <div className="text-[10px] uppercase tracking-[0.22em] text-cyan-200/70 mb-2">Risk Guardrails</div>
+                        <div className="space-y-2 text-slate-200">
+                          <div><span className="text-slate-400">Risk flags:</span> {risks.length ? risks.join(', ') : 'None'}</div>
+                          <div><span className="text-slate-400">Invalidation:</span> {tradeFocus.invalidate || decision.invalidators?.[0] || '—'}</div>
+                          <div><span className="text-slate-400">Edge:</span> {tradeFocus.edge} • AI decision {tradeFocus.journalDecision}</div>
+                          <div><span className="text-slate-400">Limits:</span> {Number((riskSettings as any).minLeverage ?? 10)}x min / {Number(riskSettings.maxLeverage ?? 20)}x max • {Number((riskSettings as any).maxOpenPositions ?? 4)} max open</div>
+                        </div>
+                      </div>
+                    </div>
+                    {tradeFocus.qualityScores && (
+                      <div className="mt-3 rounded-2xl border border-cyan-300/15 bg-black/25 p-3">
+                        <div className="mb-2 text-[10px] uppercase tracking-[0.22em] text-cyan-200/70">Trade Quality Radar</div>
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          {Object.entries(tradeFocus.qualityScores).map(([label, value]) => {
+                            const pct = Math.max(0, Math.min(100, Number(value || 0)));
+                            return (
+                              <div key={label} className="rounded-xl border border-white/10 bg-white/[0.03] p-2 text-xs">
+                                <div className="flex justify-between gap-2 text-slate-300">
+                                  <span className="capitalize">{label.replace(/([A-Z])/g, ' $1')}</span>
+                                  <span className="font-bold text-slate-100">{pct}</span>
+                                </div>
+                                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
+                                  <div className="h-full rounded-full bg-gradient-to-r from-cyan-300 to-emerald-300" style={{ width: `${Math.max(3, pct)}%` }} />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    {tradeCandidates.length > 0 && (
+                      <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+                        {tradeCandidates.slice(0, 3).map((candidate) => (
+                          <div key={candidate.symbol} className="rounded-2xl border border-white/10 bg-white/[0.035] p-3 text-xs">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-black text-slate-50">{candidate.symbol}</span>
+                              <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${candidate.state === 'READY' ? 'border-emerald-300/40 text-emerald-200' : candidate.state === 'BLOCKED' ? 'border-red-300/40 text-red-200' : 'border-amber-300/40 text-amber-200'}`}>{candidate.state}</span>
+                            </div>
+                            <div className="mt-2 text-slate-300">{candidate.bias} • {String(candidate.setupType || 'setup').replace(/_/g, ' ')}</div>
+                            <div className="mt-2 flex items-center justify-between">
+                              <span className="text-slate-500">Quality</span>
+                              <span className="font-black text-cyan-100">{candidate.qualityScore}/100</span>
+                            </div>
+                            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
+                              <div className="h-full rounded-full bg-gradient-to-r from-cyan-300 to-emerald-300" style={{ width: `${Math.max(3, Number(candidate.qualityScore || 0))}%` }} />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    </Panel>
+                  </div>
+
+                  <div key="ops-snapshot" data-grid={(widgetLayouts.lg || DEFAULT_WIDGET_LAYOUTS.lg).find((item) => item.i === "ops-snapshot")}>
+                    <Panel title="Runtime Shield" subtitle="Worker heartbeat, execution state, and hard risk capacity." className="helix-worker-panel">
+                      <div className="widget-drag-handle mb-3 flex cursor-move items-center justify-between gap-2 rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
+                        <span>Drag to move</span><span>Resize edges or corners</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <HudMetric label="Worker" value={workerHealth} tone={workerHealth === 'HEALTHY' ? 'green' : workerHealth === 'STALE' ? 'amber' : 'red'} />
+                        <HudMetric label="Next Cycle" value={workerNextCycleSec === null ? '—' : `${workerNextCycleSec}s`} tone="cyan" />
+                        <HudMetric label="AI Fresh" value={deepseekFresh ? 'YES' : 'NO'} tone={deepseekFresh ? 'green' : 'amber'} />
+                        <HudMetric label="Source" value={String(workerStatus?.executionSource || 'HYBRID')} tone="cyan" />
+                      </div>
+
+                      <div className={`mt-3 rounded-xl border p-3 text-xs ${workerHealth === 'HEALTHY' ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-100' : workerHealth === 'STALE' ? 'border-amber-400/30 bg-amber-500/10 text-amber-100' : 'border-red-400/30 bg-red-500/10 text-red-100'}`}>
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-current/30 bg-black/25 helix-node-pulse">
+                            <span className="text-lg">●</span>
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-semibold">Worker {workerHealth}</span>
+                              <span className="text-slate-300">{workerStatus?.lastRunAt ? new Date(workerStatus.lastRunAt).toLocaleTimeString() : 'not run yet'}</span>
+                            </div>
+                            <div className="mt-1 text-slate-200">Last action: <span className="font-semibold text-slate-100">{String(workerStatus?.lastAction || 'idle').toUpperCase()}</span></div>
+                          </div>
+                        </div>
+                        <div className="mt-3 rounded-lg border border-white/10 bg-black/25 p-2.5">
+                          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Cycle Summary</div>
+                          <div className="mt-1 break-words text-sm font-medium leading-relaxed text-slate-100">{compactWorkerReason}</div>
+                        </div>
+                        {workerRejectRows.length > 0 && (
+                          <div className="mt-3 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                            {workerRejectRows.map((row) => (
+                              <details key={`${row.symbol}-${row.reason}`} className="no-drag group rounded-lg border border-amber-300/20 bg-amber-500/[0.06] px-2.5 py-2 transition hover:border-amber-200/45 hover:bg-amber-500/[0.1]">
+                                <summary className="cursor-pointer list-none">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="font-semibold text-amber-100">{row.symbol}</span>
+                                    <span className="rounded-full border border-amber-300/30 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-amber-200">blocked</span>
+                                  </div>
+                                  <div className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-slate-300">{row.reason}</div>
+                                  <div className="mt-1 text-[10px] text-cyan-300 opacity-70">Click for diagnostics</div>
+                                </summary>
+                                <div className="mt-2 border-t border-white/10 pt-2 text-[11px] text-slate-300">
+                                  <div className="grid grid-cols-2 gap-1.5">
+                                    <div>Price <span className="font-semibold text-slate-100">{row.price > 0 ? `$${row.price.toFixed(row.price < 1 ? 4 : 2)}` : '—'}</span></div>
+                                    <div>Move <span className={row.change >= 0 ? 'font-semibold text-emerald-300' : 'font-semibold text-red-300'}>{row.change >= 0 ? '+' : ''}{row.change.toFixed(2)}%</span></div>
+                                    <div>AI Conf <span className="font-semibold text-slate-100">{row.confidence}%</span></div>
+                                    <div>Gate <span className="font-semibold text-slate-100">{row.gate}</span></div>
+                                    <div>Expected R <span className="font-semibold text-slate-100">{row.expectedR > 0 ? row.expectedR.toFixed(2) : '—'}</span></div>
+                                    <div>Edge <span className="font-semibold text-slate-100">{row.edge ? `${row.edge.toFixed(1)} bps` : '—'}</span></div>
+                                  </div>
+                                  <div className="mt-2 rounded border border-white/10 bg-black/20 px-2 py-1.5">
+                                    <div><span className="text-slate-500">Scanner:</span> {row.scannerState}</div>
+                                    <div><span className="text-slate-500">Reviewed:</span> {row.reviewedAt ? new Date(row.reviewedAt).toLocaleTimeString() : '—'}</div>
+                                    <div><span className="text-slate-500">Needs:</span> confidence, structure, and trigger quality to improve before risk is allowed.</div>
+                                  </div>
+                                </div>
+                              </details>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="mt-3 grid grid-cols-1 gap-2 text-xs">
+                        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+                          <div className="mb-2 text-[10px] uppercase tracking-wide text-slate-400">Execution State</div>
+                          <div className="space-y-1 text-slate-300">
+                            <div>AI gate: <span className="font-semibold text-slate-100">{String(workerStatus?.aiGateDecision || 'N/A')}</span></div>
+                            <div>Final decision: <span className="font-semibold text-slate-100">{String(workerStatus?.finalExecutionDecision || 'NO_TRADE')}</span></div>
+                            <div>Chosen side: <span className="font-semibold text-slate-100">{String(workerStatus?.chosenSide || 'N/A')}</span> via {String(workerStatus?.sideSource || 'N/A')}</div>
+                            <div>Last signal: <span className="font-semibold text-slate-100">{workerStatus?.lastAutoSignalKey || '—'}</span></div>
+                          </div>
+                        </div>
+
+                        <div className="rounded-lg border border-emerald-300/15 bg-emerald-500/[0.04] p-3">
+                          <div className="mb-2 flex items-center justify-between">
+                            <div className="text-[10px] uppercase tracking-wide text-slate-400">Risk Shield</div>
+                            <span className={`rounded-full border px-2 py-0.5 text-[10px] ${riskPosture.label === 'NORMAL' ? 'border-emerald-400/40 text-emerald-200' : 'border-amber-400/40 text-amber-200'}`}>{riskPosture.label}</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 text-slate-300">
+                            <div>Daily loss <span className="font-semibold text-slate-100">{Number(riskSettings.maxDailyLossPct ?? 3).toFixed(1)}%</span></div>
+                            <div>Pos size <span className="font-semibold text-slate-100">{Number(riskSettings.maxPositionSizePct ?? 8).toFixed(0)}%</span></div>
+                            <div>Leverage <span className="font-semibold text-slate-100">{Number((riskSettings as any).minLeverage ?? 10)}x-{Number(riskSettings.maxLeverage ?? 20)}x</span></div>
+                            <div>Open <span className="font-semibold text-slate-100">{openPositions}/{Number(workerStatus?.policy?.maxOpenPositions ?? (riskSettings as any).maxOpenPositions ?? 4)}</span></div>
+                            <div>Trades/day <span className="font-semibold text-slate-100">{Number(riskSettings.maxTradesPerDay ?? 8)}</span></div>
+                            <div>Cooldown <span className="font-semibold text-slate-100">{Number(workerStatus?.policy?.cooldownMinutes ?? riskSettings.cooldownMinutes ?? 30)}m</span></div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {workerArmedTrigger && (
+                        <div className="mt-3 rounded-lg border border-cyan-400/30 bg-cyan-500/10 p-3 text-xs text-cyan-100">
+                          <div className="font-semibold">Armed trigger</div>
+                          <div className="mt-1 break-words text-slate-200">{workerArmedTrigger.key}</div>
+                          <div className="mt-1 text-slate-300">Cycles without fill: {Number(workerArmedTrigger.cyclesWithoutFill || 0)} / {Number(workerArmedTrigger.maxCycles || 0)}</div>
+                        </div>
+                      )}
+
+                      {workerStatus?.fallbackMode && (
+                        <div className="mt-3 rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                          Fallback mode active: rules are protecting execution while AI confidence or response quality is degraded.
+                        </div>
+                      )}
+                    </Panel>
+                  </div>
+
+                  <div key="risk-console" data-grid={(widgetLayouts.lg || DEFAULT_WIDGET_LAYOUTS.lg).find((item) => item.i === "risk-console")}>
+                    <Panel title="Risk Console" subtitle="Open-risk instrumentation, kill-switch proximity, and live capacity usage." className="helix-risk-panel">
+                      <div className="widget-drag-handle mb-3 flex cursor-move items-center justify-between gap-2 rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
+                        <span>Drag to move</span><span>Resize edges or corners</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <HudMetric label="Posture" value={riskConsole.posture} tone={riskConsole.posture === 'CLEAR' ? 'green' : riskConsole.posture === 'COOLDOWN' || riskConsole.posture === 'CAPACITY BLOCKED' ? 'amber' : 'red'} />
+                        <HudMetric label="Daily Loss Used" value={`${riskConsole.dailyLossUsedPct.toFixed(2)}%`} tone={riskConsole.dailyLossUsedPct < 33 ? 'green' : riskConsole.dailyLossUsedPct < 70 ? 'amber' : 'red'} />
+                        <HudMetric label="Open Risk" value={openRiskUsd > 0 ? signedMoney(-openRiskUsd) : '$0.00'} tone={openRiskUsd > 0 ? 'amber' : 'green'} />
+                        <HudMetric label="Slots Left" value={String(riskConsole.slotsLeft)} tone={riskConsole.slotsLeft > 0 ? 'green' : 'red'} />
+                      </div>
+                      <div className="mt-3 grid grid-cols-1 gap-2">
+                        <ProgressRail label="Kill-switch proximity" value={riskConsole.killSwitchProximityPct} valueText={`${riskConsole.drawdownFromAllocationPct.toFixed(2)}% / ${riskConsole.killSwitchLimitPct.toFixed(1)}%`} tone={riskConsole.killSwitchProximityPct >= 75 ? 'red' : riskConsole.killSwitchProximityPct >= 45 ? 'amber' : 'green'} />
+                        <ProgressRail label="Open-risk load" value={Math.min(100, openRiskPctOfWallet * 10)} valueText={`${openRiskPctOfWallet.toFixed(2)}% of wallet`} tone={openRiskPctOfWallet >= 3 ? 'red' : openRiskPctOfWallet >= 1.5 ? 'amber' : 'cyan'} />
+                        <ProgressRail label="Trade-capacity use" value={riskCapacity.maxTrades > 0 ? (riskCapacity.tradesToday / riskCapacity.maxTrades) * 100 : 0} valueText={`${riskCapacity.tradesToday}/${riskCapacity.maxTrades} used`} tone={riskCapacity.tradeSlotsLeft <= 0 ? 'red' : riskCapacity.tradeSlotsLeft <= 2 ? 'amber' : 'green'} />
+                      </div>
+                      <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs">
+                        <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Exposure Ladder</div>
+                        <div className="mt-3 space-y-2">
+                          {riskConsole.exposures.length ? riskConsole.exposures.map((row) => (
+                            <div key={`${row.symbol}-${row.side}`} className="rounded-lg border border-white/10 bg-black/20 p-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="font-semibold text-slate-100">{row.symbol} <span className={row.side === 'LONG' ? 'text-emerald-300' : 'text-red-300'}>{row.side}</span></div>
+                                <div className="text-slate-300">{signedMoney(-row.riskUsd)}</div>
+                              </div>
+                              <div className="mt-1 text-[11px] text-slate-400">Current R: <span className="font-semibold text-slate-200">{row.currentR.toFixed(2)}R</span></div>
+                            </div>
+                          )) : (
+                            <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-slate-400">No open-risk ladder right now. The portfolio is flat.</div>
+                          )}
+                        </div>
+                      </div>
+                      {isQuantView && (
+                        <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs">
+                          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Heat Matrix</div>
+                          <div className="mt-3 space-y-2">
+                            {heatMatrixRows.slice(0, 5).map((row) => (
+                              <div key={row.symbol} className="grid grid-cols-[72px_repeat(5,1fr)] items-center gap-2">
+                                <div className="font-semibold text-slate-100">{row.symbol.replace('USDT', '')}</div>
+                                <HeatCell value={row.structure} blocked={row.blocked} />
+                                <HeatCell value={row.momentum} blocked={row.blocked} />
+                                <HeatCell value={row.volume} blocked={row.blocked} />
+                                <HeatCell value={row.risk} blocked={row.blocked} />
+                                <HeatCell value={row.gate} blocked={row.blocked} />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </Panel>
+                  </div>
+
+                  <div key="manual-trade" data-grid={(widgetLayouts.lg || DEFAULT_WIDGET_LAYOUTS.lg).find((item) => item.i === "manual-trade")}>
+                    <Panel title="Manual Trade" subtitle="Hand-entered execution ticket with live mark and risk preview." className="helix-ticket-panel">
+                      <div className="widget-drag-handle mb-3 flex cursor-move items-center justify-between gap-2 rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
+                        <span>Drag to move</span><span>Resize edges or corners</span>
+                      </div>
+                      <div className="mb-4 rounded-2xl border border-cyan-300/20 bg-black/25 p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-[10px] uppercase tracking-[0.28em] text-cyan-200/70">Execution ticket</div>
+                            <div className="mt-1 flex items-baseline gap-2">
+                              <span className="text-2xl font-black text-slate-50">{manualSymbol}</span>
+                              <span className={`text-sm font-bold ${manualSide === 'BUY' ? 'text-emerald-300' : 'text-red-300'}`}>{manualSide}</span>
+                            </div>
+                            <div className="mt-1 text-xs text-slate-400">{manualType} entry preview: {manualTradePreview.priceText}</div>
+                          </div>
+                          <div className={`rounded-full border px-3 py-1 text-[11px] font-bold uppercase tracking-wide ${manualTradePreview.ready ? 'border-emerald-300/30 bg-emerald-400/10 text-emerald-200' : 'border-amber-300/30 bg-amber-400/10 text-amber-200'}`}>
+                            {manualTradePreview.posture}
+                          </div>
+                        </div>
+                        <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                          <div className="rounded-xl border border-white/10 bg-white/[0.035] p-2">
+                            <div className="text-slate-500">R:R</div>
+                            <div className="mt-1 font-black text-slate-100">{manualTradePreview.rrText}</div>
+                          </div>
+                          <div className="rounded-xl border border-white/10 bg-white/[0.035] p-2">
+                            <div className="text-slate-500">Risk</div>
+                            <div className="mt-1 font-black text-slate-100">{manualTradePreview.riskText}</div>
+                          </div>
+                          <div className="rounded-xl border border-white/10 bg-white/[0.035] p-2">
+                            <div className="text-slate-500">Notional</div>
+                            <div className="mt-1 font-black text-slate-100">{manualTradePreview.notionalText}</div>
+                          </div>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+                          <span className={`rounded-full border px-2 py-1 ${manualTradePreview.stopAligned ? 'border-emerald-300/30 bg-emerald-400/10 text-emerald-200' : 'border-red-300/30 bg-red-400/10 text-red-200'}`}>Stop {manualTradePreview.stopAligned ? 'aligned' : 'needs check'}</span>
+                          <span className={`rounded-full border px-2 py-1 ${manualTradePreview.targetAligned ? 'border-emerald-300/30 bg-emerald-400/10 text-emerald-200' : 'border-red-300/30 bg-red-400/10 text-red-200'}`}>Target {manualTradePreview.targetAligned ? 'aligned' : 'needs check'}</span>
+                          <span className="rounded-full border border-cyan-300/25 bg-cyan-400/10 px-2 py-1 text-cyan-100">Display mark ${manualTradePreview.marketPrice > 0 ? manualTradePreview.marketPrice.toFixed(manualTradePreview.marketPrice < 1 ? 5 : 2) : '—'} • {manualTradePreview.priceSource}</span>
+                          {manualTradePreview.positionMark > 0 && manualTradePreview.priceSource !== 'position' && (
+                            <span className="rounded-full border border-white/15 bg-white/[0.035] px-2 py-1 text-slate-300">
+                              Position mark ${manualTradePreview.positionMark.toFixed(manualTradePreview.positionMark < 1 ? 5 : 2)}
+                              {Math.abs(manualTradePreview.markDelta) > 0 && <span className="text-slate-500"> • Δ {manualTradePreview.markDelta >= 0 ? '+' : ''}{manualTradePreview.markDelta.toFixed(manualTradePreview.marketPrice < 1 ? 5 : 2)}</span>}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {manualFeedback && <div className={`mb-3 rounded-xl border px-3 py-2 text-xs ${manualFeedback.kind === 'success' ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200' : 'border-red-400/40 bg-red-500/10 text-red-200'}`}>{manualFeedback.text}</div>}
+
+                      <div className="grid grid-cols-1 gap-3 text-sm md:grid-cols-2">
+                        <div className="md:col-span-2">
+                          <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Admin Key</label>
+                          <input type="password" value={manualAdminKey} onChange={(e) => setManualAdminKey(e.target.value)} className="w-full rounded-xl border border-white/15 bg-black/35 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-300/60 focus:ring-2 focus:ring-cyan-300/10" placeholder="Enter admin key to unlock manual execution" />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Symbol</label>
+                          <select value={manualSymbol} onChange={(e) => setManualSymbol(e.target.value as any)} className="w-full rounded-xl border border-white/15 bg-black/35 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-300/60 focus:ring-2 focus:ring-cyan-300/10">
+                            {EXEC_SYMBOLS.map((symbol) => <option key={symbol} value={symbol}>{symbol}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Side</label>
+                          <div className="grid grid-cols-2 gap-2">
+                            <button type="button" onClick={() => setManualSide('BUY')} className={`rounded-xl border px-3 py-2 text-sm font-black transition ${manualSide === 'BUY' ? 'border-emerald-300/50 bg-emerald-400/15 text-emerald-100' : 'border-white/10 bg-black/30 text-slate-300 hover:bg-white/5'}`}>BUY</button>
+                            <button type="button" onClick={() => setManualSide('SELL')} className={`rounded-xl border px-3 py-2 text-sm font-black transition ${manualSide === 'SELL' ? 'border-red-300/50 bg-red-400/15 text-red-100' : 'border-white/10 bg-black/30 text-slate-300 hover:bg-white/5'}`}>SELL</button>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Order Type</label>
+                          <select value={manualType} onChange={(e) => setManualType(e.target.value as any)} className="w-full rounded-xl border border-white/15 bg-black/35 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-300/60 focus:ring-2 focus:ring-cyan-300/10">
+                            <option value="MARKET">MARKET</option>
+                            <option value="LIMIT">LIMIT</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Leverage</label>
+                          <input type="number" value={manualLeverage} onChange={(e) => setManualLeverage(e.target.value)} className="w-full rounded-xl border border-white/15 bg-black/35 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-300/60 focus:ring-2 focus:ring-cyan-300/10" min="1" />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Quantity</label>
+                          <input type="number" value={manualQty} onChange={(e) => setManualQty(e.target.value)} className="w-full rounded-xl border border-white/15 bg-black/35 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-300/60 focus:ring-2 focus:ring-cyan-300/10" placeholder="Optional" />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Limit Price</label>
+                          <input type="number" value={manualPrice} onChange={(e) => setManualPrice(e.target.value)} className="w-full rounded-xl border border-white/15 bg-black/35 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-300/60 focus:ring-2 focus:ring-cyan-300/10" placeholder={manualType === 'LIMIT' ? 'Required for LIMIT' : 'Only for LIMIT'} />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Stop Loss</label>
+                          <input type="number" value={manualStopLoss} onChange={(e) => setManualStopLoss(e.target.value)} className="w-full rounded-xl border border-white/15 bg-black/35 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-300/60 focus:ring-2 focus:ring-cyan-300/10" />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Take Profit</label>
+                          <input type="number" value={manualTakeProfit} onChange={(e) => setManualTakeProfit(e.target.value)} className="w-full rounded-xl border border-white/15 bg-black/35 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-300/60 focus:ring-2 focus:ring-cyan-300/10" />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Confidence</label>
+                          <input type="number" value={manualConfidence} onChange={(e) => setManualConfidence(e.target.value)} className="w-full rounded-xl border border-white/15 bg-black/35 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-300/60 focus:ring-2 focus:ring-cyan-300/10" min="1" max="100" />
+                        </div>
+                        <div className="md:col-span-2">
+                          <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Reason</label>
+                          <textarea value={manualReason} onChange={(e) => setManualReason(e.target.value)} className="min-h-[92px] w-full rounded-xl border border-white/15 bg-black/35 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-300/60 focus:ring-2 focus:ring-cyan-300/10" />
+                        </div>
+                        <div className="md:col-span-2">
+                          <button onClick={submitManualTrade} disabled={manualSubmitting} className={`w-full rounded-2xl border px-4 py-3 text-sm font-black uppercase tracking-[0.2em] transition disabled:opacity-50 ${manualTradePreview.ready ? 'border-cyan-300/50 bg-cyan-400/15 text-cyan-100 hover:bg-cyan-400/25' : 'border-amber-300/30 bg-amber-400/10 text-amber-100 hover:bg-amber-400/15'}`}>
+                          {manualSubmitting ? 'Submitting…' : 'Submit Manual Trade'}
+                        </button>
+                      </div>
+                    </div>
+                    </Panel>
+                  </div>
+
+                  <div key="open-positions" data-grid={(widgetLayouts.lg || DEFAULT_WIDGET_LAYOUTS.lg).find((item) => item.i === "open-positions")}>
+                    <Panel title="Position Command Deck" subtitle="Open-trade protection, partials, runner mode, and stop control." className="helix-position-panel">
+                      <div className="widget-drag-handle mb-3 flex cursor-move items-center justify-between gap-2 rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
+                        <span>Drag to move</span><span>Resize edges or corners</span>
+                      </div>
+                      <div className="mb-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+                        <HudMetric label="Active" value={String(activeTradeRows.length)} tone={activeTradeRows.length ? 'green' : 'cyan'} />
+                        <HudMetric label="Unrealized" value={signedMoney(activeTradeRows.reduce((sum, t) => sum + Number(t.unrealized || 0), 0))} tone={activeTradeRows.reduce((sum, t) => sum + Number(t.unrealized || 0), 0) >= 0 ? 'green' : 'red'} />
+                        <HudMetric label="If Stopped" value={signedMoney(activeTradeRows.reduce((sum, t) => sum + Number(t.secured || 0), 0))} tone={activeTradeRows.reduce((sum, t) => sum + Number(t.secured || 0), 0) >= 0 ? 'green' : 'red'} />
+                        <HudMetric label="Risk Tools" value="BE+ / Runner / SL" tone="amber" />
+                      </div>
+                      <div className="mb-3 rounded-xl border border-cyan-300/15 bg-cyan-400/[0.05] px-3 py-2 text-xs leading-relaxed text-cyan-100">
+                        “If stopped” is not current P&L. It estimates what the position would realize if the current stop-loss were hit right now. BE+ protects past raw entry by estimating exchange fees, slippage, and your safety buffer.
+                      </div>
+
+                      {activeTradeRows.length === 0 ? (
+                        <div className="rounded-2xl border border-cyan-300/15 bg-black/25 p-5 text-center">
+                          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-cyan-300/25 bg-cyan-400/[0.06] text-2xl text-cyan-100 helix-orb">◇</div>
+                          <div className="mt-3 text-lg font-semibold text-slate-100">No active positions</div>
+                          <div className="mt-2 text-sm leading-relaxed text-slate-400">
+                            Position controls will arm automatically when Binance reports an open trade. You’ll get cost-aware BE+, partial profit controls, runner mode, and stop-loss adjustment here.
+                          </div>
+                          <div className="mt-4 grid grid-cols-1 gap-2 text-xs sm:grid-cols-3">
+                            <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2 text-slate-300">BE+ waits for an open position</div>
+                            <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2 text-slate-300">Partial take-profit is disabled until size exists</div>
+                            <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2 text-slate-300">SL edits require Admin Key</div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {activeTradeRows.map((t, i) => (
+                            <div key={`${t.ts}-${i}`} className="rounded-2xl border border-white/10 bg-black/25 p-3">
+                              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                <div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="text-xl font-bold text-slate-100">{t.symbol || '—'}</span>
+                                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${String(t.side || '').toUpperCase() === 'LONG' ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200' : 'border-red-400/40 bg-red-500/10 text-red-200'}`}>{String(t.side || '—').toUpperCase()}</span>
+                                    <span className={`rounded-full border px-2 py-0.5 text-[10px] ${t.slStatus === 'Locked Profit' ? 'border-emerald-400/40 text-emerald-200' : t.slStatus === 'Break-even' ? 'border-cyan-400/40 text-cyan-200' : 'border-amber-400/40 text-amber-200'}`}>{t.slStatus}</span>
+                                    {t.runnerMode && <span className="rounded-full border border-emerald-300/40 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-200">Runner live</span>}
+                                  </div>
+                                  <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-300 md:grid-cols-4">
+                                    <div>Entry <span className="font-semibold text-slate-100">{typeof t.entry === 'number' ? t.entry.toFixed(2) : '—'}</span></div>
+                                    <div>Mark <span className="font-semibold text-slate-100">{typeof t.mark === 'number' && t.mark > 0 ? t.mark.toFixed(2) : '—'}</span> <span className="text-slate-500">({t.markSource})</span></div>
+                                    <div>PnL <span className={`font-semibold ${t.pnlState === 'profit' ? 'text-emerald-300' : t.pnlState === 'loss' ? 'text-red-300' : 'text-slate-300'}`}>{signedMoney(Number(t.unrealized || 0))}</span></div>
+                                    <div>If stopped <span className={`font-semibold ${Number(t.secured || 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>{signedMoney(Number(t.secured || 0))}</span></div>
+                                  </div>
+                                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                                    <StateBadge label="Risk State" value={t.riskState} tone={t.riskState === 'Protected' || t.riskState === 'Working' ? 'green' : t.riskState === 'Under Pressure' || t.riskState === 'Neutral' ? 'amber' : 'red'} />
+                                    <StateBadge label="Protection" value={t.protectionState} tone={t.protectionState === 'Locked Profit' || t.protectionState === 'BE Active' ? 'green' : t.protectionState === 'BE Ready' || t.protectionState === 'Initial Risk' ? 'amber' : 'red'} />
+                                    <StateBadge label="Runner" value={t.runnerState} tone={t.runnerState === 'Runner Live' || t.runnerState === 'Runner Armed' ? 'green' : t.runnerState === 'Partial Ready' ? 'amber' : 'slate'} />
+                                  </div>
+                                  <div className="mt-3 grid grid-cols-1 gap-2">
+                                    <ProgressRail label="Stop Pressure" value={t.stopPressurePct} valueText={t.stop > 0 ? `${t.distanceToStopPct?.toFixed?.(2) ?? '—'}% to stop` : 'No stop'} tone={t.stopPressurePct >= 70 ? 'red' : t.stopPressurePct >= 45 ? 'amber' : 'green'} />
+                                    <ProgressRail label="BE+ Readiness" value={t.beProgressPct} valueText={`${t.currentR.toFixed(2)}R earned`} tone={t.beProgressPct >= 100 ? 'green' : 'cyan'} />
+                                    <ProgressRail label="Runner / Partial Trigger" value={t.partialProgressPct} valueText={t.partialTargetPrice > 0 ? `${formatPrice(t.partialTargetPrice)} trigger` : 'Waiting for stop'} tone={t.partialProgressPct >= 100 ? 'green' : 'amber'} />
+                                  </div>
+                                  <div className="mt-2 grid grid-cols-1 gap-2 text-[11px] text-slate-300 sm:grid-cols-4">
+                                    <div className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1">Current stop <span className={`font-semibold ${Number(t.secured || 0) >= 0 ? 'text-emerald-200' : 'text-red-200'}`}>{Number(t.stop || 0) > 0 ? formatPrice(Number(t.stop)) : 'missing'}</span></div>
+                                    <div className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1">BE+ stop <span className="font-semibold text-cyan-200">{Number(t.bePlusStop || 0) > 0 ? formatPrice(Number(t.bePlusStop)) : '—'}</span></div>
+                                    <div className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1">Runner <span className="font-semibold text-emerald-200">{winnersRunEnabled ? `${runnerPartialPct}% off @ ${runnerActivationR.toFixed(1)}R, trail ${runnerTrailPct.toFixed(2)}%` : 'Off'}</span></div>
+                                    <div className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1">Partial taken <span className="font-semibold text-slate-100">{Number(t.partialTakenPct || 0) > 0 ? `${Number(t.partialTakenPct).toFixed(0)}%` : 'None yet'}</span></div>
+                                  </div>
+                                </div>
+                                <div className="min-w-[260px] rounded-xl border border-white/10 bg-white/[0.03] p-2">
+                                  <div className="mb-2 text-[10px] uppercase tracking-wide text-slate-400">Position Controls</div>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    <button onClick={() => secureBreakEven(String(t.symbol || ''))} className="rounded-lg border border-cyan-400/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-semibold text-cyan-200 hover:bg-cyan-500/20">Set BE+</button>
+                                    <button onClick={() => takePartial(String(t.symbol || ''), 20)} className="rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-200 hover:bg-emerald-500/20">TP 20%</button>
+                                    <button onClick={() => takePartial(String(t.symbol || ''), 30)} className="rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-200 hover:bg-emerald-500/20">TP 30%</button>
+                                    <button onClick={() => closePosition(String(t.symbol || ''))} className="rounded-lg border border-red-400/40 bg-red-500/10 px-2 py-1 text-[10px] font-semibold text-red-200 hover:bg-red-500/20">Close</button>
+                                  </div>
+                                  <div className="mt-2 flex gap-1.5">
+                                    <input type="number" value={slDrafts[String(t.symbol || '')] ?? (Number(t.stop || 0) > 0 ? Number(t.stop).toFixed(2) : '')} onChange={(e) => setSlDrafts((prev) => ({ ...prev, [String(t.symbol || '')]: e.target.value }))} className="min-w-0 flex-1 rounded-lg border border-white/20 bg-black/30 px-2 py-1 text-[10px] text-slate-100" placeholder="New stop loss" />
+                                    <button onClick={() => updateStopLoss(String(t.symbol || ''), Number(t.stop || 0))} className="rounded-lg border border-amber-400/40 bg-amber-500/10 px-2 py-1 text-[10px] font-semibold text-amber-200 hover:bg-amber-500/20">Update SL</button>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </Panel>
+                  </div>
+
+                  <div key="deepseek-live" data-grid={(widgetLayouts.lg || DEFAULT_WIDGET_LAYOUTS.lg).find((item) => item.i === "deepseek-live")}>
+                    <Panel title="Portfolio Manager" subtitle="DeepSeek briefing, operator context, and open-trade supervision." className="helix-brain-panel">
+                      <div className="widget-drag-handle mb-3 flex cursor-move items-center justify-between gap-2 rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
+                        <span>Drag to move</span><span>Resize edges or corners</span>
+                      </div>
+
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                        <HudMetric label="Mode" value={managedPositionRows.length ? 'MANAGING' : String(workerStatus?.aiGateDecision || 'N/A')} tone={managedPositionRows.length ? 'green' : String(workerStatus?.aiGateDecision || '').includes('TRADE') ? 'green' : 'amber'} />
+                        <HudMetric label="Final" value={String(workerStatus?.finalExecutionDecision || 'NO_TRADE')} tone={String(workerStatus?.finalExecutionDecision || '') === 'TRADE' ? 'green' : 'amber'} />
+                        <HudMetric label="Open Trades" value={String(managedPositionRows.length)} tone={managedPositionRows.length ? 'green' : 'cyan'} />
+                        <HudMetric label="Fresh" value={deepseekFresh ? 'YES' : 'NO'} tone={deepseekFresh ? 'green' : 'amber'} />
+                      </div>
+
+                      <div className={`helix-brain-core mt-3 rounded-2xl border px-4 py-4 text-xs ${deepseekFresh ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-100' : 'border-amber-400/30 bg-amber-500/10 text-amber-100'}`}>
+                        <div className="flex items-center gap-4">
+                          <div className="helix-brain-orb flex h-16 w-16 shrink-0 items-center justify-center rounded-full border border-cyan-300/30 bg-black/30">
+                            <span className="text-2xl">◌</span>
+                          </div>
+                          <div>
+                            <div className="font-semibold">{deepseekFresh ? 'DeepSeek heartbeat is fresh' : 'Waiting for fresh DeepSeek heartbeat'}</div>
+                            <div className="mt-1 text-slate-300">
+                              Last AI response: {workerStatus?.aiLastHeartbeatAt ? new Date(workerStatus.aiLastHeartbeatAt).toLocaleTimeString() : '—'}
+                              <span className="mx-2 text-slate-500">•</span>
+                              Source: {String(workerStatus?.executionSource || 'HYBRID')}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="mt-3 rounded-2xl border border-cyan-300/15 bg-black/25 p-4">
+                        <div className="mb-2 text-[10px] uppercase tracking-[0.24em] text-cyan-200/70">Portfolio Manager Briefing</div>
+                        <div className="text-lg font-semibold leading-snug text-slate-100">{deepseekBriefing.stance}</div>
+                        <div className="mt-2 text-sm leading-relaxed text-slate-300">{deepseekBriefing.plainReason}</div>
+                        <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-2">
+                          <ManagerNoteCard title="What I Like" body={portfolioManagerSections.like} tone="cyan" />
+                          <ManagerNoteCard title="What Blocks Me" body={portfolioManagerSections.blocks} tone="amber" />
+                          <ManagerNoteCard title="What Changes My Mind" body={portfolioManagerSections.changesMind} tone="green" />
+                          <ManagerNoteCard title="What I’m Managing Now" body={portfolioManagerSections.managingNow} tone="slate" />
+                        </div>
+                        <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Confidence Path</div>
+                          <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-5">
+                            {portfolioManagerSections.path.map((step) => (
+                              <PathStep key={step.label} label={step.label} value={step.value} />
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="mt-3 rounded-2xl border border-cyan-300/15 bg-black/25 p-4">
+                        <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <div className="text-[10px] uppercase tracking-[0.24em] text-cyan-200/70">Operator Edge Stack</div>
+                            <div className="mt-1 text-sm leading-relaxed text-slate-300">
+                              {operatorIntelligence?.operatorBrief?.headline || 'Building multi-timeframe, event-risk, execution-quality, and AI/rules alignment context.'}
+                            </div>
+                          </div>
+                          <div className="rounded-full border border-cyan-300/30 bg-cyan-400/10 px-3 py-1 text-[11px] font-black uppercase tracking-wide text-cyan-100">
+                            Bias {operatorIntelligence?.multiTimeframe?.marketBias || '—'}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-xs lg:grid-cols-4">
+                          <HudMetric label="MTF Align" value={operatorIntelligence?.multiTimeframe ? `${operatorIntelligence.multiTimeframe.alignmentScore}%` : '—'} tone={(operatorIntelligence?.multiTimeframe?.alignmentScore || 0) >= 65 ? 'green' : 'amber'} />
+                          <HudMetric label="Event Risk" value={String(operatorIntelligence?.eventRisk?.level || '—').toUpperCase()} tone={operatorIntelligence?.eventRisk?.level === 'high' ? 'red' : operatorIntelligence?.eventRisk?.level === 'medium' ? 'amber' : 'green'} />
+                          <HudMetric label="Exec Grade" value={operatorIntelligence?.executionQuality?.grade || '—'} tone={['A', 'B'].includes(String(operatorIntelligence?.executionQuality?.grade)) ? 'green' : operatorIntelligence?.executionQuality?.grade === 'C' ? 'amber' : 'red'} />
+                          <HudMetric label="AI/Rules" value={operatorIntelligence?.aiRulesAlignment ? `${operatorIntelligence.aiRulesAlignment.score}%` : '—'} tone={(operatorIntelligence?.aiRulesAlignment?.score || 0) >= 82 ? 'green' : 'amber'} />
+                        </div>
+                        <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-2">
+                          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs">
+                            <div className="mb-2 text-[10px] uppercase tracking-wide text-slate-400">Best Timeframe Alignment</div>
+                            {(operatorIntelligence?.multiTimeframe?.symbols || []).slice(0, 3).map((row) => (
+                              <div key={row.symbol} className="mb-2 last:mb-0 rounded-lg border border-white/10 bg-black/20 p-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="font-black text-slate-100">{row.symbol}</span>
+                                  <span className="font-bold text-cyan-100">{row.score}%</span>
+                                </div>
+                                <div className="mt-1 text-slate-400">{row.note}</div>
+                                <div className="mt-2 flex flex-wrap gap-1">
+                                  {row.timeframes.map((tf) => (
+                                    <span key={`${row.symbol}-${tf.interval}`} className={`rounded-full border px-2 py-0.5 text-[10px] ${tf.bias === 'LONG' ? 'border-emerald-300/30 text-emerald-200' : tf.bias === 'SHORT' ? 'border-red-300/30 text-red-200' : 'border-slate-300/20 text-slate-300'}`}>
+                                      {tf.interval} {tf.bias}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                            {!operatorIntelligence?.multiTimeframe?.symbols?.length && <div className="text-slate-400">Waiting for timeframe scan.</div>}
+                          </div>
+                          <div className="space-y-2">
+                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs">
+                              <div className="text-[10px] uppercase tracking-wide text-slate-400">Priority</div>
+                              <div className="mt-1 leading-relaxed text-amber-100">{operatorIntelligence?.operatorBrief?.priority || 'Waiting for operator intelligence.'}</div>
+                            </div>
+                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs">
+                              <div className="text-[10px] uppercase tracking-wide text-slate-400">Execution Quality</div>
+                              <div className="mt-1 leading-relaxed text-slate-300">
+                                {operatorIntelligence?.operatorBrief?.improvement || 'Slippage and fill-rate telemetry will populate from live trade records.'}
+                              </div>
+                              {operatorIntelligence?.executionQuality && (
+                                <div className="mt-2 text-slate-400">
+                                  Fill {operatorIntelligence.executionQuality.fillRatePct}% • Avg slip {operatorIntelligence.executionQuality.avgSlippageBps} bps • Rejects {operatorIntelligence.executionQuality.rejectedSignals}
+                                </div>
+                              )}
+                            </div>
+                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs">
+                              <div className="text-[10px] uppercase tracking-wide text-slate-400">Action</div>
+                              <div className="mt-1 leading-relaxed text-cyan-100">{operatorIntelligence?.operatorBrief?.action || 'Keep scanning until the next backend intelligence cycle completes.'}</div>
+                            </div>
+                          </div>
+                        </div>
+                        {operatorIntelligence?.aiRulesAlignment?.disagreements?.length ? (
+                          <div className="mt-3 rounded-xl border border-amber-300/20 bg-amber-400/[0.045] p-3 text-xs">
+                            <div className="mb-2 text-[10px] uppercase tracking-wide text-amber-200">AI / Rules Disagreements</div>
+                            {operatorIntelligence.aiRulesAlignment.disagreements.slice(0, 3).map((row) => (
+                              <div key={`${row.ts}-${row.symbol}-${row.rulesDecision}`} className="mb-2 last:mb-0 text-slate-300">
+                                <span className="font-bold text-slate-100">{row.symbol}</span> {row.aiDecision} → {row.rulesDecision}: {row.reason}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      {managedPositionRows.length > 0 && (
+                        <div className="mt-3 rounded-2xl border border-emerald-300/15 bg-emerald-400/[0.045] p-4">
+                          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <div className="text-[10px] uppercase tracking-[0.24em] text-emerald-200/80">Open Trade Supervision</div>
+                              <div className="mt-1 text-sm text-slate-300">DeepSeek keeps scanning, but open risk is now the first job.</div>
+                            </div>
+                            <div className="rounded-full border border-emerald-300/30 bg-black/25 px-3 py-1 text-[11px] font-bold text-emerald-100">
+                              Net {signedMoney(managedPositionRows.reduce((sum, row) => sum + Number(row.unrealized || 0), 0))}
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+                            {managedPositionRows.slice(0, 4).map((row) => (
+                              <div key={`${row.symbol}-${row.ts}`} className="rounded-2xl border border-white/10 bg-black/25 p-3 text-xs">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className="text-base font-black text-slate-50">{row.symbol}</span>
+                                      <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${row.side === 'LONG' ? 'border-emerald-300/40 text-emerald-200' : 'border-red-300/40 text-red-200'}`}>{row.side}</span>
+                                      <span className={`rounded-full border px-2 py-0.5 text-[10px] ${row.slStatus === 'Locked Profit' ? 'border-emerald-300/40 text-emerald-200' : row.slStatus === 'Break-even' ? 'border-cyan-300/40 text-cyan-200' : 'border-amber-300/40 text-amber-200'}`}>{row.slStatus}</span>
+                                    </div>
+                                    <div className="mt-1 text-slate-400">Entry {Number(row.entry || 0).toFixed(Number(row.entry || 0) < 1 ? 5 : 2)} • Mark {Number(row.mark || 0).toFixed(Number(row.mark || 0) < 1 ? 5 : 2)}</div>
+                                  </div>
+                                  <div className={`text-right text-sm font-black ${Number(row.unrealized || 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                                    {signedMoney(Number(row.unrealized || 0))}
+                                    <div className="mt-1 text-[11px] font-semibold text-slate-500">{row.movePct >= 0 ? '+' : ''}{row.movePct.toFixed(2)}%</div>
+                                  </div>
+                                </div>
+                                <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
+                                  <div className="rounded-lg border border-white/10 bg-white/[0.035] p-2">
+                                    <div className="text-slate-500">Stop distance</div>
+                                    <div className="mt-1 font-bold text-slate-100">{Number(row.stop || 0) > 0 ? `${row.distanceToStopPct.toFixed(2)}%` : 'missing'}</div>
+                                  </div>
+                                  <div className="rounded-lg border border-white/10 bg-white/[0.035] p-2">
+                                    <div className="text-slate-500">Target distance</div>
+                                    <div className="mt-1 font-bold text-slate-100">{Number(row.takeProfit || 0) > 0 ? `${row.distanceToTargetPct.toFixed(2)}%` : 'not set'}</div>
+                                  </div>
+                                </div>
+                                {(row.holdScore > 0 || row.reduceScore > 0 || row.exitScore > 0) && (
+                                  <div className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
+                                    <div className="rounded-lg border border-emerald-300/15 bg-emerald-400/[0.045] p-2">
+                                      <div className="text-slate-500">Hold</div>
+                                      <div className="mt-1 font-black text-emerald-200">{row.holdScore}</div>
+                                    </div>
+                                    <div className="rounded-lg border border-amber-300/15 bg-amber-400/[0.045] p-2">
+                                      <div className="text-slate-500">Reduce</div>
+                                      <div className="mt-1 font-black text-amber-200">{row.reduceScore}</div>
+                                    </div>
+                                    <div className="rounded-lg border border-red-300/15 bg-red-400/[0.045] p-2">
+                                      <div className="text-slate-500">Exit</div>
+                                      <div className="mt-1 font-black text-red-200">{row.exitScore}</div>
+                                    </div>
+                                  </div>
+                                )}
+                                <div className="mt-3 rounded-xl border border-cyan-300/15 bg-cyan-400/[0.045] p-2.5 leading-relaxed text-cyan-100">
+                                  {row.nextAction}
+                                  {row.managementReason && <div className="mt-1 text-slate-300">{row.managementReason}</div>}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                        <div className="mb-2 flex items-center justify-between gap-3 text-[10px] uppercase tracking-wide text-slate-400">
+                          <span>{managedPositionRows.length ? 'Market scanner still running' : 'Symbols DeepSeek just reviewed'}</span>
+                          <span>{aiConversationRows.length} cached</span>
+                        </div>
+                        <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                          {(aiConversationRows.length ? aiConversationRows.slice(0, 5) : [{
+                            ts: '',
+                            symbol: '—',
+                            promptSummary: 'Waiting for first live DeepSeek cycle.',
+                            responseSummary: 'No response yet.',
+                            confidence: 0,
+                            delta: 'idle',
+                          }]).map((row: any, i: number) => (
+                            <div key={`${row.ts || 'empty'}-${row.symbol}-${i}`} className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="font-semibold text-slate-100">{String(row.symbol || 'MARKET')}</div>
+                                <div className="rounded-full border border-amber-300/25 px-2 py-0.5 text-[10px] text-amber-100">{Number(row.confidence || 0)}% conf</div>
+                              </div>
+                              <div className="mt-1 line-clamp-2 break-words text-slate-300">{String(row.responseSummary || 'Monitoring').replace(/^NO_TRADE\s*\(/i, '').replace(/\)$/g, '')}</div>
+                              <div className="mt-2 flex items-center justify-between gap-2 text-[11px]">
+                                <span className="text-slate-500">{row.ts ? new Date(row.ts).toLocaleTimeString() : '—'}</span>
+                                <span className="text-cyan-300">{String(row.delta || 'no change')}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {!isPresentationView && (
+                      <details className="no-drag mt-3 rounded-xl border border-white/10 bg-black/20 p-3 text-xs">
+                        <summary className="cursor-pointer text-[10px] uppercase tracking-wide text-slate-400">Raw DeepSeek exchange</summary>
+                        <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+                          <div>
+                            <div className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Prompt summary</div>
+                            <div className="max-h-32 overflow-auto whitespace-pre-wrap break-words leading-relaxed text-slate-300">{latestAiConversation?.promptSummary || 'No prompt recorded yet.'}</div>
+                          </div>
+                          <div>
+                            <div className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Response summary</div>
+                            <div className="max-h-32 overflow-auto whitespace-pre-wrap break-words leading-relaxed text-cyan-200">{latestAiConversation?.responseSummary || 'No response recorded yet.'}</div>
+                          </div>
+                        </div>
+                      </details>
+                      )}
+                    </Panel>
+                  </div>
+
+                  <div key="live-feed" data-grid={(widgetLayouts.lg || DEFAULT_WIDGET_LAYOUTS.lg).find((item) => item.i === "live-feed")}>
+                    <Panel title="Trade Journal" subtitle="Cycle-by-cycle execution readout and recent decision trail." className="helix-lifecycle-panel">
+                      <div className="widget-drag-handle mb-3 flex cursor-move items-center justify-between gap-2 rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
+                        <span>Drag to move</span><span>Resize edges or corners</span>
+                      </div>
+                      <div className="rounded-2xl border border-cyan-300/20 bg-black/25 p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-[10px] uppercase tracking-[0.28em] text-cyan-200/70">Cycle readout</div>
+                            <div className="mt-1 text-xl font-black text-slate-50">{lifecycleBrief.headline}</div>
+                            <div className="mt-1 text-xs text-slate-400">
+                              Focus {lifecycleBrief.focus} • reviewed {lifecycleBrief.reviewedCount} symbols • blocked {lifecycleBrief.blockedCount}
+                            </div>
                           </div>
                           <div className="text-right">
-                            <div className="text-3xl font-bold text-white">${coin.price.toLocaleString(undefined, {minimumFractionDigits: coin.price < 1 ? 4 : 2, maximumFractionDigits: coin.price < 1 ? 4 : 2})}</div>
-                            <div className={`text-lg font-bold mt-1 ${coin.change24h >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                              {coin.change24h >= 0 ? '↑' : '↓'} {Math.abs(coin.change24h).toFixed(2)}% (24h)
+                            <div className={`rounded-full border px-3 py-1 text-[11px] font-black uppercase tracking-wide ${lifecycleBrief.action === 'TRADE' ? 'border-emerald-300/40 bg-emerald-400/10 text-emerald-200' : lifecycleBrief.action === 'SKIP' ? 'border-amber-300/40 bg-amber-400/10 text-amber-200' : 'border-cyan-300/30 bg-cyan-400/10 text-cyan-100'}`}>
+                              {lifecycleBrief.action}
                             </div>
+                            <div className="mt-2 text-[11px] text-slate-500">{lifecycleBrief.lastTs ? new Date(lifecycleBrief.lastTs).toLocaleTimeString() : '—'}</div>
                           </div>
                         </div>
-
-                        {/* Market Data Grid */}
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                          <div>
-                            <div className="text-xs text-gray-400 mb-1">24h High</div>
-                            <div className="text-sm font-bold text-green-400">${coin.high24h.toLocaleString(undefined, {minimumFractionDigits: coin.price < 1 ? 4 : 2})}</div>
-                          </div>
-                          <div>
-                            <div className="text-xs text-gray-400 mb-1">24h Low</div>
-                            <div className="text-sm font-bold text-red-400">${coin.low24h.toLocaleString(undefined, {minimumFractionDigits: coin.price < 1 ? 4 : 2})}</div>
-                          </div>
-                          <div>
-                            <div className="text-xs text-gray-400 mb-1">24h Volume</div>
-                            <div className="text-sm font-bold text-white">${(coin.volume24h / 1000000000).toFixed(2)}B</div>
-                          </div>
-                          <div>
-                            <div className="text-xs text-gray-400 mb-1">Market Cap</div>
-                            <div className="text-sm font-bold text-white">${(coin.marketCap / 1000000000).toFixed(2)}B</div>
-                          </div>
+                        <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.035] p-3 text-sm leading-relaxed text-slate-200">
+                          {lifecycleBrief.operatorReadout}
                         </div>
+                      </div>
 
-                        {/* Supply Information */}
-                        <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
-                          <div>
-                            <div className="text-xs text-gray-400 mb-1">Circulating Supply</div>
-                            <div className="text-sm font-bold text-white">{(coin.circulatingSupply / 1000000).toFixed(2)}M {coin.symbol}</div>
-                          </div>
-                          <div>
-                            <div className="text-xs text-gray-400 mb-1">Max Supply</div>
-                            <div className="text-sm font-bold text-white">{coin.maxSupply ? `${(coin.maxSupply / 1000000).toFixed(2)}M ${coin.symbol}` : 'Unlimited'}</div>
-                          </div>
-                          <div>
-                            <div className="text-xs text-gray-400 mb-1">Market Sentiment</div>
-                            <div className={`text-sm font-bold ${
-                              coin.sentiment === 'VERY BULLISH' ? 'text-green-500' :
-                              coin.sentiment === 'BULLISH' ? 'text-green-400' :
-                              coin.sentiment === 'NEUTRAL' ? 'text-yellow-400' :
-                              'text-red-400'
-                            }`}>
-                              {coin.sentiment}
+                      <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.035] p-3">
+                        <div className="text-[10px] uppercase tracking-[0.22em] text-slate-400">Recent execution events</div>
+                        <div className="mt-3 space-y-2">
+                          {groupedJournal.executionRows.length ? groupedJournal.executionRows.map((row) => (
+                            <div key={`${row.ts}-${row.label}`} className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className={`font-semibold ${row.tone === 'green' ? 'text-emerald-200' : 'text-red-200'}`}>{row.label}</span>
+                                <span className="text-slate-500">{row.ts ? new Date(row.ts).toLocaleTimeString() : '—'}</span>
+                              </div>
+                              <div className="mt-1 text-slate-300">{row.detail}</div>
                             </div>
-                          </div>
+                          )) : (
+                            <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-xs text-slate-400">No execution events yet. The journal will populate as trades open and close.</div>
+                          )}
                         </div>
+                      </div>
 
-                        {/* Technical Indicators */}
-                        <div className="bg-gray-900 rounded p-4">
-                          <h5 className="text-sm font-bold text-gray-300 mb-3">Technical Indicators</h5>
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                            <div>
-                              <div className="text-xs text-gray-400 mb-1">RSI (14)</div>
-                              <div className={`text-sm font-bold ${
-                                coin.rsi > 70 ? 'text-red-400' :
-                                coin.rsi > 50 ? 'text-green-400' :
-                                coin.rsi > 30 ? 'text-yellow-400' :
-                                'text-green-400'
-                              }`}>
-                                {coin.rsi} {coin.rsi > 70 ? '(Overbought)' : coin.rsi < 30 ? '(Oversold)' : ''}
+                      <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                        {groupedJournal.reviewRows.map((row, idx) => (
+                          <div key={`${row.label}-${idx}`} className="rounded-2xl border border-white/10 bg-white/[0.035] p-3 text-xs transition hover:border-cyan-300/30 hover:bg-cyan-400/[0.06]">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <div className="font-black tracking-wide text-slate-50">{row.label}</div>
+                                <div className="mt-1 text-slate-400">{row.ts ? new Date(row.ts).toLocaleTimeString() : '—'}</div>
+                              </div>
+                              <div className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${row.tone === 'green' ? 'border-emerald-300/40 text-emerald-200' : row.tone === 'red' ? 'border-red-300/40 text-red-200' : 'border-amber-300/30 text-amber-200'}`}>
+                                {row.tone === 'green' ? 'ACTION' : row.tone === 'red' ? 'RISK' : 'REVIEW'}
                               </div>
                             </div>
-                            <div>
-                              <div className="text-xs text-gray-400 mb-1">MACD Signal</div>
-                              <div className={`text-sm font-bold ${coin.macd === 'BUY' ? 'text-green-400' : 'text-red-400'}`}>
-                                {coin.macd}
-                              </div>
-                            </div>
-                            <div>
-                              <div className="text-xs text-gray-400 mb-1">MA 50</div>
-                              <div className="text-sm font-bold text-white">${coin.ma50.toLocaleString(undefined, {minimumFractionDigits: coin.price < 1 ? 4 : 2})}</div>
-                            </div>
-                            <div>
-                              <div className="text-xs text-gray-400 mb-1">MA 200</div>
-                              <div className="text-sm font-bold text-white">${coin.ma200.toLocaleString(undefined, {minimumFractionDigits: coin.price < 1 ? 4 : 2})}</div>
-                            </div>
+                            <div className="mt-2 line-clamp-2 text-slate-300">{row.detail}</div>
                           </div>
-                        </div>
+                        ))}
+                      </div>
 
-                        {/* Support & Resistance */}
-                        <div className="grid grid-cols-2 gap-4 mt-4">
-                          <div className="bg-red-500/10 border border-red-500/30 rounded p-3">
-                            <div className="text-xs text-red-400 mb-1">Support Level</div>
-                            <div className="text-lg font-bold text-red-400">${coin.support.toLocaleString(undefined, {minimumFractionDigits: coin.price < 1 ? 4 : 2})}</div>
+                      {isQuantView && (
+                      <details className="no-drag mt-3 rounded-2xl border border-white/10 bg-black/20 p-3 text-xs" open>
+                        <summary className="cursor-pointer list-none font-bold uppercase tracking-[0.18em] text-slate-400">Diagnostics stream</summary>
+                        <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
+                          {(['ALL', 'DECISIONS', 'RISK', 'EXECUTION'] as const).map((filter) => (
+                            <button
+                              key={filter}
+                              onClick={() => setFeedFilter(filter)}
+                              className={`rounded-full border px-2.5 py-1 ${feedFilter === filter ? 'border-cyan-300/60 bg-cyan-400/15 text-cyan-100' : 'border-white/10 bg-white/[0.03] text-slate-300 hover:bg-white/[0.06]'}`}
+                            >
+                              {filter}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="mt-3 space-y-2">
+                          {(filteredFeed.length ? filteredFeed : ['No feed events yet. Waiting for the next worker cycle.']).slice(0, 4).map((evt, i) => (
+                            <div key={`${evt}-${i}`} className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 leading-relaxed text-slate-300">
+                              {evt}
+                            </div>
+                          ))}
+                          {deepseekOperatorFeed.slice(0, 3).map((row, i) => (
+                            <div key={`${row.ts}-${i}`} className="rounded-lg border border-cyan-300/15 bg-cyan-400/[0.04] px-3 py-2">
+                              <div className="break-words text-slate-200">{row.text}</div>
+                              <div className="mt-1 text-[11px] text-cyan-300">Delta: {row.delta || 'no change'}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                      )}
+                    </Panel>
+                  </div>
+
+                  <div key="recent-trades" data-grid={(widgetLayouts.lg || DEFAULT_WIDGET_LAYOUTS.lg).find((item) => item.i === "recent-trades")}>
+                    <Panel title="Performance Ledger" subtitle="Closed-trade outcomes, open orders, and edge quality." className="helix-performance-panel">
+                      <div className="widget-drag-handle mb-3 flex cursor-move items-center justify-between gap-2 rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
+                        <span>Drag to move</span><span>Resize edges or corners</span>
+                      </div>
+                      <div className="rounded-2xl border border-cyan-300/20 bg-black/25 p-4">
+                        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                          <div>
+                            <div className="text-[10px] uppercase tracking-[0.28em] text-cyan-200/70">Performance health</div>
+                            <div className="mt-1 text-2xl font-black tracking-tight text-slate-50">{performanceBrief.health}</div>
+                            <div className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-300">{performanceBrief.message}</div>
                           </div>
-                          <div className="bg-green-500/10 border border-green-500/30 rounded p-3">
-                            <div className="text-xs text-green-400 mb-1">Resistance Level</div>
-                            <div className="text-lg font-bold text-green-400">${coin.resistance.toLocaleString(undefined, {minimumFractionDigits: coin.price < 1 ? 4 : 2})}</div>
+                          <div className={`rounded-full border px-3 py-1 text-[11px] font-black uppercase tracking-wide ${performanceBrief.tone === 'green' ? 'border-emerald-300/30 bg-emerald-400/10 text-emerald-200' : performanceBrief.tone === 'amber' ? 'border-amber-300/30 bg-amber-400/10 text-amber-200' : 'border-cyan-300/30 bg-cyan-400/10 text-cyan-100'}`}>
+                            Last {performanceBrief.lastSymbol} {performanceBrief.lastPnl}
                           </div>
                         </div>
                       </div>
-                    ))}
+
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs lg:grid-cols-4">
+                        <HudMetric label="Win Rate" value={`${postTradeQuality.winRate}%`} tone={postTradeQuality.winRate >= 55 ? 'green' : postTradeQuality.winRate >= 45 ? 'amber' : 'red'} />
+                        <HudMetric label="Net PnL" value={signedMoney(postTradeQuality.netPnl)} tone={Number(postTradeQuality.netPnl || 0) >= 0 ? 'green' : 'red'} />
+                        <HudMetric label="Profit Factor" value={Number(postTradeQuality.profitFactor || 0).toFixed(2)} tone={Number(postTradeQuality.profitFactor || 0) >= 1.2 ? 'green' : Number(postTradeQuality.profitFactor || 0) >= 1 ? 'amber' : 'red'} />
+                        <HudMetric label="Max DD" value={signedMoney(-postTradeQuality.maxDrawdownApprox)} tone={Number(postTradeQuality.maxDrawdownApprox || 0) <= 10 ? 'green' : 'amber'} />
+                      </div>
+
+                      <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.035] p-3 text-xs">
+                        <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                          <div>
+                            <div className="text-[10px] uppercase tracking-[0.24em] text-slate-400">Open Order Control</div>
+                            <div className="mt-1 text-sm font-semibold text-slate-100">{openOrders.length} open orders • {visibleOpenOrders.length} shown</div>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <select value={openOrderFilter} onChange={(e) => setOpenOrderFilter(e.target.value as 'ALL' | 'BTCUSDT' | 'ETHUSDT' | 'XRPUSDT' | 'DOGEUSDT' | 'BNBUSDT')} className="rounded-xl border border-white/15 bg-black/35 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-300/60 focus:ring-2 focus:ring-cyan-300/10">
+                              <option value="ALL">ALL</option><option value="BTCUSDT">BTCUSDT</option><option value="ETHUSDT">ETHUSDT</option><option value="XRPUSDT">XRPUSDT</option><option value="DOGEUSDT">DOGEUSDT</option><option value="BNBUSDT">BNBUSDT</option>
+                            </select>
+                            <button onClick={() => cancelAllOpenOrders('FILTERED')} className="rounded-xl border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-[11px] font-bold text-amber-200 hover:bg-amber-500/20">Cancel Filtered</button>
+                            <button onClick={() => cancelAllOpenOrders('ALL')} className="rounded-xl border border-red-400/40 bg-red-500/10 px-3 py-2 text-[11px] font-bold text-red-200 hover:bg-red-500/20">Cancel All</button>
+                          </div>
+                        </div>
+                        {ordersFeedback && <div className={`mb-2 rounded-xl border px-3 py-2 text-xs ${ordersFeedback.kind === 'success' ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200' : 'border-red-400/40 bg-red-500/10 text-red-200'}`}>{ordersFeedback.text}</div>}
+                        <div className="max-h-36 space-y-1.5 overflow-auto pr-1">
+                          {visibleOpenOrders.length === 0 ? (
+                            <div className="rounded-xl border border-cyan-300/15 bg-black/25 p-4 text-center text-slate-400">
+                              No open orders for this filter. The order book is clean.
+                            </div>
+                          ) : visibleOpenOrders.map((o) => (
+                            <div key={`${o.symbol}-${o.orderId}`} className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/25 px-3 py-2">
+                              <div className="min-w-0">
+                                <div className="font-bold text-slate-100">{o.symbol} <span className={String(o.side).toUpperCase() === 'BUY' ? 'text-emerald-300' : 'text-red-300'}>{o.side}</span></div>
+                                <div className="mt-0.5 text-[11px] text-slate-400">{o.type} • {Number(o.price || 0) > 0 ? Number(o.price).toFixed(2) : 'MKT'} • qty {Number(o.origQty || 0).toFixed(5)}</div>
+                              </div>
+                              <button onClick={() => cancelOpenOrder({ symbol: o.symbol, orderId: o.orderId })} className="shrink-0 rounded-lg border border-red-400/40 bg-red-500/10 px-2 py-1 text-[10px] font-bold text-red-200 hover:bg-red-500/20">Cancel</button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="mt-3 rounded-2xl border border-white/10 bg-black/25 p-3">
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-[10px] uppercase tracking-[0.24em] text-slate-400">Recent Closes</div>
+                            <div className="mt-1 text-sm text-slate-300">Latest realized outcomes from the journal.</div>
+                          </div>
+                          <div className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-1 text-[11px] text-slate-300">{recentTradeRows.length} closes</div>
+                        </div>
+                        <div className="space-y-2">
+                          {recentTradeRows.length === 0 ? (
+                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4 text-center text-slate-400">No closed trades yet</div>
+                          ) : recentTradeRows.slice(0, 8).map((t, i) => (
+                            <div key={`${t.ts}-${i}`} className="grid grid-cols-[1fr_auto] items-center gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs">
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="font-black text-slate-100">{t.symbol || '—'}</span>
+                                  <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${String(t.side).toUpperCase() === 'LONG' ? 'border-emerald-300/30 text-emerald-200' : String(t.side).toUpperCase() === 'SHORT' ? 'border-red-300/30 text-red-200' : 'border-slate-300/20 text-slate-300'}`}>{String(t.side || 'CLOSE').toUpperCase()}</span>
+                                </div>
+                                <div className="mt-1 text-slate-500">{formatDateTime(t.ts)}</div>
+                              </div>
+                              <div className={`text-right text-base font-black ${Number(t.pnl || 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                                {signedMoney(Number(t.pnl || 0))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </Panel>
                   </div>
-                </div>
-              )}
-            </>
+                </ResponsiveGridLayout>
+              </div>
             )}
-          </div>
-        )}
+          </main>
 
-        {/* Content based on active tab */}
-        {activeTab === 'LIVE' && subTab !== 'MODEL CHAT >' && (
-          <div className="space-y-8">
-            {/* Live Performance Chart */}
-            <LivePerformanceChart models={models} />
-
-            {/* Live Stats Grid */}
-            <div className="grid grid-cols-4 gap-4">
-              <div className="bg-gray-900 p-4 rounded">
-                <div className="text-sm text-gray-400">Active Models</div>
-                <div className="text-2xl font-bold">{models.filter(m => m.status === 'active').length}</div>
-              </div>
-              <div className="bg-gray-900 p-4 rounded">
-                <div className="text-sm text-gray-400">Total Trades</div>
-                <div className="text-2xl font-bold">{models.reduce((sum, m) => sum + m.totalTrades, 0)}</div>
-              </div>
-              <div className="bg-gray-900 p-4 rounded">
-                <div className="text-sm text-gray-400">Win Rate</div>
-                <div className="text-2xl font-bold">{models.length > 0 ? (models.reduce((sum, m) => sum + m.winRate, 0) / models.length).toFixed(1) : 0}%</div>
-              </div>
-              <div className="bg-gray-900 p-4 rounded">
-                <div className="text-sm text-gray-400">Avg ROI</div>
-                <div className="text-2xl font-bold">{models.length > 0 ? (models.reduce((sum, m) => sum + m.roi, 0) / models.length).toFixed(1) : 0}%</div>
-              </div>
-            </div>
-
-            {/* Live Feed */}
-            <div className="grid grid-cols-2 gap-6">
-              <div className="bg-gray-900 rounded-lg p-4">
-                <h4 className="font-bold mb-3 flex items-center gap-2">
-                  Recent Activity
-                  <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></div>
-                </h4>
-                <div className="space-y-2 text-sm">
-                  {models.slice(0, 3).map((model) => {
-                    const pnl = model.currentBalance - 10000;
-                    return (
-                      <div key={model.id} className="flex justify-between items-center">
-                        <span className="flex items-center gap-1">
-                          {model.icon} {model.name}
-                        </span>
-                        <span className={pnl >= 0 ? 'text-green-400 font-mono' : 'text-red-400 font-mono'}>
-                          {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-              <div className="bg-gray-900 rounded-lg p-4">
-                <h4 className="font-bold mb-3 flex items-center gap-2">
-                  Active Positions
-                  <div className="w-1.5 h-1.5 bg-cyan-500 rounded-full animate-pulse"></div>
-                </h4>
-                <div className="space-y-2 text-sm">
-                  {(() => {
-                    // Collect all unique positions across all models
-                    const allPositions = new Set<string>();
-                    models.forEach(model => {
-                      (model.activePositions || []).forEach((pos: string) => allPositions.add(pos));
-                    });
-                    
-                    const positionArray = Array.from(allPositions).slice(0, 5);
-                    
-                    if (positionArray.length === 0) {
-                      return <div className="text-gray-500 text-xs">No active positions</div>;
-                    }
-                    
-                    return positionArray.map((position, idx) => {
-                      const cryptoData = cryptoPrices.find(c => c.symbol === position);
-                      const modelsHoldingThis = models.filter(m => 
-                        (m.activePositions || []).includes(position)
-                      ).length;
-                      
-                      return (
-                        <div key={idx} className="flex justify-between items-center">
-                          <span className="font-mono flex items-center gap-2">
-                            {position}
-                            <span className="text-xs text-gray-500">({modelsHoldingThis} AI{modelsHoldingThis > 1 ? 's' : ''})</span>
-                          </span>
-                          <span className={cryptoData && cryptoData.change >= 0 ? 'text-green-400 font-mono' : 'text-red-400 font-mono'}>
-                            {cryptoData ? `${cryptoData.change >= 0 ? '+' : ''}${cryptoData.change.toFixed(2)}%` : '...'}
-                          </span>
-                        </div>
-                      );
-                    });
-                  })()}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'LEADERBOARD' && subTab !== 'MODEL CHAT >' && (
-          <div className="space-y-6">
-            {/* Leaderboard Table */}
-            <div className="bg-gray-900 rounded-lg overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead className="bg-gray-800">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-sm font-bold text-gray-300">RANK</th>
-                      <th className="px-4 py-3 text-left text-sm font-bold text-gray-300">MODEL</th>
-                      <th className="px-4 py-3 text-right text-sm font-bold text-gray-300">ACCT VALUE ↓</th>
-                      <th className="px-4 py-3 text-right text-sm font-bold text-gray-300">RETURN %</th>
-                      <th className="px-4 py-3 text-right text-sm font-bold text-gray-300">TOTAL P&L</th>
-                      <th className="px-4 py-3 text-right text-sm font-bold text-gray-300">FEES</th>
-                      <th className="px-4 py-3 text-right text-sm font-bold text-gray-300">WIN RATE</th>
-                      <th className="px-4 py-3 text-right text-sm font-bold text-gray-300">BIGGEST WIN</th>
-                      <th className="px-4 py-3 text-right text-sm font-bold text-gray-300">BIGGEST LOSS</th>
-                      <th className="px-4 py-3 text-right text-sm font-bold text-gray-300">SHARPE</th>
-                      <th className="px-4 py-3 text-right text-sm font-bold text-gray-300">TRADES</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {models.map((model, index) => {
-                      const metrics = calculateMetrics(model);
-                      return (
-                        <tr key={model.id} className="border-b border-gray-700 hover:bg-gray-800">
-                          <td className="px-4 py-3 text-sm font-bold text-gray-300">#{index + 1}</td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center">
-                              <span className="text-lg mr-2">{model.icon}</span>
-                              <span className={`font-bold ${model.color}`}>{model.name}</span>
-                            </div>
-                          </td>
-                          <td className="px-4 py-3 text-right text-sm font-mono">${model.currentBalance.toLocaleString()}</td>
-                          <td className={`px-4 py-3 text-right text-sm font-mono ${model.roi >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {model.roi >= 0 ? '+' : ''}{model.roi.toFixed(2)}%
-                          </td>
-                          <td className={`px-4 py-3 text-right text-sm font-mono ${metrics.totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {metrics.totalPnL >= 0 ? '+' : ''}${metrics.totalPnL.toFixed(2)}
-                          </td>
-                          <td className="px-4 py-3 text-right text-sm font-mono text-gray-400">${model.fees?.toFixed(2) || '0.00'}</td>
-                          <td className="px-4 py-3 text-right text-sm font-mono text-gray-300">{model.winRate.toFixed(1)}%</td>
-                          <td className="px-4 py-3 text-right text-sm font-mono text-green-400">+${model.biggestWin?.toFixed(2) || '0.00'}</td>
-                          <td className="px-4 py-3 text-right text-sm font-mono text-red-400">${model.biggestLoss?.toFixed(2) || '0.00'}</td>
-                          <td className="px-4 py-3 text-right text-sm font-mono text-gray-300">{model.sharpe?.toFixed(3) || '0.000'}</td>
-                          <td className="px-4 py-3 text-right text-sm font-mono text-gray-300">{model.totalTrades}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* Winning Model Section */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Winning Model Card */}
-              <div className="bg-gray-900 rounded-lg p-6 border border-gray-700">
-                <h3 className="text-lg font-bold text-gray-300 mb-4">WINNING MODEL</h3>
-                <div className="flex items-center mb-4">
-                  <span className="text-3xl mr-3">{models[0]?.icon}</span>
-                  <div>
-                    <h4 className={`text-xl font-bold ${models[0]?.color}`}>{models[0]?.name}</h4>
-                    <p className="text-sm text-gray-400">Total Equity: ${models[0]?.currentBalance.toLocaleString()}</p>
-                  </div>
-                </div>
-                
-                <div className="mb-4">
-                  <h5 className="text-sm font-bold text-gray-400 mb-2">Active Positions</h5>
-                  <div className="flex flex-wrap gap-2">
-                    {(models[0]?.activePositions || []).map((asset, index) => (
-                      <div key={index} className="bg-gray-800 px-3 py-1 rounded text-xs font-mono">
-                        {asset}
-                      </div>
-                    ))}
-                    {(models[0]?.activePositions || []).length === 0 && (
-                      <span className="text-gray-500 text-sm">No active positions</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Performance Chart */}
-              <div className="bg-gray-900 rounded-lg p-6 border border-gray-700">
-                <h3 className="text-lg font-bold text-gray-300 mb-4">Account Values</h3>
-                <div className="space-y-3">
-                  {models.slice(0, 6).map((model, index) => {
-                    const maxValue = Math.max(...models.map(m => m.currentBalance));
-                    const percentage = (model.currentBalance / maxValue) * 100;
-                    return (
-                      <div key={model.id} className="flex items-center">
-                        <div className="w-16 text-xs text-gray-400 truncate mr-2">{model.name}</div>
-                        <div className="flex-1 bg-gray-800 rounded-full h-4 relative">
-                          <div 
-                            className={`h-4 rounded-full ${model.color}`}
-                            style={{ width: `${percentage}%` }}
-                          ></div>
-                        </div>
-                        <div className="w-20 text-xs text-right text-gray-300 ml-2">
-                          ${model.currentBalance.toLocaleString()}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-
-            {/* Note */}
-            <div className="text-center text-sm text-gray-500">
-              All statistics (except Account Value and P&L) reflect completed trades only. Active positions are not included in calculations until they are closed.
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'MODELS' && subTab !== 'MODEL CHAT >' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {models.map((model, index) => (
-              <div key={model.id} className="bg-gray-900 rounded-lg p-6 border border-gray-700 hover:border-gray-600 transition">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center">
-                    <span className="text-2xl mr-3">{model.icon}</span>
-                    <div>
-                      <h3 className={`font-bold text-lg ${model.color}`}>{model.name}</h3>
-                      <p className="text-sm text-gray-400">#{index + 1} Rank</p>
-                    </div>
-                  </div>
-                  <div className={`px-2 py-1 rounded text-xs font-bold ${
-                    model.status === 'active' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-                  }`}>
-                    {model.status.toUpperCase()}
-                  </div>
-                </div>
-                
-                <div className="space-y-3">
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">Balance</span>
-                    <span className="font-mono">${model.currentBalance.toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">ROI</span>
-                    <span className={`font-mono ${model.roi >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      {model.roi >= 0 ? '+' : ''}{model.roi.toFixed(2)}%
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">Win Rate</span>
-                    <span className="font-mono">{model.winRate.toFixed(1)}%</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">Trades</span>
-                    <span className="font-mono">{model.totalTrades}</span>
-                  </div>
-                </div>
-
-                <div className="mt-4 pt-4 border-t border-gray-700">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-400">Strategy</span>
-                    <span className="text-gray-300 capitalize">{model.strategy.replace('_', ' ')}</span>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </main>
-
-      {/* Footer */}
-      <footer className="border-t border-gray-800 bg-black py-6">
-        <div className="container mx-auto px-6 text-center text-gray-500 text-sm">
-          <p>© 2024 Helix.One - Alpha Arena. All rights reserved.</p>
-          <p className="mt-2">Powered by the Helix Engine • Real-time algorithmic trading</p>
-          <p className="mt-2">Built by Darren Headley</p>
+          <footer className="mt-3 border-t border-white/10 pt-2.5 text-center text-sm text-slate-400">
+            <p>© 2024 Helix.One - All rights reserved.</p>
+            <p className="mt-1">Powered by the Helix Engine • Real-time algorithmic trading</p>
+            <p className="mt-1">Built by Darren Headley</p>
+            <p className="mt-1 text-[11px] text-slate-500">UI Build: {uiBuildId}</p>
+          </footer>
         </div>
-      </footer>
+      </div>
+    </>
+  );
+}
 
-      <style jsx>{`
-        @keyframes marquee {
-          0% { transform: translateX(0); }
-          100% { transform: translateX(-50%); }
-        }
-        .animate-marquee {
-          animation: marquee 30s linear infinite;
-        }
-      `}</style>
+function StateChip({ state }: { state: DecisionState }) {
+  const tone =
+    state === 'EXECUTION_WINDOW_OPEN'
+      ? 'border-emerald-500/40 bg-emerald-500/20 text-emerald-200'
+      : state === 'TRIGGER_ARMED'
+        ? 'border-blue-500/40 bg-blue-500/20 text-blue-200'
+        : state === 'LOCKED_RISK'
+          ? 'border-amber-500/40 bg-amber-500/20 text-amber-200'
+          : 'border-white/20 bg-white/5 text-slate-200';
+
+  return <span className={`rounded-full border px-2 py-1 font-medium tracking-wide ${tone}`}>{state.replaceAll('_', ' ')}</span>;
+}
+
+function LiveBlock({ title, items, tone }: { title: string; items: string[]; tone: 'emerald' | 'blue' | 'amber' }) {
+  const toneMap = {
+    emerald: 'border-emerald-500/30 bg-emerald-500/10',
+    blue: 'border-blue-500/30 bg-blue-500/10',
+    amber: 'border-amber-500/30 bg-amber-500/10',
+  } as const;
+
+  return (
+    <div className={`rounded-xl border p-3 ${toneMap[tone]}`}>
+      <div className="uppercase tracking-wide text-slate-300 mb-2">{title}</div>
+      <ul className="list-disc ml-4 space-y-1 text-slate-100">
+        {items.slice(0, 4).map((item, i) => (
+          <li key={`${title}-${i}`}>{item}</li>
+        ))}
+      </ul>
     </div>
   );
+}
+
+function Panel({
+  title,
+  subtitle,
+  className = '',
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className={`helix-panel-shell flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900/60 backdrop-blur-md p-3 sm:p-4 shadow-xl shadow-black/30 ${className}`}>
+      <div className="mb-3 shrink-0">
+        <h2 className="helix-panel-title text-lg sm:text-xl font-semibold" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{title}</h2>
+        {subtitle && <div className="helix-panel-subtitle mt-1 text-xs leading-relaxed text-slate-400">{subtitle}</div>}
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto pr-1">
+        {children}
+      </div>
+    </section>
+  );
+}
+
+function TopMetric({
+  label,
+  value,
+  tone = 'default',
+  meta,
+}: {
+  label: string;
+  value: string;
+  tone?: 'default' | 'green' | 'red' | 'amber';
+  meta?: string;
+}) {
+  const toneClass = tone === 'green' ? 'text-emerald-300' : tone === 'red' ? 'text-red-300' : tone === 'amber' ? 'text-amber-300' : 'text-slate-100';
+  return (
+    <div className="helix-top-metric rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-md px-2.5 sm:px-3 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[11px] uppercase tracking-wider text-slate-400">{label}</div>
+        {meta ? <MetricTag label="Source" value={meta} tone="slate" compact /> : null}
+      </div>
+      <div className={`text-2xl sm:text-3xl font-semibold mt-1 ${toneClass}`} style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{value}</div>
+    </div>
+  );
+}
+
+function MetricTag({
+  label,
+  value,
+  tone = 'slate',
+  compact = false,
+}: {
+  label: string;
+  value: string;
+  tone?: 'green' | 'amber' | 'red' | 'slate';
+  compact?: boolean;
+}) {
+  const toneMap = {
+    green: 'border-emerald-300/30 bg-emerald-400/10 text-emerald-200',
+    amber: 'border-amber-300/30 bg-amber-400/10 text-amber-200',
+    red: 'border-red-300/30 bg-red-400/10 text-red-200',
+    slate: 'border-white/10 bg-white/[0.04] text-slate-200',
+  } as const;
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full border ${compact ? 'px-2' : 'px-3'} py-1 text-[10px] font-semibold uppercase tracking-wide ${toneMap[tone]}`}>
+      {!compact && <span className="text-slate-400">{label}</span>}
+      <span>{value}</span>
+    </span>
+  );
+}
+
+function FreshnessBadge({
+  label,
+  state,
+  detail,
+}: {
+  label: string;
+  state: 'fresh' | 'stale' | 'off';
+  detail: string;
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-black/25 px-3 py-2 text-xs">
+      <span className={`h-2.5 w-2.5 rounded-full ${state === 'fresh' ? 'bg-emerald-300 shadow-[0_0_12px_rgba(110,231,183,0.7)]' : state === 'stale' ? 'bg-amber-300 shadow-[0_0_12px_rgba(252,211,77,0.55)]' : 'bg-red-300 shadow-[0_0_12px_rgba(252,165,165,0.55)]'}`} />
+      <div>
+        <div className="font-semibold text-slate-100">{label}</div>
+        <div className="text-[10px] text-slate-400">{detail}</div>
+      </div>
+    </div>
+  );
+}
+
+function HealthChip({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: 'good' | 'warn' | 'bad';
+}) {
+  const toneMap = {
+    good: 'border-emerald-300/30 bg-emerald-400/10 text-emerald-200',
+    warn: 'border-amber-300/30 bg-amber-400/10 text-amber-200',
+    bad: 'border-red-300/30 bg-red-400/10 text-red-200',
+  } as const;
+  return (
+    <div className={`rounded-xl border px-3 py-2 ${toneMap[tone]}`}>
+      <div className="text-[10px] uppercase tracking-[0.18em] opacity-80">{label}</div>
+      <div className="mt-1 text-sm font-semibold uppercase">{value}</div>
+    </div>
+  );
+}
+
+function StateBadge({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: 'green' | 'amber' | 'red' | 'slate';
+}) {
+  const toneMap = {
+    green: 'border-emerald-300/30 bg-emerald-400/10 text-emerald-200',
+    amber: 'border-amber-300/30 bg-amber-400/10 text-amber-200',
+    red: 'border-red-300/30 bg-red-400/10 text-red-200',
+    slate: 'border-white/10 bg-white/[0.04] text-slate-200',
+  } as const;
+  return (
+    <div className={`rounded-xl border px-3 py-2 text-xs ${toneMap[tone]}`}>
+      <div className="text-[10px] uppercase tracking-[0.18em] opacity-70">{label}</div>
+      <div className="mt-1 font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function ProgressRail({
+  label,
+  value,
+  valueText,
+  tone,
+}: {
+  label: string;
+  value: number;
+  valueText: string;
+  tone: 'green' | 'amber' | 'red' | 'cyan';
+}) {
+  const pct = Math.max(0, Math.min(100, Number(value || 0)));
+  const barTone = {
+    green: 'from-emerald-300 to-lime-200',
+    amber: 'from-amber-300 to-yellow-200',
+    red: 'from-red-300 to-rose-200',
+    cyan: 'from-cyan-300 to-sky-200',
+  } as const;
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-2.5 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-slate-400">{label}</span>
+        <span className="font-semibold text-slate-100">{valueText}</span>
+      </div>
+      <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/10">
+        <div className={`h-full rounded-full bg-gradient-to-r ${barTone[tone]}`} style={{ width: `${Math.max(3, pct)}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function ManagerNoteCard({
+  title,
+  body,
+  tone,
+}: {
+  title: string;
+  body: string;
+  tone: 'cyan' | 'amber' | 'green' | 'slate';
+}) {
+  const toneMap = {
+    cyan: 'border-cyan-300/20 bg-cyan-400/[0.06] text-cyan-100',
+    amber: 'border-amber-300/20 bg-amber-400/[0.06] text-amber-100',
+    green: 'border-emerald-300/20 bg-emerald-400/[0.06] text-emerald-100',
+    slate: 'border-white/10 bg-white/[0.03] text-slate-200',
+  } as const;
+  return (
+    <div className={`rounded-xl border p-3 ${toneMap[tone]}`}>
+      <div className="text-[10px] uppercase tracking-[0.18em] opacity-75">{title}</div>
+      <div className="mt-2 text-sm leading-relaxed">{body}</div>
+    </div>
+  );
+}
+
+function PathStep({ label, value }: { label: string; value: number }) {
+  const pct = Math.max(0, Math.min(100, Number(value || 0)));
+  return (
+    <div className="rounded-xl border border-white/10 bg-black/25 p-2 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-slate-400">{label}</span>
+        <span className="font-semibold text-slate-100">{pct}</span>
+      </div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
+        <div className={`h-full rounded-full bg-gradient-to-r ${pct >= 75 ? 'from-emerald-300 to-lime-200' : pct >= 55 ? 'from-cyan-300 to-sky-200' : 'from-amber-300 to-red-300'}`} style={{ width: `${Math.max(3, pct)}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function BlockerCard({
+  title,
+  detail,
+  severity,
+  source,
+}: {
+  title: string;
+  detail: string;
+  severity: 'critical' | 'warning' | 'info';
+  source: string;
+}) {
+  const toneMap = {
+    critical: 'border-red-300/30 bg-red-400/[0.06]',
+    warning: 'border-amber-300/30 bg-amber-400/[0.06]',
+    info: 'border-cyan-300/25 bg-cyan-400/[0.05]',
+  } as const;
+  const textTone = {
+    critical: 'text-red-200',
+    warning: 'text-amber-200',
+    info: 'text-cyan-100',
+  } as const;
+
+  return (
+    <div className={`rounded-2xl border p-3 ${toneMap[severity]}`}>
+      <div className="flex items-center justify-between gap-2">
+        <div className={`font-semibold ${textTone[severity]}`}>{title}</div>
+        <MetricTag label="Source" value={source} tone={severity === 'critical' ? 'red' : severity === 'warning' ? 'amber' : 'slate'} compact />
+      </div>
+      <div className="mt-2 text-sm leading-relaxed text-slate-300">{detail}</div>
+    </div>
+  );
+}
+
+function MiniMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1">
+      <div className="text-[10px] text-slate-400 uppercase tracking-wide">{label}</div>
+      <div className="text-slate-100 font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function HudMetric({ label, value, tone = 'cyan' }: { label: string; value: string; tone?: 'cyan' | 'green' | 'amber' | 'red' }) {
+  const toneClass = {
+    cyan: 'border-cyan-300/20 bg-cyan-400/[0.07] text-cyan-100',
+    green: 'border-emerald-300/20 bg-emerald-400/[0.07] text-emerald-100',
+    amber: 'border-amber-300/20 bg-amber-400/[0.07] text-amber-100',
+    red: 'border-red-300/20 bg-red-400/[0.07] text-red-100',
+  }[tone];
+
+  return (
+    <div className={`rounded-xl border px-3 py-2 shadow-inner shadow-black/20 ${toneClass}`}>
+      <div className="text-[10px] uppercase tracking-[0.18em] text-slate-400">{label}</div>
+      <div className="mt-1 truncate text-sm font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function HeatCell({ value, blocked = false }: { value: number; blocked?: boolean }) {
+  const v = Math.max(0, Math.min(100, Number(value || 0)));
+  const tone = blocked ? 'text-red-300 border-red-400/40 bg-red-500/10' : v >= 70 ? 'text-emerald-300 border-emerald-400/40 bg-emerald-500/10' : v >= 50 ? 'text-amber-300 border-amber-400/40 bg-amber-500/10' : 'text-red-300 border-red-400/40 bg-red-500/10';
+  return <span className={`inline-flex min-w-12 justify-center rounded border px-1.5 py-0.5 ${tone}`}>{v}</span>;
+}
+
+function StatusPill({ children, tone }: { children: React.ReactNode; tone: 'good' | 'bad' | 'warn' }) {
+  const cls = tone === 'good'
+    ? 'border-emerald-500/50 bg-emerald-500/20 text-emerald-200'
+    : tone === 'warn'
+      ? 'border-amber-500/50 bg-amber-500/20 text-amber-200'
+      : 'border-red-500/50 bg-red-500/20 text-red-200';
+  return <span className={`rounded-full border px-3 py-1 text-xs font-medium uppercase tracking-wider ${cls}`}>{children}</span>;
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between border-b border-white/10 py-2">
+      <span className="text-slate-300">{label}</span>
+      <span className="font-semibold text-slate-100 text-right">{value}</span>
+    </div>
+  );
+}
+
+function DetailRow({ label, value, highlight = '' }: { label: string; value: string; highlight?: string }) {
+  return (
+    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-1 py-2">
+      <span className="text-slate-300">{label}</span>
+      <span className={`font-semibold ${highlight || 'text-slate-100'}`}>{value}</span>
+    </div>
+  );
+}
+
+function formatFunding(
+  funding: Array<{ symbol: string; fundingRate: number }> | undefined,
+  oi: Array<{ symbol: string; openInterestUsd: number }> | undefined
+) {
+  const f = funding?.[0];
+  const o = oi?.[0];
+  const fundingPct = f ? `${(Number(f.fundingRate || 0) * 100).toFixed(2)}%` : '—';
+  const openInterest = o ? `${(Number(o.openInterestUsd || 0) / 1_000_000_000).toFixed(2)}B` : '—';
+  return `${fundingPct} / ${openInterest}`;
+}
+
+function money(v: number) {
+  return `$${v.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+}
+
+function formatPrice(v: number) {
+  const n = Number(v || 0);
+  if (!Number.isFinite(n) || n <= 0) return '—';
+  return n >= 100 ? n.toFixed(2) : n >= 1 ? n.toFixed(4) : n.toFixed(6);
+}
+
+function signedMoney(v: number) {
+  return `${v >= 0 ? '+' : '-'}$${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+}
+
+function formatDateTime(ts: string | undefined) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return '—';
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mi = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
 }

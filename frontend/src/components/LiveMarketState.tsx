@@ -1,17 +1,23 @@
 import React, { useState, useEffect } from 'react';
 import { liveMarketDataService, LiveMarketData } from '../services/liveMarketData';
+import { tradingApi } from '../services/tradingApi';
 
 export const LiveMarketState: React.FC = () => {
   const [marketData, setMarketData] = useState<LiveMarketData[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
+  const [watchlistMap, setWatchlistMap] = useState<Record<string, { tradable: boolean; watchlistOnly: boolean }>>({});
 
   useEffect(() => {
     const fetchData = async () => {
       try {
         setLoading(true);
-        const data = await liveMarketDataService.fetchLiveMarketData();
+        const [data, profiles] = await Promise.all([
+          liveMarketDataService.fetchLiveMarketData(),
+          tradingApi.getSymbolProfiles().catch(() => null),
+        ]);
         setMarketData(data);
+        setWatchlistMap(Object.fromEntries((profiles?.watchlist || []).map((row) => [row.symbol, row])));
         setLastUpdate(new Date());
       } catch (error) {
         console.error('Error fetching market data:', error);
@@ -82,7 +88,12 @@ export const LiveMarketState: React.FC = () => {
   return (
     <div className="bg-gray-900 rounded-lg p-6">
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold text-white">CURRENT MARKET STATE - ALL COINS</h2>
+        <div>
+          <h2 className="text-2xl font-bold text-white">CURRENT MARKET STATE - WATCHLIST</h2>
+          <div className="text-xs text-gray-500 mt-1">
+            Market watchlist can differ from the live execution universe. Execution symbols are managed in runtime settings.
+          </div>
+        </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
@@ -101,7 +112,14 @@ export const LiveMarketState: React.FC = () => {
               {/* Left Column - Basic Info */}
               <div className="space-y-4">
                 <div>
-                  <h3 className="text-xl font-bold text-white">{coin.name} ({coin.symbol})</h3>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-xl font-bold text-white">{coin.name} ({coin.symbol})</h3>
+                    {watchlistMap[coin.symbol]?.tradable ? (
+                      <span className="px-2 py-1 rounded-full text-[10px] font-bold bg-green-500/20 text-green-400">TRADABLE</span>
+                    ) : watchlistMap[coin.symbol]?.watchlistOnly ? (
+                      <span className="px-2 py-1 rounded-full text-[10px] font-bold bg-yellow-500/20 text-yellow-400">WATCHLIST ONLY</span>
+                    ) : null}
+                  </div>
                   <div className="text-sm text-gray-400">
                     Market Cap Dominance: {coin.marketCapDominance.toFixed(1)}%
                   </div>

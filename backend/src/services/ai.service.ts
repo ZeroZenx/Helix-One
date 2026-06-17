@@ -1,4 +1,7 @@
 import axios from 'axios';
+import fs from 'fs';
+import path from 'path';
+import { SettingsStore } from './SettingsStore';
 
 /**
  * AI Service - Integrates OpenAI and DeepSeek
@@ -7,7 +10,56 @@ import axios from 'axios';
 
 export type AIProvider = 'openai' | 'deepseek' | 'claude' | 'gemini' | 'grok';
 
+export interface TradingRuntimeContext {
+  generatedAt?: string;
+  account?: {
+    balance?: number;
+    availableMargin?: number;
+    previousDayPnl?: number;
+    consecutiveLosses?: number;
+  };
+  market?: {
+    regime?: 'trend' | 'range' | 'breakout' | 'breakdown' | 'squeeze' | 'event_driven' | 'unclear';
+    regimeConfidence?: number;
+    liquidityState?: 'good' | 'acceptable' | 'poor';
+    volatilityState?: 'low' | 'normal' | 'high';
+  };
+  news?: Array<{ source: string; title: string }>;
+  notes?: string[];
+  maxTradesToday?: number;
+  riskSettings?: {
+    maxDailyLossPct?: number;
+    maxLeverage?: number;
+    maxConsecutiveLosses?: number;
+    minConfidence?: number;
+  };
+}
+
+export interface StructuredTradingDecision {
+  decision: 'TRADE' | 'NO_TRADE';
+  symbol: string | null;
+  side: 'LONG' | 'SHORT' | null;
+  setup_type: 'trend_pullback' | 'breakout' | 'reversal' | 'range_reversion' | null;
+  regime: 'trend' | 'range' | 'breakout' | 'breakdown' | 'squeeze' | 'event_driven' | 'unclear';
+  confidence: number;
+  news_risk: 'low' | 'medium' | 'high';
+  liquidity_state: 'good' | 'acceptable' | 'poor';
+  entry: number | null;
+  stop_loss: number | null;
+  take_profit: number | null;
+  position_size_usd: number | null;
+  max_loss_usd: number | null;
+  expected_rr: number | null;
+  holding_window_minutes: number | null;
+  reasons: string[];
+  risk_flags: string[];
+  pre_trade_checks_passed: boolean;
+  post_decision_actions: Array<'wait' | 'monitor' | 'reduce size' | 'block trading' | 'close stale orders'>;
+  review_time_utc: string;
+}
+
 export class AIService {
+  private settingsStore = new SettingsStore();
   private openaiKey: string;
   private deepseekKey: string;
   private claudeKey: string;
@@ -26,6 +78,82 @@ export class AIService {
     this.claudeKey = process.env.ANTHROPIC_API_KEY || '';
     this.geminiKey = process.env.GOOGLE_API_KEY || '';
     this.grokKey = process.env.GROK_API_KEY || '';
+  }
+
+  private isTransientNetworkError(error: any): boolean {
+    const code = String(error?.code || error?.cause?.code || '').toUpperCase();
+    const msg = String(error?.message || '').toLowerCase();
+    return (
+      code === 'ECONNRESET' ||
+      code === 'ETIMEDOUT' ||
+      code === 'ENOTFOUND' ||
+      code === 'EAI_AGAIN' ||
+      msg.includes('timeout') ||
+      msg.includes('network') ||
+      msg.includes('socket hang up') ||
+      msg.includes('aborted')
+    );
+  }
+
+  private async withRetry<T>(fn: () => Promise<T>, retries = 2, baseDelayMs = 600): Promise<T> {
+    let lastError: any;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        return await fn();
+      } catch (error: any) {
+        lastError = error;
+        const retryable = this.isTransientNetworkError(error);
+        if (!retryable || attempt >= retries) break;
+        const delay = baseDelayMs * Math.pow(2, attempt);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+    throw lastError;
+  }
+
+  private getSettingsSnapshot() {
+    try {
+      return this.settingsStore.get();
+    } catch {
+      return null;
+    }
+  }
+
+  getSelectedProvider(): AIProvider {
+    const s = this.getSettingsSnapshot();
+    const p = String(s?.aiProvider || 'deepseek').toLowerCase();
+    if (p === 'openai' || p === 'gemini' || p === 'deepseek') return p as AIProvider;
+    return 'deepseek';
+  }
+
+  private getActiveDeepSeekKey(): string {
+    const s = this.getSettingsSnapshot();
+    const runtimeKey = s?.deepseekApiKey || '';
+    return runtimeKey || this.deepseekKey;
+  }
+
+  private getActiveOpenAIKey(): string {
+    const s = this.getSettingsSnapshot();
+    const runtimeKey = s?.openaiApiKey || '';
+    return runtimeKey || this.openaiKey;
+  }
+
+  private getActiveGeminiKey(): string {
+    const s = this.getSettingsSnapshot();
+    const runtimeKey = s?.geminiApiKey || '';
+    return runtimeKey || this.geminiKey;
+  }
+
+  private loadPrompt(fileName: string, fallback: string): string {
+    try {
+      const fullPath = path.resolve(process.cwd(), 'prompts', fileName);
+      if (fs.existsSync(fullPath)) {
+        return fs.readFileSync(fullPath, 'utf8');
+      }
+    } catch {
+      // ignore and use fallback
+    }
+    return fallback;
   }
 
   /**
@@ -96,8 +224,44 @@ Keep it concise and actionable.`;
     symbol: string,
     priceData: any,
     indicators: any,
-    provider: AIProvider = 'deepseek'
+    provider: AIProvider = 'deepseek',
+    runtimeContext?: TradingRuntimeContext
   ): Promise<{ signal: 'BUY' | 'SELL' | 'HOLD'; confidence: number; reasoning: string }> {
+    const decision = await this.getStructuredTradingDecision(symbol, priceData, indicators, provider, runtimeContext);
+    const signal =
+      decision.decision === 'TRADE'
+        ? decision.side === 'LONG'
+          ? 'BUY'
+          : decision.side === 'SHORT'
+            ? 'SELL'
+            : 'HOLD'
+        : 'HOLD';
+
+    return {
+      signal,
+      confidence: decision.confidence / 100,
+      reasoning: decision.reasons.length > 0
+        ? decision.reasons.join('; ')
+        : decision.risk_flags.length > 0
+          ? `Risk flags: ${decision.risk_flags.join(', ')}`
+          : `Decision: ${decision.decision}`
+    };
+  }
+
+  async getStructuredTradingDecision(
+    symbol: string,
+    priceData: any,
+    indicators: any,
+    provider: AIProvider = 'deepseek',
+    runtimeContext?: TradingRuntimeContext
+  ): Promise<StructuredTradingDecision> {
+    const coreSystem = this.loadPrompt(
+      'system_trading_brain.md',
+      'You are a disciplined futures trader and risk manager. When in doubt return NO_TRADE.'
+    );
+
+    const opsFramework = this.loadPrompt('risk_operating_framework.md', '');
+
     const prompt = `Analyze this trading opportunity and provide a recommendation.
 
 Symbol: ${symbol}
@@ -110,25 +274,57 @@ Technical Indicators:
 - EMA20: ${indicators.ema20}
 - Volume: ${indicators.volume}
 
-Provide trading signal (BUY/SELL/HOLD), confidence (0-1), and reasoning.
-Respond in JSON format: {"signal": "...", "confidence": 0.0, "reasoning": "..."}`;
+Return ONE JSON object ONLY in this exact schema:
+{
+  "decision": "TRADE" | "NO_TRADE",
+  "symbol": "${symbol}" | null,
+  "side": "LONG" | "SHORT" | null,
+  "setup_type": "trend_pullback" | "breakout" | "reversal" | "range_reversion" | null,
+  "regime": "trend" | "range" | "breakout" | "breakdown" | "squeeze" | "event_driven" | "unclear",
+  "confidence": 0-100,
+  "news_risk": "low" | "medium" | "high",
+  "liquidity_state": "good" | "acceptable" | "poor",
+  "entry": number | null,
+  "stop_loss": number | null,
+  "take_profit": number | null,
+  "position_size_usd": number | null,
+  "max_loss_usd": number | null,
+  "expected_rr": number | null,
+  "holding_window_minutes": number | null,
+  "reasons": ["short bullet reasons"],
+  "risk_flags": ["list of active concerns"],
+  "pre_trade_checks_passed": boolean,
+  "post_decision_actions": ["wait" | "monitor" | "reduce size" | "block trading" | "close stale orders"],
+  "review_time_utc": "ISO timestamp"
+}
+
+Runtime context (hard constraints + current operating environment):
+${JSON.stringify(runtimeContext || {}, null, 2)}
+
+Regime authority policy (important):
+- regime_label_from_engine: ${runtimeContext?.market?.regime || 'unclear'}
+- regime_confidence_from_engine: ${Number(runtimeContext?.market?.regimeConfidence || 0)}
+- if regime_confidence_from_engine >= 60 and liquidity is not poor and volatility is not high,
+  do NOT mark regime as unclear unless there is strong contradictory technical evidence.
+
+If runtime context signals missing/stale/conflicting data or risk threshold breach, return NO_TRADE.`;
 
     const messages = [
-      { role: 'system', content: 'You are an expert algorithmic trader. Always respond in valid JSON format.' },
+      { role: 'system', content: `${coreSystem}\n\nOperational Framework:\n${opsFramework}` },
       { role: 'user', content: prompt }
     ];
 
-    const response = await this.callAI(messages, provider);
-
     try {
-      return JSON.parse(response);
-    } catch (error) {
-      // Fallback if parsing fails
-      return {
-        signal: 'HOLD',
-        confidence: 0.5,
-        reasoning: 'Unable to generate signal'
-      };
+      const response = provider === 'deepseek'
+        ? await this.callDeepSeek(messages, { enforceJson: true, temperature: 0.1, maxTokens: 1200 })
+        : await this.callAI(messages, provider);
+      const parsed = this.parseStructuredJson(response);
+      return this.applyHardRiskGates(this.normalizeDecision(parsed, symbol, runtimeContext), runtimeContext);
+    } catch (error: any) {
+      const msg = String(error?.message || 'invalid_json');
+      const rawPreview = String(error?.rawPreview || '').slice(0, 1800);
+      console.warn('[deepseek-parse-failed]', { symbol, provider, msg, rawPreview });
+      return this.applyHardRiskGates(this.defaultNoTrade(symbol, 'MODEL_OUTPUT_INVALID_JSON'), runtimeContext);
     }
   }
 
@@ -168,16 +364,201 @@ Keep it actionable and specific.`;
     return await this.callAI(messages, provider);
   }
 
+  private parseStructuredJson(raw: string): any {
+    const text = String(raw || '')
+      .replace(/^\uFEFF/, '')
+      .replace(/[\u0000-\u001F\u007F]/g, ' ')
+      .trim();
+    if (!text) {
+      const err: any = new Error('empty_model_response');
+      err.rawPreview = text;
+      throw err;
+    }
+
+    const parseAny = (candidate: string): any => JSON.parse(candidate);
+
+    try {
+      const direct = parseAny(text);
+      // Support wrapped payloads from some providers
+      if (direct && typeof direct === 'object') {
+        if (typeof (direct as any).content === 'string') {
+          return this.parseStructuredJson((direct as any).content);
+        }
+        if ((direct as any).data && typeof (direct as any).data === 'object') {
+          return (direct as any).data;
+        }
+      }
+      return direct;
+    } catch {
+      try {
+        const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+        const candidateFromFence = fenceMatch?.[1]?.trim();
+        if (candidateFromFence) return parseAny(candidateFromFence);
+
+        const start = text.indexOf('{');
+        const end = text.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+          const candidate = text.slice(start, end + 1);
+          return parseAny(candidate);
+        }
+      } catch {
+        // pass through to typed error below
+      }
+
+      const err: any = new Error('invalid_json');
+      err.rawPreview = text;
+      throw err;
+    }
+  }
+
+  private defaultNoTrade(symbol: string, reason: string): StructuredTradingDecision {
+    return {
+      decision: 'NO_TRADE',
+      symbol,
+      side: null,
+      setup_type: null,
+      regime: 'unclear',
+      confidence: 0,
+      news_risk: 'high',
+      liquidity_state: 'poor',
+      entry: null,
+      stop_loss: null,
+      take_profit: null,
+      position_size_usd: null,
+      max_loss_usd: null,
+      expected_rr: null,
+      holding_window_minutes: null,
+      reasons: [reason],
+      risk_flags: ['decision_engine_fallback'],
+      pre_trade_checks_passed: false,
+      post_decision_actions: ['wait', 'monitor'],
+      review_time_utc: new Date().toISOString(),
+    };
+  }
+
+  private normalizeDecision(raw: any, symbol: string, runtimeContext?: TradingRuntimeContext): StructuredTradingDecision {
+    const normalized: StructuredTradingDecision = {
+      decision: raw?.decision === 'TRADE' ? 'TRADE' : 'NO_TRADE',
+      symbol: typeof raw?.symbol === 'string' ? raw.symbol : symbol,
+      side: raw?.side === 'LONG' || raw?.side === 'SHORT' ? raw.side : null,
+      setup_type: raw?.setup_type === 'trend_pullback' || raw?.setup_type === 'breakout' || raw?.setup_type === 'reversal' || raw?.setup_type === 'range_reversion' ? raw.setup_type : null,
+      regime: raw?.regime === 'trend' || raw?.regime === 'range' || raw?.regime === 'breakout' || raw?.regime === 'breakdown' || raw?.regime === 'squeeze' || raw?.regime === 'event_driven' ? raw.regime : 'unclear',
+      confidence: typeof raw?.confidence === 'number' ? Math.max(0, Math.min(100, raw.confidence)) : 0,
+      news_risk: raw?.news_risk === 'low' || raw?.news_risk === 'medium' ? raw.news_risk : 'high',
+      liquidity_state: raw?.liquidity_state === 'good' || raw?.liquidity_state === 'acceptable' ? raw.liquidity_state : 'poor',
+      entry: typeof raw?.entry === 'number' ? raw.entry : null,
+      stop_loss: typeof raw?.stop_loss === 'number' ? raw.stop_loss : null,
+      take_profit: typeof raw?.take_profit === 'number' ? raw.take_profit : null,
+      position_size_usd: typeof raw?.position_size_usd === 'number' ? raw.position_size_usd : null,
+      max_loss_usd: typeof raw?.max_loss_usd === 'number' ? raw.max_loss_usd : null,
+      expected_rr: typeof raw?.expected_rr === 'number' ? raw.expected_rr : null,
+      holding_window_minutes: typeof raw?.holding_window_minutes === 'number' ? raw.holding_window_minutes : null,
+      reasons: Array.isArray(raw?.reasons) ? raw.reasons.map((x: any) => String(x)).slice(0, 8) : [],
+      risk_flags: Array.isArray(raw?.risk_flags) ? raw.risk_flags.map((x: any) => String(x)).slice(0, 12) : [],
+      pre_trade_checks_passed: Boolean(raw?.pre_trade_checks_passed),
+      post_decision_actions: Array.isArray(raw?.post_decision_actions) ? raw.post_decision_actions.filter((x: any) => ['wait', 'monitor', 'reduce size', 'block trading', 'close stale orders'].includes(String(x))) : [],
+      review_time_utc: typeof raw?.review_time_utc === 'string' ? raw.review_time_utc : new Date().toISOString(),
+    };
+
+    if (normalized.reasons.length === 0) {
+      normalized.reasons.push(normalized.decision === 'TRADE' ? 'Trade candidate accepted by model.' : 'Model returned NO_TRADE.');
+    }
+
+    const engineRegime = runtimeContext?.market?.regime;
+    const engineRegimeConfidence = Number(runtimeContext?.market?.regimeConfidence || 0);
+    const liquidity = String(runtimeContext?.market?.liquidityState || '').toLowerCase();
+    const volatility = String(runtimeContext?.market?.volatilityState || '').toLowerCase();
+
+    if (
+      engineRegime &&
+      engineRegimeConfidence >= 60 &&
+      liquidity !== 'poor' &&
+      volatility !== 'high' &&
+      normalized.regime === 'unclear'
+    ) {
+      normalized.regime = engineRegime as any;
+      normalized.reasons = normalized.reasons.map((r) =>
+        /regime\s+unclear/i.test(String(r))
+          ? `Regime aligned to engine: ${engineRegime} (${engineRegimeConfidence}%).`
+          : r
+      );
+    }
+
+    if (!runtimeContext?.market?.regime && normalized.regime === 'unclear') {
+      normalized.risk_flags.push('missing_market_regime');
+    }
+
+    return normalized;
+  }
+
+  private applyHardRiskGates(
+    decision: StructuredTradingDecision,
+    runtimeContext?: TradingRuntimeContext
+  ): StructuredTradingDecision {
+    const out: StructuredTradingDecision = { ...decision, reasons: [...decision.reasons], risk_flags: [...decision.risk_flags], post_decision_actions: [...decision.post_decision_actions] };
+    const hardBlocks: string[] = [];
+    const threshold = runtimeContext?.riskSettings?.minConfidence ?? 0.7;
+    const minConfidencePct = Math.max(0, Math.min(1, threshold)) * 100;
+
+    if (!runtimeContext?.generatedAt) hardBlocks.push('missing_runtime_timestamp');
+    if (!runtimeContext?.market?.regime) hardBlocks.push('missing_regime_data');
+    if (!runtimeContext?.account || typeof runtimeContext.account.balance !== 'number') hardBlocks.push('missing_account_state');
+
+    if (runtimeContext?.market?.regimeConfidence !== undefined && runtimeContext.market.regimeConfidence < minConfidencePct) {
+      hardBlocks.push('low_regime_confidence');
+    }
+    if (out.news_risk === 'high') hardBlocks.push('high_news_risk');
+    if (out.liquidity_state === 'poor') hardBlocks.push('poor_liquidity');
+
+    const consecutiveLosses = runtimeContext?.account?.consecutiveLosses ?? 0;
+    const maxConsecutiveLosses = runtimeContext?.riskSettings?.maxConsecutiveLosses ?? 3;
+    if (consecutiveLosses >= maxConsecutiveLosses) hardBlocks.push('consecutive_losses_shutdown');
+
+    const maxDailyLossPct = runtimeContext?.riskSettings?.maxDailyLossPct ?? 3;
+    const balance = runtimeContext?.account?.balance ?? 0;
+    const previousDayPnl = runtimeContext?.account?.previousDayPnl ?? 0;
+    const dailyLossLimit = Math.abs(balance) * (maxDailyLossPct / 100);
+    if (previousDayPnl < 0 && Math.abs(previousDayPnl) >= dailyLossLimit && dailyLossLimit > 0) {
+      hardBlocks.push('daily_drawdown_limit_near_breach');
+    }
+
+    if (out.decision === 'TRADE') {
+      if (!out.side) hardBlocks.push('missing_trade_side');
+      if (out.entry === null || out.stop_loss === null || out.take_profit === null) hardBlocks.push('missing_entry_stop_or_target');
+      if ((out.expected_rr ?? 0) < 1.5) hardBlocks.push('insufficient_reward_to_risk');
+      if (out.pre_trade_checks_passed !== true) hardBlocks.push('pre_trade_gate_failed');
+    }
+
+    if (hardBlocks.length > 0) {
+      out.decision = 'NO_TRADE';
+      out.side = null;
+      out.entry = null;
+      out.stop_loss = null;
+      out.take_profit = null;
+      out.position_size_usd = null;
+      out.max_loss_usd = null;
+      out.expected_rr = null;
+      out.pre_trade_checks_passed = false;
+      out.risk_flags.push(...hardBlocks);
+      out.post_decision_actions = Array.from(new Set([...out.post_decision_actions, 'wait', 'monitor']));
+      out.reasons = Array.from(new Set([...out.reasons, `Hard risk gate rejected trade: ${hardBlocks.join(', ')}`]));
+      out.review_time_utc = new Date().toISOString();
+    }
+
+    return out;
+  }
+
   /**
    * Call OpenAI API
    */
   private async callOpenAI(messages: any[]): Promise<string> {
-    if (!this.openaiKey) {
+    const key = this.getActiveOpenAIKey();
+    if (!key) {
       throw new Error('OpenAI API key not configured');
     }
 
     try {
-      const response = await axios.post(
+      const response = await this.withRetry(() => axios.post(
         this.openaiUrl,
         {
           model: 'gpt-4-turbo-preview',
@@ -187,12 +568,12 @@ Keep it actionable and specific.`;
         },
         {
           headers: {
-            'Authorization': `Bearer ${this.openaiKey}`,
+            'Authorization': `Bearer ${key}`,
             'Content-Type': 'application/json'
           },
           timeout: 30000
         }
-      );
+      ));
 
       return response.data.choices[0].message.content;
     } catch (error: any) {
@@ -204,28 +585,30 @@ Keep it actionable and specific.`;
   /**
    * Call DeepSeek API
    */
-  private async callDeepSeek(messages: any[]): Promise<string> {
-    if (!this.deepseekKey) {
+  private async callDeepSeek(messages: any[], opts?: { enforceJson?: boolean; temperature?: number; maxTokens?: number }): Promise<string> {
+    const key = this.getActiveDeepSeekKey();
+    if (!key) {
       throw new Error('DeepSeek API key not configured');
     }
 
     try {
-      const response = await axios.post(
+      const response = await this.withRetry(() => axios.post(
         this.deepseekUrl,
         {
           model: 'deepseek-chat',
           messages,
-          temperature: 0.7,
-          max_tokens: 1000
+          temperature: opts?.temperature ?? 0.7,
+          max_tokens: opts?.maxTokens ?? 1000,
+          ...(opts?.enforceJson ? { response_format: { type: 'json_object' } } : {}),
         },
         {
           headers: {
-            'Authorization': `Bearer ${this.deepseekKey}`,
+            'Authorization': `Bearer ${key}`,
             'Content-Type': 'application/json'
           },
           timeout: 30000
         }
-      );
+      ));
 
       return response.data.choices[0].message.content;
     } catch (error: any) {
@@ -238,14 +621,14 @@ Keep it actionable and specific.`;
    * Check if OpenAI is configured
    */
   isOpenAIConfigured(): boolean {
-    return !!this.openaiKey;
+    return !!this.getActiveOpenAIKey();
   }
 
   /**
    * Check if DeepSeek is configured
    */
   isDeepSeekConfigured(): boolean {
-    return !!this.deepseekKey;
+    return !!this.getActiveDeepSeekKey();
   }
 
   /**
@@ -253,11 +636,9 @@ Keep it actionable and specific.`;
    */
   getAvailableProviders(): AIProvider[] {
     const providers: AIProvider[] = [];
-    if (this.isOpenAIConfigured()) providers.push('openai');
     if (this.isDeepSeekConfigured()) providers.push('deepseek');
-    if (this.isClaudeConfigured()) providers.push('claude');
+    if (this.isOpenAIConfigured()) providers.push('openai');
     if (this.isGeminiConfigured()) providers.push('gemini');
-    if (this.isGrokConfigured()) providers.push('grok');
     return providers;
   }
 
@@ -326,7 +707,8 @@ Keep it actionable and specific.`;
    * Call Gemini (Google) API
    */
   private async callGemini(messages: any[]): Promise<string> {
-    if (!this.geminiKey) {
+    const key = this.getActiveGeminiKey();
+    if (!key) {
       throw new Error('Gemini API key not configured');
     }
 
@@ -335,7 +717,7 @@ Keep it actionable and specific.`;
       const prompt = messages.map(m => m.content).join('\n\n');
 
       const response = await axios.post(
-        `${this.geminiUrl}?key=${this.geminiKey}`,
+        `${this.geminiUrl}?key=${key}`,
         {
           contents: [{
             parts: [{
@@ -402,7 +784,7 @@ Keep it actionable and specific.`;
    * Check if Gemini is configured
    */
   isGeminiConfigured(): boolean {
-    return !!this.geminiKey;
+    return !!this.getActiveGeminiKey();
   }
 
   /**
@@ -412,5 +794,3 @@ Keep it actionable and specific.`;
     return !!this.grokKey;
   }
 }
-
-

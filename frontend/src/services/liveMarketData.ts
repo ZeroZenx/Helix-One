@@ -141,8 +141,8 @@ class LiveMarketDataService {
             );
             const detailData = await detailResponse.json();
             
-            // Generate price history for technical analysis
-            const priceHistory = this.generatePriceHistory(coin.current_price, coin.price_change_percentage_24h);
+            // Use real sparkline history from CoinGecko for technical analysis.
+            const priceHistory = this.extractPriceHistory(coin);
             
             const rsi = this.calculateRSI(priceHistory);
             const macd = this.calculateMACD(priceHistory);
@@ -191,18 +191,12 @@ class LiveMarketDataService {
     }
   }
 
-  // Generate realistic price history for technical analysis
-  private generatePriceHistory(currentPrice: number, change24h: number): number[] {
-    const prices = [currentPrice];
-    const volatility = Math.abs(change24h) / 100;
-    
-    for (let i = 0; i < 200; i++) {
-      const randomChange = (Math.random() - 0.5) * volatility * 0.1;
-      const newPrice = prices[prices.length - 1] * (1 + randomChange);
-      prices.push(newPrice);
+  private extractPriceHistory(coin: any): number[] {
+    const sparkline = coin?.sparkline_in_7d?.price;
+    if (Array.isArray(sparkline) && sparkline.length > 20) {
+      return sparkline.map((v: any) => Number(v)).filter((v: number) => Number.isFinite(v) && v > 0);
     }
-    
-    return prices;
+    return [Number(coin?.current_price || 0)].filter((v) => v > 0);
   }
 
   // Get market dominance data
@@ -218,16 +212,15 @@ class LiveMarketDataService {
       };
     } catch (error) {
       console.error('Error fetching market dominance:', error);
-      return { bitcoin: 52.3, ethereum: 18.7, others: 29.0 };
+      return { bitcoin: 0, ethereum: 0, others: 0 };
     }
   }
 
   // Get fear & greed index
   async getFearGreedIndex(): Promise<{ value: number; sentiment: string }> {
     try {
-      // This would typically come from a fear & greed API
-      // For now, we'll simulate based on market conditions
       const marketData = await this.fetchLiveMarketData();
+      if (marketData.length === 0) return { value: 0, sentiment: 'UNAVAILABLE' };
       const avgChange = marketData.reduce((sum, coin) => sum + coin.change24h, 0) / marketData.length;
       
       let value = 50;
@@ -245,7 +238,7 @@ class LiveMarketDataService {
       return { value, sentiment };
     } catch (error) {
       console.error('Error fetching fear & greed index:', error);
-      return { value: 50, sentiment: 'NEUTRAL' };
+      return { value: 0, sentiment: 'UNAVAILABLE' };
     }
   }
 
@@ -262,7 +255,7 @@ class LiveMarketDataService {
       };
     } catch (error) {
       console.error('Error fetching trading volume:', error);
-      return { total24h: 50000000000, bitcoin: 20000000000, ethereum: 10000000000 };
+      return { total24h: 0, bitcoin: 0, ethereum: 0 };
     }
   }
 }

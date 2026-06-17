@@ -57,6 +57,9 @@ test-cookies.txt
 *.sqlite
 *.sqlite3
 
+# Local runtime settings with live credentials
+backend/data/
+
 # Temporary files
 tmp/
 temp/
@@ -66,4 +69,3 @@ temp/
 *.backup
 *.bak
 *.old
-

@@ -11,13 +11,16 @@ export interface BinanceConfig {
 export interface OrderParams {
   symbol: string;
   side: 'BUY' | 'SELL';
-  type: 'MARKET' | 'LIMIT' | 'STOP_LOSS_LIMIT' | 'TAKE_PROFIT_LIMIT';
+  type: 'MARKET' | 'LIMIT' | 'STOP_LOSS_LIMIT' | 'TAKE_PROFIT_LIMIT' | 'STOP_MARKET' | 'TAKE_PROFIT_MARKET';
   quantity?: number;
   quoteOrderQty?: number;
   price?: number;
   stopPrice?: number;
   timeInForce?: 'GTC' | 'IOC' | 'FOK';
   newClientOrderId?: string;
+  reduceOnly?: boolean;
+  closePosition?: boolean;
+  workingType?: 'MARK_PRICE' | 'CONTRACT_PRICE';
 }
 
 export interface AccountInfo {
@@ -61,9 +64,16 @@ export interface PositionInfo {
 export class BinanceService {
   private client: AxiosInstance;
   private config: BinanceConfig;
+  private symbolFiltersCache: Map<string, { stepSize?: number; tickSize?: number; minQty?: number; minNotional?: number }> = new Map();
+  private timeOffsetMs = 0;
+  private lastTimeSyncAt = 0;
 
   constructor(config: BinanceConfig) {
-    this.config = config;
+    this.config = {
+      ...config,
+      apiKey: this.sanitizeCredential(config.apiKey),
+      secretKey: this.sanitizeCredential(config.secretKey),
+    };
     this.client = axios.create({
       baseURL: config.baseURL || (config.testnet 
         ? 'https://testnet.binancefuture.com' 
@@ -72,46 +82,123 @@ export class BinanceService {
       timeout: 10000,
     });
 
-    // Add request interceptor for authentication
+    // Add request interceptor for signed/private endpoints.
     this.client.interceptors.request.use((config) => {
-      if (config.url?.includes('/api/')) {
-        const timestamp = Date.now();
-        const queryString = config.params ? new URLSearchParams(config.params).toString() : '';
-        const body = config.data ? JSON.stringify(config.data) : '';
-        const signature = this.generateSignature(queryString + body, timestamp);
-        
+      if (this.requiresAuth(config.url || '')) {
+        const timestamp = Date.now() + this.timeOffsetMs;
+        const method = String(config.method || 'get').toLowerCase();
+
+        // Binance signed futures endpoints expect signed query params.
+        // For POST/DELETE, move body fields into query before signing.
+        const dataParams =
+          method !== 'get' && config.data && typeof config.data === 'object'
+            ? (config.data as Record<string, string | number | boolean>)
+            : {};
+
+        const rawParams = {
+          ...(config.params || {}),
+          ...dataParams,
+          timestamp,
+          recvWindow: 60000,
+        } as Record<string, any>;
+
+        const params = Object.fromEntries(
+          Object.entries(rawParams).filter(([, value]) => value !== undefined && value !== null && value !== '')
+        ) as Record<string, string | number | boolean>;
+
+        const queryString = new URLSearchParams(
+          Object.entries(params).map(([key, value]) => [key, String(value)])
+        ).toString();
+        const signature = this.generateSignature(queryString);
+
         config.headers = {
-          ...config.headers,
+          ...(config.headers as any),
           'X-MBX-APIKEY': this.config.apiKey,
           'Content-Type': 'application/json',
-        };
-        
+        } as any;
+
         config.params = {
-          ...config.params,
-          timestamp,
+          ...params,
           signature,
         };
+
+        // Keep body empty for signed private endpoints to avoid payload/signature mismatch.
+        if (method !== 'get') {
+          config.data = undefined;
+        }
       }
       return config;
     });
   }
 
-  private generateSignature(queryString: string, timestamp: number): string {
-    const message = queryString + timestamp;
+  private requiresAuth(url: string): boolean {
+    // Public market endpoints must remain unsigned.
+    const publicPaths = ['/fapi/v1/ping', '/fapi/v1/time', '/fapi/v1/ticker', '/fapi/v1/klines'];
+    if (publicPaths.some((path) => url.startsWith(path))) return false;
+    return url.startsWith('/fapi/') || url.startsWith('/papi/') || url.startsWith('/sapi/');
+  }
+
+  private sanitizeCredential(value: string): string {
+    // Remove control chars that break HTTP headers (e.g. pasted newlines).
+    return String(value || '')
+      .replace(/[\u0000-\u001F\u007F]/g, '')
+      .trim();
+  }
+
+  private generateSignature(queryString: string): string {
     return crypto
       .createHmac('sha256', this.config.secretKey)
-      .update(message)
+      .update(queryString)
       .digest('hex');
+  }
+
+  private isTimestampError(error: any): boolean {
+    const code = Number(error?.response?.data?.code);
+    const msg = String(error?.response?.data?.msg || error?.message || '').toLowerCase();
+    return code === -1021 || msg.includes('recvwindow') || msg.includes('timestamp');
+  }
+
+  private async syncServerTime(force = false): Promise<void> {
+    const now = Date.now();
+    if (!force && now - this.lastTimeSyncAt < 60_000) return;
+
+    try {
+      const response = await this.client.get('/fapi/v1/time');
+      const serverTime = Number(response?.data?.serverTime);
+      if (Number.isFinite(serverTime)) {
+        this.timeOffsetMs = serverTime - Date.now();
+        this.lastTimeSyncAt = now;
+      }
+    } catch {
+      // keep existing offset if sync fails
+    }
+  }
+
+  private async withAuthRetry<T>(op: () => Promise<T>): Promise<T> {
+    try {
+      return await op();
+    } catch (error: any) {
+      if (this.isTimestampError(error)) {
+        await this.syncServerTime(true);
+        return await op();
+      }
+      throw error;
+    }
+  }
+
+  private errorMessage(error: any, fallback: string): string {
+    return String(error?.response?.data?.msg || error?.message || fallback);
   }
 
   // Get account information
   async getAccountInfo(): Promise<AccountInfo> {
     try {
-      const response = await this.client.get('/fapi/v2/account');
+      const response = await this.withAuthRetry(() => this.client.get('/fapi/v2/account'));
       return response.data;
-    } catch (error) {
-      console.error('Error fetching account info:', error);
-      throw new Error('Failed to fetch account information');
+    } catch (error: any) {
+      const detail = this.errorMessage(error, 'Failed to fetch account information');
+      console.error('Error fetching account info:', detail);
+      throw new Error(detail);
     }
   }
 
@@ -119,22 +206,30 @@ export class BinanceService {
   async getPositions(symbol?: string): Promise<PositionInfo[]> {
     try {
       const params = symbol ? { symbol } : {};
-      const response = await this.client.get('/fapi/v2/positionRisk', { params });
+      const response = await this.withAuthRetry(() => this.client.get('/fapi/v2/positionRisk', { params }));
       return response.data;
-    } catch (error) {
-      console.error('Error fetching positions:', error);
-      throw new Error('Failed to fetch positions');
+    } catch (error: any) {
+      const detail = this.errorMessage(error, 'Failed to fetch positions');
+      console.error('Error fetching positions:', detail);
+      throw new Error(detail);
     }
   }
 
   // Place an order
   async placeOrder(params: OrderParams): Promise<any> {
+    return this.placeOrderAt('/fapi/v1/order', params);
+  }
+
+  async placeOrderAt(endpointPath: string, params: OrderParams): Promise<any> {
     try {
-      const response = await this.client.post('/fapi/v1/order', params);
+      const normalized = await this.normalizeOrderParams(params);
+      const response = await this.client.post(endpointPath, normalized);
       return response.data;
-    } catch (error) {
-      console.error('Error placing order:', error);
-      throw new Error('Failed to place order');
+    } catch (error: any) {
+      console.error(`Error placing order (${endpointPath}):`, error);
+      const code = error?.response?.data?.code;
+      const msg = error?.response?.data?.msg || error?.message || 'Failed to place order';
+      throw new Error(code !== undefined ? `${code}:${msg}` : msg);
     }
   }
 
@@ -154,13 +249,27 @@ export class BinanceService {
   // Cancel an order
   async cancelOrder(symbol: string, orderId: number): Promise<any> {
     try {
-      const response = await this.client.delete('/fapi/v1/order', {
+      const response = await this.withAuthRetry(() => this.client.delete('/fapi/v1/order', {
         params: { symbol, orderId }
-      });
+      }));
       return response.data;
-    } catch (error) {
-      console.error('Error canceling order:', error);
-      throw new Error('Failed to cancel order');
+    } catch (error: any) {
+      const detail = this.errorMessage(error, 'Failed to cancel order');
+      console.error('Error canceling order:', detail);
+      throw new Error(detail);
+    }
+  }
+
+  // Get open orders
+  async getOpenOrders(symbol?: string): Promise<any[]> {
+    try {
+      const params = symbol ? { symbol } : {};
+      const response = await this.withAuthRetry(() => this.client.get('/fapi/v1/openOrders', { params }));
+      return Array.isArray(response.data) ? response.data : [];
+    } catch (error: any) {
+      const detail = this.errorMessage(error, 'Failed to fetch open orders');
+      console.error('Error fetching open orders:', detail);
+      throw new Error(detail);
     }
   }
 
@@ -183,9 +292,10 @@ export class BinanceService {
         params: { symbol }
       });
       return parseFloat(response.data.price);
-    } catch (error) {
-      console.error('Error fetching current price:', error);
-      throw new Error('Failed to fetch current price');
+    } catch (error: any) {
+      const detail = this.errorMessage(error, 'Failed to fetch current price');
+      console.error('Error fetching current price:', detail);
+      throw new Error(detail);
     }
   }
 
@@ -210,9 +320,11 @@ export class BinanceService {
         leverage
       });
       return response.data;
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error setting leverage:', error);
-      throw new Error('Failed to set leverage');
+      const code = error?.response?.data?.code;
+      const msg = error?.response?.data?.msg || error?.message || 'Failed to set leverage';
+      throw new Error(code !== undefined ? `${code}:${msg}` : msg);
     }
   }
 
@@ -226,6 +338,81 @@ export class BinanceService {
       console.error('Error fetching trading fees:', error);
       throw new Error('Failed to fetch trading fees');
     }
+  }
+
+  private async normalizeOrderParams(params: OrderParams): Promise<OrderParams> {
+    const filters = await this.getSymbolFilters(params.symbol);
+    let quantity = params.quantity;
+    let price = params.price;
+
+    if (typeof quantity === 'number' && filters.stepSize && filters.stepSize > 0) {
+      quantity = this.roundDownToStep(quantity, filters.stepSize);
+      if (filters.minQty && quantity < filters.minQty) quantity = filters.minQty;
+    }
+
+    if (typeof price === 'number' && filters.tickSize && filters.tickSize > 0) {
+      price = this.roundDownToStep(price, filters.tickSize);
+    }
+
+    // Enforce exchange min notional for entries (avoid -4164 on futures testnet/live)
+    if (
+      !params.reduceOnly &&
+      !params.closePosition &&
+      typeof quantity === 'number' &&
+      quantity > 0 &&
+      typeof filters.minNotional === 'number' &&
+      filters.minNotional > 0
+    ) {
+      const effectivePrice = typeof price === 'number' && price > 0
+        ? price
+        : await this.getCurrentPrice(params.symbol);
+
+      const notional = quantity * effectivePrice;
+      if (notional < filters.minNotional && filters.stepSize && filters.stepSize > 0) {
+        const requiredQtyRaw = filters.minNotional / effectivePrice;
+        const requiredQty = Math.ceil(requiredQtyRaw / filters.stepSize) * filters.stepSize;
+        quantity = Number(requiredQty.toFixed(8));
+      }
+    }
+
+    return {
+      ...params,
+      quantity,
+      price,
+    };
+  }
+
+  private async getSymbolFilters(symbol: string): Promise<{ stepSize?: number; tickSize?: number; minQty?: number; minNotional?: number }> {
+    const cached = this.symbolFiltersCache.get(symbol);
+    if (cached) return cached;
+
+    try {
+      const res = await this.client.get('/fapi/v1/exchangeInfo');
+      const symbols = Array.isArray(res.data?.symbols) ? res.data.symbols : [];
+      const target = symbols.find((s: any) => s?.symbol === symbol);
+      const lot = target?.filters?.find((f: any) => f?.filterType === 'LOT_SIZE');
+      const priceFilter = target?.filters?.find((f: any) => f?.filterType === 'PRICE_FILTER');
+      const minNotionalFilter = target?.filters?.find((f: any) => f?.filterType === 'MIN_NOTIONAL' || f?.filterType === 'NOTIONAL');
+
+      const parsed = {
+        stepSize: lot ? Number(lot.stepSize) : undefined,
+        minQty: lot ? Number(lot.minQty) : undefined,
+        tickSize: priceFilter ? Number(priceFilter.tickSize) : undefined,
+        minNotional: minNotionalFilter ? Number(minNotionalFilter.notional ?? minNotionalFilter.minNotional) : undefined,
+      };
+
+      this.symbolFiltersCache.set(symbol, parsed);
+      return parsed;
+    } catch {
+      return {};
+    }
+  }
+
+  private roundDownToStep(value: number, step: number): number {
+    if (!Number.isFinite(value) || !Number.isFinite(step) || step <= 0) return value;
+    const precision = Math.max(0, Math.ceil(-Math.log10(step)) + 2);
+    const scaled = Math.floor((value + 1e-12) / step) * step;
+    return Number(scaled.toFixed(precision));
   }
 
   // Test connectivity
