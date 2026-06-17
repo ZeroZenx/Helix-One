@@ -13,7 +13,11 @@ type TradingStatus = {
   activePortfolios?: Array<{
     modelId: number;
     modelName: string;
+    allocatedBalance?: number;
     currentBalance: number;
+    realizedPnL?: number;
+    totalPnL?: number;
+    equitySource?: 'exchange' | 'journal' | 'allocation';
     positionsCount: number;
     positions?: Array<{
       symbol: string;
@@ -35,16 +39,29 @@ type TradingStatus = {
     cooldownUntil?: string | null;
     tradesToday?: number;
     dailyPnl?: number;
+    consecutiveLosses?: number;
   }>;
 };
 
 type SettingsPayload = {
+  testnet?: boolean;
+  hasTelegramBotToken?: boolean;
   modelAccounts?: Array<{
     modelId: number;
     modelName: string;
     tradingEnabled: boolean;
     balance: number;
   }>;
+  notificationSettings?: {
+    pushEnabled?: boolean;
+    emailEnabled?: boolean;
+    telegramEnabled?: boolean;
+    email?: string;
+    telegramUserId?: string;
+    telegramPairingCode?: string;
+    telegramMinSeverity?: 'info' | 'warning' | 'critical';
+    telegramRateLimitSec?: number;
+  };
   riskSettings?: {
     maxDailyLossPct?: number;
     maxPositionSizePct?: number;
@@ -307,6 +324,7 @@ const EXEC_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'DOGEUSDT', 'BNBUSDT'];
 const ResponsiveGridLayout = WidthProvider(Responsive);
 
 const DASHBOARD_LAYOUT_STORAGE_KEY = 'helix.dashboard.layouts.v2';
+const DASHBOARD_VIEW_MODE_STORAGE_KEY = 'helix.dashboard.viewmode.v1';
 
 const GRID_BREAKPOINTS = { lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 };
 const GRID_COLS = { lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 };
@@ -319,8 +337,9 @@ const DEFAULT_WIDGET_LAYOUTS: ResponsiveLayouts = {
     { i: 'market-overview', x: 0, y: 0, w: 3, h: 13, minW: 2, minH: 8, maxW: 6, maxH: 24 },
     { i: 'decision-summary', x: 3, y: 0, w: 6, h: 13, minW: 4, minH: 9, maxW: 9, maxH: 26 },
     { i: 'ops-snapshot', x: 9, y: 0, w: 3, h: 13, minW: 2, minH: 8, maxW: 5, maxH: 22 },
-    { i: 'manual-trade', x: 0, y: 13, w: 5, h: 18, minW: 3, minH: 12, maxW: 8, maxH: 34 },
-    { i: 'open-positions', x: 5, y: 13, w: 7, h: 18, minW: 4, minH: 10, maxW: 12, maxH: 34 },
+    { i: 'risk-console', x: 0, y: 13, w: 4, h: 14, minW: 3, minH: 10, maxW: 6, maxH: 24 },
+    { i: 'manual-trade', x: 4, y: 13, w: 4, h: 18, minW: 3, minH: 12, maxW: 8, maxH: 34 },
+    { i: 'open-positions', x: 8, y: 13, w: 4, h: 18, minW: 4, minH: 10, maxW: 12, maxH: 34 },
     { i: 'deepseek-live', x: 0, y: 31, w: 7, h: 18, minW: 4, minH: 12, maxW: 12, maxH: 36 },
     { i: 'live-feed', x: 7, y: 31, w: 5, h: 18, minW: 3, minH: 10, maxW: 7, maxH: 32 },
     { i: 'recent-trades', x: 0, y: 49, w: 12, h: 16, minW: 4, minH: 10, maxW: 12, maxH: 32 },
@@ -329,41 +348,45 @@ const DEFAULT_WIDGET_LAYOUTS: ResponsiveLayouts = {
     { i: 'market-overview', x: 0, y: 0, w: 4, h: 13, minW: 2, minH: 8, maxW: 6, maxH: 24 },
     { i: 'decision-summary', x: 4, y: 0, w: 6, h: 13, minW: 4, minH: 9, maxW: 10, maxH: 26 },
     { i: 'ops-snapshot', x: 0, y: 13, w: 4, h: 12, minW: 2, minH: 8, maxW: 6, maxH: 22 },
-    { i: 'manual-trade', x: 4, y: 13, w: 6, h: 18, minW: 3, minH: 12, maxW: 10, maxH: 34 },
-    { i: 'open-positions', x: 0, y: 31, w: 10, h: 17, minW: 4, minH: 10, maxW: 10, maxH: 34 },
-    { i: 'deepseek-live', x: 0, y: 48, w: 6, h: 18, minW: 4, minH: 12, maxW: 10, maxH: 36 },
-    { i: 'live-feed', x: 6, y: 48, w: 4, h: 18, minW: 3, minH: 10, maxW: 7, maxH: 32 },
-    { i: 'recent-trades', x: 0, y: 66, w: 10, h: 15, minW: 4, minH: 10, maxW: 10, maxH: 32 },
+    { i: 'risk-console', x: 4, y: 13, w: 6, h: 13, minW: 4, minH: 10, maxW: 10, maxH: 24 },
+    { i: 'manual-trade', x: 0, y: 26, w: 5, h: 18, minW: 3, minH: 12, maxW: 10, maxH: 34 },
+    { i: 'open-positions', x: 5, y: 26, w: 5, h: 18, minW: 4, minH: 10, maxW: 10, maxH: 34 },
+    { i: 'deepseek-live', x: 0, y: 44, w: 6, h: 18, minW: 4, minH: 12, maxW: 10, maxH: 36 },
+    { i: 'live-feed', x: 6, y: 44, w: 4, h: 18, minW: 3, minH: 10, maxW: 7, maxH: 32 },
+    { i: 'recent-trades', x: 0, y: 62, w: 10, h: 15, minW: 4, minH: 10, maxW: 10, maxH: 32 },
   ],
   sm: [
     { i: 'market-overview', x: 0, y: 0, w: 3, h: 13, minW: 2, minH: 8, maxW: 6, maxH: 24 },
     { i: 'decision-summary', x: 3, y: 0, w: 3, h: 15, minW: 3, minH: 9, maxW: 6, maxH: 28 },
     { i: 'ops-snapshot', x: 0, y: 15, w: 3, h: 12, minW: 2, minH: 8, maxW: 6, maxH: 22 },
-    { i: 'manual-trade', x: 3, y: 15, w: 3, h: 20, minW: 3, minH: 12, maxW: 6, maxH: 36 },
-    { i: 'open-positions', x: 0, y: 35, w: 6, h: 17, minW: 3, minH: 10, maxW: 6, maxH: 34 },
-    { i: 'deepseek-live', x: 0, y: 52, w: 6, h: 18, minW: 3, minH: 12, maxW: 6, maxH: 36 },
-    { i: 'live-feed', x: 0, y: 70, w: 3, h: 15, minW: 3, minH: 10, maxW: 6, maxH: 32 },
-    { i: 'recent-trades', x: 3, y: 70, w: 3, h: 15, minW: 3, minH: 10, maxW: 6, maxH: 32 },
+    { i: 'risk-console', x: 3, y: 15, w: 3, h: 14, minW: 3, minH: 10, maxW: 6, maxH: 24 },
+    { i: 'manual-trade', x: 0, y: 29, w: 3, h: 20, minW: 3, minH: 12, maxW: 6, maxH: 36 },
+    { i: 'open-positions', x: 3, y: 29, w: 3, h: 20, minW: 3, minH: 10, maxW: 6, maxH: 34 },
+    { i: 'deepseek-live', x: 0, y: 49, w: 6, h: 18, minW: 3, minH: 12, maxW: 6, maxH: 36 },
+    { i: 'live-feed', x: 0, y: 67, w: 3, h: 15, minW: 3, minH: 10, maxW: 6, maxH: 32 },
+    { i: 'recent-trades', x: 3, y: 67, w: 3, h: 15, minW: 3, minH: 10, maxW: 6, maxH: 32 },
   ],
   xs: [
     { i: 'market-overview', x: 0, y: 0, w: 4, h: 12, minW: 2, minH: 8, maxW: 4, maxH: 24 },
     { i: 'decision-summary', x: 0, y: 12, w: 4, h: 15, minW: 3, minH: 9, maxW: 4, maxH: 28 },
     { i: 'ops-snapshot', x: 0, y: 27, w: 4, h: 12, minW: 2, minH: 8, maxW: 4, maxH: 22 },
-    { i: 'manual-trade', x: 0, y: 39, w: 4, h: 22, minW: 3, minH: 12, maxW: 4, maxH: 38 },
-    { i: 'open-positions', x: 0, y: 61, w: 4, h: 17, minW: 3, minH: 10, maxW: 4, maxH: 34 },
-    { i: 'deepseek-live', x: 0, y: 78, w: 4, h: 18, minW: 3, minH: 12, maxW: 4, maxH: 36 },
-    { i: 'live-feed', x: 0, y: 96, w: 4, h: 15, minW: 3, minH: 10, maxW: 4, maxH: 32 },
-    { i: 'recent-trades', x: 0, y: 111, w: 4, h: 15, minW: 3, minH: 10, maxW: 4, maxH: 32 },
+    { i: 'risk-console', x: 0, y: 39, w: 4, h: 14, minW: 3, minH: 10, maxW: 4, maxH: 24 },
+    { i: 'manual-trade', x: 0, y: 53, w: 4, h: 22, minW: 3, minH: 12, maxW: 4, maxH: 38 },
+    { i: 'open-positions', x: 0, y: 75, w: 4, h: 17, minW: 3, minH: 10, maxW: 4, maxH: 34 },
+    { i: 'deepseek-live', x: 0, y: 92, w: 4, h: 18, minW: 3, minH: 12, maxW: 4, maxH: 36 },
+    { i: 'live-feed', x: 0, y: 110, w: 4, h: 15, minW: 3, minH: 10, maxW: 4, maxH: 32 },
+    { i: 'recent-trades', x: 0, y: 125, w: 4, h: 15, minW: 3, minH: 10, maxW: 4, maxH: 32 },
   ],
   xxs: [
     { i: 'market-overview', x: 0, y: 0, w: 2, h: 12, minW: 2, minH: 8, maxW: 2, maxH: 24 },
     { i: 'decision-summary', x: 0, y: 12, w: 2, h: 16, minW: 2, minH: 9, maxW: 2, maxH: 30 },
     { i: 'ops-snapshot', x: 0, y: 28, w: 2, h: 12, minW: 2, minH: 8, maxW: 2, maxH: 22 },
-    { i: 'manual-trade', x: 0, y: 40, w: 2, h: 24, minW: 2, minH: 12, maxW: 2, maxH: 40 },
-    { i: 'open-positions', x: 0, y: 64, w: 2, h: 18, minW: 2, minH: 10, maxW: 2, maxH: 36 },
-    { i: 'deepseek-live', x: 0, y: 82, w: 2, h: 20, minW: 2, minH: 12, maxW: 2, maxH: 38 },
-    { i: 'live-feed', x: 0, y: 102, w: 2, h: 16, minW: 2, minH: 10, maxW: 2, maxH: 34 },
-    { i: 'recent-trades', x: 0, y: 118, w: 2, h: 16, minW: 2, minH: 10, maxW: 2, maxH: 34 },
+    { i: 'risk-console', x: 0, y: 40, w: 2, h: 14, minW: 2, minH: 10, maxW: 2, maxH: 24 },
+    { i: 'manual-trade', x: 0, y: 54, w: 2, h: 24, minW: 2, minH: 12, maxW: 2, maxH: 40 },
+    { i: 'open-positions', x: 0, y: 78, w: 2, h: 18, minW: 2, minH: 10, maxW: 2, maxH: 36 },
+    { i: 'deepseek-live', x: 0, y: 96, w: 2, h: 20, minW: 2, minH: 12, maxW: 2, maxH: 38 },
+    { i: 'live-feed', x: 0, y: 116, w: 2, h: 16, minW: 2, minH: 10, maxW: 2, maxH: 34 },
+    { i: 'recent-trades', x: 0, y: 132, w: 2, h: 16, minW: 2, minH: 10, maxW: 2, maxH: 34 },
   ],
 };
 
@@ -434,6 +457,7 @@ export default function Home() {
   const [replayIndex, setReplayIndex] = useState(0);
   const [widgetLayouts, setWidgetLayouts] = useState<ResponsiveLayouts>(DEFAULT_WIDGET_LAYOUTS);
   const [layoutInteraction, setLayoutInteraction] = useState<'idle' | 'dragging' | 'resizing'>('idle');
+  const [dashboardViewMode, setDashboardViewMode] = useState<'operator' | 'quant' | 'presentation'>('operator');
 
   const [manualAdminKey, setManualAdminKey] = useState('');
   const [manualSymbol, setManualSymbol] = useState<'BTCUSDT' | 'ETHUSDT' | 'XRPUSDT' | 'DOGEUSDT' | 'BNBUSDT'>('BTCUSDT');
@@ -466,6 +490,22 @@ export default function Home() {
   const availableMargin = Number(account.availableMargin || 0);
   const livePositions = portfolio?.positions || [];
   const openPositions = livePositions.length;
+  const botEquity = Number(portfolio?.currentBalance || 0);
+  const botDailyPnl = Number(portfolio?.dailyPnl ?? account.previousDayPnl ?? 0);
+  const canonicalPriceBySymbol = useMemo(() => {
+    const map = new Map<string, { price: number; source: 'position' | 'ticker' }>();
+    for (const coin of coins) {
+      const symbol = `${coin.symbol}USDT`;
+      const price = Number(coin.price || 0);
+      if (price > 0) map.set(symbol, { price, source: 'ticker' });
+    }
+    for (const position of livePositions) {
+      const symbol = String(position.symbol || '').toUpperCase();
+      const price = Number((position as any).currentPrice || 0);
+      if (symbol && price > 0) map.set(symbol, { price, source: 'position' });
+    }
+    return map;
+  }, [coins, livePositions]);
 
   const riskPosture = useMemo(() => {
     if (!liveConnected) return { label: 'DISCONNECTED', tone: 'bg-red-500/20 text-red-300 border-red-500/40' };
@@ -667,6 +707,7 @@ export default function Home() {
     return EXEC_SYMBOLS.map((symbol) => {
       const base = symbol.replace('USDT', '');
       const coin = coins.find((c) => c.symbol === base);
+      const canonical = canonicalPriceBySymbol.get(symbol);
       const hasPosition = livePositions.some((p) => p.symbol === symbol);
       const confidence = Number(market.regimeConfidence || 0);
       const blockedReason = rejectMap.get(symbol) || '';
@@ -681,14 +722,15 @@ export default function Home() {
 
       return {
         symbol,
-        price: coin?.price || 0,
+        price: canonical?.price || coin?.price || 0,
+        priceSource: canonical?.source || 'ticker',
         change: coin?.change || 0,
         confidence,
         state,
         action,
       };
     });
-  }, [workerStatus?.symbolRejects, coins, livePositions, market.regimeConfidence]);
+  }, [workerStatus?.symbolRejects, coins, canonicalPriceBySymbol, livePositions, market.regimeConfidence]);
 
   const latestAiBySymbol = useMemo(() => {
     const map = new Map<string, any>();
@@ -745,7 +787,7 @@ export default function Home() {
         : decision.label === 'TRADE'
           ? 'READY'
           : decision.state.replaceAll('_', ' ');
-    const price = Number(coin?.price || open?.currentPrice || 0);
+    const price = Number(canonicalPriceBySymbol.get(candidateSymbol)?.price || coin?.price || open?.currentPrice || 0);
     const isShort = side === 'SHORT' || side === 'SELL';
     const formatPlanPrice = (value: number) => {
       if (!Number.isFinite(value) || value <= 0) return '—';
@@ -820,6 +862,7 @@ export default function Home() {
     workerStatus?.symbolRejects,
     workerStatus?.chosenSide,
     coins,
+    canonicalPriceBySymbol,
     latestAiBySymbol,
     candidateBySymbol,
     symbolBrains,
@@ -1298,6 +1341,12 @@ export default function Home() {
 
   useEffect(() => {
     setWidgetLayouts(loadStoredWidgetLayouts());
+    if (typeof window !== 'undefined') {
+      const storedView = window.localStorage.getItem(DASHBOARD_VIEW_MODE_STORAGE_KEY);
+      if (storedView === 'operator' || storedView === 'quant' || storedView === 'presentation') {
+        setDashboardViewMode(storedView);
+      }
+    }
     pingStatusFast();
     loadDashboard();
     loadMarket();
@@ -1319,6 +1368,13 @@ export default function Home() {
     }
   }
 
+  function persistDashboardViewMode(nextMode: 'operator' | 'quant' | 'presentation') {
+    setDashboardViewMode(nextMode);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(DASHBOARD_VIEW_MODE_STORAGE_KEY, nextMode);
+    }
+  }
+
   const beProtectionPct = Math.max(0, Number((riskSettings as any).breakEvenBufferPct ?? 0.001))
     + Math.max(0, Number((riskSettings as any).breakEvenFeeBps ?? 8)) / 10000
     + Math.max(0, Number((riskSettings as any).breakEvenSlippageBps ?? 5)) / 10000;
@@ -1332,8 +1388,9 @@ export default function Home() {
     const entry = Number(p.entryPrice || 0);
     const size = Number(p.size || 0);
     const side = String((p as any).side || 'LONG');
-    const mark = Number((p as any).currentPrice || 0);
+    const mark = Number(canonicalPriceBySymbol.get(String(p.symbol || '').toUpperCase())?.price || (p as any).currentPrice || 0);
     const unrealized = Number((p as any).pnl || 0);
+    const riskPerUnit = stop > 0 && entry > 0 ? Math.abs(entry - stop) : 0;
     const secured = stop > 0
       ? side === 'LONG'
         ? (stop - entry) * size
@@ -1352,6 +1409,53 @@ export default function Home() {
         ? entry * (1 + beProtectionPct)
         : entry * (1 - beProtectionPct)
       : 0;
+    const beArmMove = entry > 0 && bePlusStop > 0 ? Math.abs(bePlusStop - entry) : 0;
+    const favorableMove = entry > 0 && mark > 0
+      ? side === 'LONG'
+        ? Math.max(0, mark - entry)
+        : Math.max(0, entry - mark)
+      : 0;
+    const currentR = riskPerUnit > 0 ? favorableMove / riskPerUnit : 0;
+    const partialTargetPrice = entry > 0 && riskPerUnit > 0
+      ? side === 'LONG'
+        ? entry + (riskPerUnit * runnerActivationR)
+        : entry - (riskPerUnit * runnerActivationR)
+      : 0;
+    const partialProgressPct = partialTargetPrice > 0 && favorableMove > 0 && riskPerUnit > 0
+      ? Math.max(0, Math.min(100, (currentR / runnerActivationR) * 100))
+      : 0;
+    const beProgressPct = beArmMove > 0 && favorableMove > 0
+      ? Math.max(0, Math.min(100, (favorableMove / beArmMove) * 100))
+      : 0;
+    const stopPressurePct = entry > 0 && stop > 0 && mark > 0
+      ? Math.max(0, Math.min(100, 100 - ((Math.abs(mark - stop) / Math.abs(entry - stop || 1)) * 100)))
+      : 0;
+    const distanceToStopPct = stop > 0 && mark > 0 ? (Math.abs(mark - stop) / mark) * 100 : 0;
+    const protectionState = stop <= 0
+      ? 'No Stop'
+      : slStatus === 'Locked Profit'
+        ? 'Locked Profit'
+        : slStatus === 'Break-even'
+          ? 'BE Active'
+          : beProgressPct >= 100
+            ? 'BE Ready'
+            : 'Initial Risk';
+    const runnerState = Boolean((p as any).runnerMode)
+      ? 'Runner Live'
+      : Number((p as any).partialTakenPct || 0) > 0
+        ? 'Runner Armed'
+        : partialProgressPct >= 100
+          ? 'Partial Ready'
+          : 'Building';
+    const riskState = unrealized < 0 && stopPressurePct >= 70
+      ? 'At Risk'
+      : unrealized < 0
+        ? 'Under Pressure'
+        : unrealized > 0 && slStatus === 'Locked Profit'
+          ? 'Protected'
+          : unrealized > 0
+            ? 'Working'
+            : 'Neutral';
     return {
       ts: p.openedAt,
       symbol: p.symbol,
@@ -1359,6 +1463,7 @@ export default function Home() {
       qty: p.size,
       entry: p.entryPrice,
       mark,
+      markSource: canonicalPriceBySymbol.get(String(p.symbol || '').toUpperCase())?.source || 'position',
       stop,
       takeProfit: Number((p as any).takeProfit || 0),
       slStatus,
@@ -1369,6 +1474,16 @@ export default function Home() {
       runnerMode: Boolean((p as any).runnerMode),
       partialTakenPct: Number((p as any).partialTakenPct || 0),
       bestPrice: Number((p as any).bestPrice || 0),
+      riskPerUnit,
+      currentR,
+      partialTargetPrice,
+      partialProgressPct,
+      beProgressPct,
+      stopPressurePct,
+      distanceToStopPct,
+      protectionState,
+      runnerState,
+      riskState,
     };
   });
   const managedPositionRows = activeTradeRows.map((t) => {
@@ -1495,12 +1610,14 @@ export default function Home() {
         const symbol = String(row?.symbol || '—').toUpperCase();
         const base = symbol.replace('USDT', '');
         const coin = coins.find((c) => c.symbol === base);
+        const canonical = canonicalPriceBySymbol.get(symbol);
         const aiRow = latestAiBySymbol.get(symbol);
         const brain = symbolBrains.find((s) => s.symbol === symbol);
         return {
           symbol,
           reason: String(row?.reason || 'blocked').replace(/^ai_no_trade:/, '').replace(/_/g, ' '),
-          price: Number(coin?.price || 0),
+          price: Number(canonical?.price || coin?.price || 0),
+          priceSource: canonical?.source || 'ticker',
           change: Number(coin?.change || 0),
           confidence: Number((aiRow as any)?.confidence || brain?.confidence || 0),
           expectedR: Number((aiRow as any)?.expectedRMultiple || 0),
@@ -1536,6 +1653,7 @@ export default function Home() {
     return EXEC_SYMBOLS.map((symbol) => {
       const base = symbol.replace('USDT', '');
       const coin = coins.find((c) => c.symbol === base);
+      const canonical = canonicalPriceBySymbol.get(symbol);
       const hasPosition = livePositions.some((p) => p.symbol === symbol);
       const blocked = rejectMap.has(symbol);
       const isFocus = tradeFocus.symbol === symbol;
@@ -1543,13 +1661,14 @@ export default function Home() {
       return {
         symbol,
         base,
-        price: Number(coin?.price || 0),
+        price: Number(canonical?.price || coin?.price || 0),
+        priceSource: canonical?.source || 'ticker',
         change: Number(coin?.change || 0),
         state,
         focused: isFocus,
       };
     });
-  }, [workerStatus?.symbolRejects, coins, livePositions, tradeFocus.symbol, market.regimeConfidence]);
+  }, [workerStatus?.symbolRejects, coins, canonicalPriceBySymbol, livePositions, tradeFocus.symbol, market.regimeConfidence]);
 
   const marketOverviewRows = useMemo(() => {
     const pulseByBase = new Map(marketPulseRows.map((row) => [row.base, row]));
@@ -1557,6 +1676,7 @@ export default function Home() {
       const pulse = pulseByBase.get(coin.symbol);
       const brain = symbolBrains.find((row) => row.symbol === `${coin.symbol}USDT`);
       const symbol = `${coin.symbol}USDT`;
+      const canonical = canonicalPriceBySymbol.get(symbol);
       const candidate = candidateBySymbol.get(symbol);
       const state = pulse?.state || candidate?.state || brain?.state || (coin.symbol === 'SOL' ? 'WATCH' : 'SCAN');
       const strength = Math.max(8, Math.min(100, Number(candidate?.qualityScore || 0) || 50 + Number(coin.change || 0) * 10));
@@ -1567,7 +1687,8 @@ export default function Home() {
       return {
         symbol: coin.symbol,
         fullSymbol: symbol,
-        price: Number(coin.price || 0),
+        price: Number(canonical?.price || coin.price || 0),
+        priceSource: canonical?.source || 'ticker',
         change: Number(coin.change || 0),
         state,
         focused: Boolean(pulse?.focused || tradeFocus.symbol === symbol),
@@ -1578,7 +1699,7 @@ export default function Home() {
         bias: candidate?.bias || 'WATCH',
       };
     });
-  }, [coins, marketPulseRows, symbolBrains, candidateBySymbol, latestAiBySymbol, decision.label, tradeFocus.symbol]);
+  }, [coins, canonicalPriceBySymbol, marketPulseRows, symbolBrains, candidateBySymbol, latestAiBySymbol, decision.label, tradeFocus.symbol]);
 
   const marketQuality = useMemo(() => {
     const regimeConfidence = Number(market.regimeConfidence || 0);
@@ -1600,7 +1721,10 @@ export default function Home() {
   const manualTradePreview = useMemo(() => {
     const base = manualSymbol.replace('USDT', '');
     const coin = coins.find((c) => c.symbol === base);
-    const marketPrice = Number(coin?.price || 0);
+    const openPosition = livePositions.find((p) => String(p.symbol || '').toUpperCase() === manualSymbol);
+    const canonical = canonicalPriceBySymbol.get(manualSymbol);
+    const marketPrice = Number(canonical?.price || coin?.price || 0);
+    const positionMark = Number((openPosition as any)?.currentPrice || 0);
     const limitPrice = Number(manualPrice || 0);
     const entry = manualType === 'LIMIT' && limitPrice > 0 ? limitPrice : marketPrice;
     const stop = Number(manualStopLoss || 0);
@@ -1618,6 +1742,9 @@ export default function Home() {
     return {
       base,
       marketPrice,
+      priceSource: canonical?.source || 'ticker',
+      positionMark,
+      markDelta: marketPrice > 0 && positionMark > 0 ? marketPrice - positionMark : 0,
       entry,
       rr,
       riskUsd,
@@ -1631,7 +1758,7 @@ export default function Home() {
       riskText: riskUsd > 0 && Number.isFinite(riskUsd) ? signedMoney(-riskUsd) : 'size optional',
       notionalText: notional > 0 && Number.isFinite(notional) ? `$${notional.toFixed(2)}` : '—',
     };
-  }, [manualSymbol, manualPrice, manualType, manualStopLoss, manualTakeProfit, manualQty, manualSide, manualAdminKey, manualConfidence, coins]);
+  }, [manualSymbol, manualPrice, manualType, manualStopLoss, manualTakeProfit, manualQty, manualSide, manualAdminKey, manualConfidence, coins, canonicalPriceBySymbol, livePositions]);
 
   const readinessScore = useMemo(() => {
     const scoreParts = [
@@ -1688,6 +1815,241 @@ export default function Home() {
       cooldownMinutes,
     };
   }, [riskSettings.maxTradesPerDay, riskSettings.maxDailyLossPct, journal, account.previousDayPnl, walletBalance, portfolio?.cooldownUntil, livePositions.length, workerStatus?.policy?.maxOpenPositions]);
+  const openRiskUsd = useMemo(
+    () => managedPositionRows.reduce((sum, row) => sum + Math.max(0, Number(row.riskToStop || 0)), 0),
+    [managedPositionRows]
+  );
+  const openRiskPctOfWallet = walletBalance > 0 ? (openRiskUsd / walletBalance) * 100 : 0;
+  const drawdownFromAllocationPct = Number(portfolio?.allocatedBalance || 0) > 0
+    ? Math.max(0, ((Number(portfolio?.allocatedBalance || 0) - Number(portfolio?.currentBalance || portfolio?.allocatedBalance || 0)) / Number(portfolio?.allocatedBalance || 1)) * 100)
+    : 0;
+  const killSwitchLimitPct = Number((riskSettings as any).killSwitchDrawdownPct ?? 5);
+  const killSwitchProximityPct = killSwitchLimitPct > 0
+    ? Math.min(100, (drawdownFromAllocationPct / killSwitchLimitPct) * 100)
+    : 0;
+  const riskConsole = useMemo(() => {
+    const posture = portfolio?.killSwitchTriggered
+      ? 'KILL SWITCH'
+      : riskCapacity.cooldownMinutes > 0
+        ? 'COOLDOWN'
+        : riskCapacity.tradeSlotsLeft <= 0
+          ? 'CAPACITY BLOCKED'
+          : 'CLEAR';
+    return {
+      posture,
+      dailyLossUsedPct: riskCapacity.dailyLossUsedPct,
+      openRiskUsd,
+      openRiskPctOfWallet,
+      slotsLeft: Math.max(0, riskCapacity.maxOpenPositions - riskCapacity.openPositions),
+      cooldownMinutes: riskCapacity.cooldownMinutes,
+      killSwitchProximityPct,
+      killSwitchLimitPct,
+      drawdownFromAllocationPct,
+      exposures: managedPositionRows
+        .map((row) => ({
+          symbol: row.symbol,
+          side: row.side,
+          riskUsd: Number(row.riskToStop || 0),
+          currentR: Number(row.currentR || 0),
+        }))
+        .sort((a, b) => b.riskUsd - a.riskUsd)
+        .slice(0, 4),
+    };
+  }, [portfolio?.killSwitchTriggered, riskCapacity, openRiskUsd, openRiskPctOfWallet, killSwitchProximityPct, killSwitchLimitPct, drawdownFromAllocationPct, managedPositionRows]);
+
+  const isQuantView = dashboardViewMode === 'quant';
+  const isPresentationView = dashboardViewMode === 'presentation';
+  const isOperatorView = dashboardViewMode === 'operator';
+
+  const accountMode = useMemo(() => {
+    if (paperTradingEnabled) return { label: 'PAPER', detail: 'Simulated execution only', tone: 'amber' as const };
+    if (settings?.testnet) return { label: 'TESTNET', detail: 'Binance futures testnet', tone: 'amber' as const };
+    return { label: 'LIVE', detail: 'Live exchange execution', tone: 'green' as const };
+  }, [paperTradingEnabled, settings?.testnet]);
+
+  const syncStatus = useMemo(() => {
+    const walletFresh = Boolean(liveConnected && (walletBalance > 0 || availableMargin > 0) && lastUpdated);
+    const positionsFresh = livePositions.length > 0
+      ? livePositions.every((p) => Number((p as any)?.currentPrice || 0) > 0)
+      : liveConnected;
+    return [
+      {
+        label: 'Wallet',
+        state: walletFresh ? 'fresh' : 'stale',
+        detail: walletFresh ? `Updated ${lastUpdated}` : 'Waiting for wallet sync',
+      },
+      {
+        label: 'Positions',
+        state: positionsFresh ? 'fresh' : 'stale',
+        detail: positionsFresh ? `${openPositions} open tracked` : 'Position marks stale',
+      },
+      {
+        label: 'AI',
+        state: deepseekFresh ? 'fresh' : 'stale',
+        detail: workerStatus?.aiLastHeartbeatAt ? new Date(workerStatus.aiLastHeartbeatAt).toLocaleTimeString() : 'No heartbeat yet',
+      },
+      {
+        label: 'Worker',
+        state: workerHealth === 'HEALTHY' ? 'fresh' : workerHealth === 'STALE' ? 'stale' : 'off',
+        detail: workerStatus?.lastRunAt ? new Date(workerStatus.lastRunAt).toLocaleTimeString() : 'Not run yet',
+      },
+    ] as const;
+  }, [liveConnected, walletBalance, availableMargin, lastUpdated, livePositions, openPositions, deepseekFresh, workerStatus?.aiLastHeartbeatAt, workerHealth, workerStatus?.lastRunAt]);
+
+  const systemHealth = useMemo(() => {
+    const telegramEnabled = Boolean(settings?.notificationSettings?.telegramEnabled);
+    const telegramReady = telegramEnabled && Boolean(settings?.hasTelegramBotToken || settings?.notificationSettings?.telegramUserId);
+    return [
+      {
+        label: 'API',
+        value: error ? 'degraded' : lastUpdated ? 'online' : 'booting',
+        tone: error ? 'bad' as const : lastUpdated ? 'good' as const : 'warn' as const,
+      },
+      {
+        label: 'Exchange',
+        value: status?.connected || walletBalance > 0 || availableMargin > 0 ? 'auth ok' : 'offline',
+        tone: status?.connected || walletBalance > 0 || availableMargin > 0 ? 'good' as const : 'bad' as const,
+      },
+      {
+        label: 'AI',
+        value: deepseekFresh ? 'fresh' : 'stale',
+        tone: deepseekFresh ? 'good' as const : 'warn' as const,
+      },
+      {
+        label: 'Execution',
+        value: workerHealth.toLowerCase(),
+        tone: workerHealth === 'HEALTHY' ? 'good' as const : workerHealth === 'STALE' ? 'warn' as const : 'bad' as const,
+      },
+      {
+        label: 'Telegram',
+        value: telegramEnabled ? (telegramReady ? 'armed' : 'incomplete') : 'off',
+        tone: telegramEnabled ? (telegramReady ? 'good' as const : 'warn' as const) : 'bad' as const,
+      },
+    ] as const;
+  }, [settings?.notificationSettings?.telegramEnabled, settings?.notificationSettings?.telegramUserId, settings?.hasTelegramBotToken, error, lastUpdated, status?.connected, walletBalance, availableMargin, deepseekFresh, workerHealth]);
+
+  const whyNotTrading = useMemo(() => {
+    const blockers: Array<{ key: string; title: string; detail: string; severity: 'critical' | 'warning' | 'info'; source: string }> = [];
+    const add = (entry: { key: string; title: string; detail: string; severity: 'critical' | 'warning' | 'info'; source: string }) => {
+      if (!blockers.some((b) => b.key === entry.key)) blockers.push(entry);
+    };
+
+    if (riskCapacity.tradeSlotsLeft <= 0) {
+      add({
+        key: 'daily-capacity',
+        title: 'Daily trade budget exhausted',
+        detail: `${riskCapacity.tradesToday}/${riskCapacity.maxTrades} trades already used today. The AI can rank setups, but execution is blocked until the next session.`,
+        severity: 'critical',
+        source: 'worker policy',
+      });
+    }
+
+    if (riskCapacity.openPositions >= riskCapacity.maxOpenPositions) {
+      add({
+        key: 'open-capacity',
+        title: 'Open-position capacity is full',
+        detail: `${riskCapacity.openPositions}/${riskCapacity.maxOpenPositions} slots are already in use, so new entries stay blocked until risk is reduced.`,
+        severity: 'critical',
+        source: 'risk engine',
+      });
+    }
+
+    if (operatorIntelligence?.eventRisk?.level === 'high') {
+      add({
+        key: 'event-risk',
+        title: 'Event risk is elevated',
+        detail: operatorIntelligence.eventRisk.action || 'Headline and macro risk are high enough that fresh entries should stay selective.',
+        severity: 'warning',
+        source: 'operator intelligence',
+      });
+    }
+
+    if (Number(market.regimeConfidence || 0) < 60) {
+      add({
+        key: 'regime-confidence',
+        title: 'Regime confidence is still below gate',
+        detail: `Current confidence is ${Number(market.regimeConfidence || 0)}%. The system wants 60%+ before it trusts directional risk.`,
+        severity: 'warning',
+        source: 'market regime',
+      });
+    }
+
+    if (String(market.liquidityState || '').toLowerCase() === 'poor') {
+      add({
+        key: 'liquidity',
+        title: 'Liquidity quality is poor',
+        detail: 'Spread and liquidity conditions are not clean enough for the execution rules right now.',
+        severity: 'warning',
+        source: 'risk intel',
+      });
+    }
+
+    if (String(market.volatilityState || '').toLowerCase() === 'high') {
+      add({
+        key: 'volatility',
+        title: 'Volatility is too aggressive',
+        detail: 'The risk engine is seeing high short-term volatility, so entries stay blocked until tape quality improves.',
+        severity: 'warning',
+        source: 'risk intel',
+      });
+    }
+
+    if (risks.length > 0) {
+      add({
+        key: 'risk-flags',
+        title: 'Active risk flags are present',
+        detail: risks.slice(0, 2).join(' • '),
+        severity: 'warning',
+        source: 'runtime context',
+      });
+    }
+
+    if (workerRejectRows[0]?.reason) {
+      add({
+        key: 'symbol-reject',
+        title: 'Best symbol is still blocked',
+        detail: `${workerRejectRows[0].symbol}: ${workerRejectRows[0].reason}`,
+        severity: 'info',
+        source: 'symbol gate',
+      });
+    }
+
+    if (!blockers.length && decision.label !== 'TRADE') {
+      add({
+        key: 'confirmation',
+        title: 'No hard blocker, but trigger quality is not complete',
+        detail: tradeFocus.waitFor || triggerDiagnostics.blockerNow || 'The system is waiting for confirmation, not forcing an entry.',
+        severity: 'info',
+        source: 'execution radar',
+      });
+    }
+
+    const ranked = blockers
+      .sort((a, b) => {
+        const weight = { critical: 0, warning: 1, info: 2 };
+        return weight[a.severity] - weight[b.severity];
+      })
+      .slice(0, 4);
+
+    return {
+      headline: ranked[0]?.title || 'Trade flow is clear',
+      summary: decision.label === 'TRADE'
+        ? 'Execution is allowed. The system is now waiting for trigger timing, price behavior, and risk alignment.'
+        : 'This panel ranks the real blockers preventing a fresh entry right now.',
+      blockers: ranked,
+    };
+  }, [
+    riskCapacity,
+    operatorIntelligence?.eventRisk,
+    market.regimeConfidence,
+    market.liquidityState,
+    market.volatilityState,
+    risks,
+    workerRejectRows,
+    decision.label,
+    tradeFocus.waitFor,
+    triggerDiagnostics.blockerNow,
+  ]);
 
   const heatMatrixRows = useMemo(() => {
     const rejectMap = new Map<string, string>();
@@ -1757,6 +2119,36 @@ export default function Home() {
       reviewRows,
     };
   }, [journal, workerRejectRows, aiDecisionRows, workerStatus?.lastAction, workerStatus?.lastRunAt, compactWorkerReason, tradeFocus.symbol]);
+
+  const groupedJournal = useMemo(() => {
+    const executionRows = journal
+      .filter((j) => j.type === 'trade_open' || j.type === 'trade_close')
+      .sort((a, b) => new Date(String(b.ts || 0)).getTime() - new Date(String(a.ts || 0)).getTime())
+      .slice(0, 6)
+      .map((row) => ({
+        ts: String(row.ts || ''),
+        label: `${String(row.type).replace('trade_', '').toUpperCase()} ${String(row.symbol || 'PAIR')}`,
+        detail: row.type === 'trade_close'
+          ? `Closed ${row.symbol || 'trade'} at ${signedMoney(Number(row.pnl || 0))}.`
+          : `Opened ${row.symbol || 'trade'} ${String(row.side || '').toUpperCase()} with qty ${Number(row.qty || 0).toFixed(5)}.`,
+        tone: row.type === 'trade_close' && Number(row.pnl || 0) < 0 ? 'red' as const : 'green' as const,
+      }));
+    const cycleRows = lifecycleBrief.reviewRows.slice(0, isQuantView ? 6 : 4).map((row) => ({
+      ts: lifecycleBrief.lastTs,
+      label: `${row.symbol} ${row.state}`,
+      detail: row.reason,
+      tone: row.state === 'TRADE' ? 'green' as const : 'amber' as const,
+    }));
+    return {
+      cycleSummary: {
+        headline: lifecycleBrief.headline,
+        action: lifecycleBrief.action,
+        detail: lifecycleBrief.operatorReadout,
+      },
+      executionRows,
+      reviewRows: cycleRows,
+    };
+  }, [journal, lifecycleBrief, isQuantView]);
 
   const replayCursor = timelineEvents[Math.min(replayIndex, Math.max(0, timelineEvents.length - 1))] || null;
   const visibleOpenOrders = useMemo(() => {
@@ -1846,6 +2238,58 @@ export default function Home() {
       lastPnl: signedMoney(Number(last?.pnl || 0)),
     };
   }, [recentTradeRows, postTradeQuality.netPnl, postTradeQuality.profitFactor]);
+
+  const presentationSummary = useMemo(() => {
+    const focusAction = tradeFocus.setupState === 'OPEN POSITION'
+      ? `Managing ${tradeFocus.symbol} with ${livePositions.length} live position${livePositions.length === 1 ? '' : 's'} on the book.`
+      : tradeFocus.waitFor;
+    const focusTone = decision.label === 'TRADE'
+      ? 'READY TO ACT'
+      : livePositions.length > 0
+        ? 'MANAGING RISK'
+        : 'WAITING WITH INTENT';
+
+    return {
+      eyebrow: `${accountMode.label} COMMAND SURFACE`,
+      headline: livePositions.length > 0
+        ? `Managing live exposure while the engine keeps ranking the next highest-quality setup.`
+        : `${tradeFocus.symbol} is the primary focus while the system waits for clean confirmation instead of forcing risk.`,
+      subhead: `${focusAction} Regime is ${String(market.regime || 'unclear').toUpperCase()} with ${Number(market.regimeConfidence || 0)}% confidence, ${String(market.liquidityState || 'unknown').toUpperCase()} liquidity, and ${String(market.volatilityState || 'unknown').toUpperCase()} volatility.`,
+      focusTone,
+      focusDetail: topTradeCandidate?.thesis || tradeFocus.thesis || decision.reasoningSummary,
+      cards: [
+        {
+          label: 'Primary Focus',
+          value: tradeFocus.symbol,
+          detail: `${tradeFocus.side} • ${tradeFocus.setupType || 'setup in review'}`,
+        },
+        {
+          label: 'Decision State',
+          value: decision.label === 'TRADE' ? 'Actionable' : 'Selective',
+          detail: decision.label === 'TRADE' ? `Awaiting ${tradeFocus.side} confirmation` : whyNotTrading.headline,
+        },
+        {
+          label: 'Performance',
+          value: performanceBrief.health,
+          detail: performanceBrief.message,
+        },
+      ],
+    };
+  }, [
+    tradeFocus,
+    livePositions.length,
+    decision.label,
+    decision.reasoningSummary,
+    accountMode.label,
+    market.regime,
+    market.regimeConfidence,
+    market.liquidityState,
+    market.volatilityState,
+    topTradeCandidate?.thesis,
+    whyNotTrading.headline,
+    performanceBrief.health,
+    performanceBrief.message,
+  ]);
 
   const deepseekPlaybook = useMemo(() => {
     const ds = briefing?.deepseekDecision || {};
@@ -1981,6 +2425,59 @@ export default function Home() {
     managedPositionRows,
   ]);
 
+  const executionRadar = useMemo(() => {
+    const blocked = decision.label !== 'TRADE';
+    const setupStatus = blocked
+      ? tradeFocus.blocker || tradeFocus.waitFor
+      : `Execution window is valid if ${tradeFocus.symbol} confirms the trigger with clean tape.`;
+    const readinessText = blocked
+      ? 'Blocked until quality, trigger, and risk all align.'
+      : 'Armed for execution once timing confirms.';
+    const regimeBadge = `${String(market.regime || 'unclear').toUpperCase()} • ${Number(market.regimeConfidence || 0)}%`;
+    return {
+      setupStatus,
+      readinessText,
+      regimeBadge,
+      invalidationLine: tradeFocus.invalidate || decision.invalidators?.[0] || 'Awaiting invalidation level',
+      triggerLine: tradeFocus.waitFor,
+      actionLine: blocked
+        ? 'Do nothing until the trigger stack clears.'
+        : `Prepare ${tradeFocus.side} execution with defined stop and target only.`,
+    };
+  }, [decision.label, decision.invalidators, tradeFocus, market.regime, market.regimeConfidence]);
+
+  const portfolioManagerSections = useMemo(() => {
+    const qualityScores = tradeFocus.qualityScores || {};
+    const structureScore = Number((qualityScores as any).structure || 0);
+    const liquidityScore = Number((qualityScores as any).liquidity || 0);
+    const rrScore = Number((qualityScores as any).riskReward || 0);
+    const executionScore = ['A', 'B'].includes(String(operatorIntelligence?.executionQuality?.grade || ''))
+      ? 88
+      : String(operatorIntelligence?.executionQuality?.grade || '') === 'C'
+        ? 64
+        : 38;
+
+    return {
+      like: managedPositionRows.length
+        ? `Open risk is active, and ${managedPositionRows.filter((row) => Number(row.unrealized || 0) > 0).length} trade${managedPositionRows.filter((row) => Number(row.unrealized || 0) > 0).length === 1 ? ' is' : 's are'} still working in our favor.`
+        : tradeFocus.thesis || `${tradeFocus.symbol} is the strongest current candidate with setup quality ${tradeFocus.qualityScore || readinessScore}/100.`,
+      blocks: managedPositionRows.length
+        ? `${managedPositionRows.filter((row) => row.protectionState === 'Initial Risk' || row.protectionState === 'No Stop').length}/${managedPositionRows.length} positions still need stronger protection before new aggression makes sense.`
+        : whyNotTrading.blockers[0]?.detail || deepseekBriefing.riskTone,
+      changesMind: deepseekBriefing.next,
+      managingNow: managedPositionRows.length
+        ? `First job: protect open positions, then let the cleanest runner continue instead of capping it too early.`
+        : `No open trades right now. Scanner remains focused on ${tradeFocus.symbol} while the worker keeps checking the rest of the watchlist.`,
+      path: [
+        { label: 'Regime', value: Number(market.regimeConfidence || 0) },
+        { label: 'Structure', value: structureScore || Math.max(35, tradeFocus.qualityScore - 8) },
+        { label: 'Liquidity', value: liquidityScore || (String(market.liquidityState || '').toLowerCase() === 'good' ? 92 : 62) },
+        { label: 'R:R', value: rrScore || (Number(tradeFocus.expectedR || 0) >= 2 ? 84 : 58) },
+        { label: 'Execution', value: executionScore },
+      ],
+    };
+  }, [tradeFocus, readinessScore, whyNotTrading.blockers, deepseekBriefing, managedPositionRows, market.regimeConfidence, market.liquidityState, operatorIntelligence?.executionQuality?.grade]);
+
   const deepseekOperatorFeed = useMemo(() => {
     const rows = aiConversationRows.slice(0, 6).map((r: any) => ({
       ts: r.ts,
@@ -2051,7 +2548,11 @@ export default function Home() {
         <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
       </Head>
 
-      <div className="helix-shell min-h-screen text-slate-100" style={{ fontFamily: 'IBM Plex Sans, Space Grotesk, sans-serif' }}>
+      <div
+        className={`helix-shell helix-mode-${dashboardViewMode} min-h-screen text-slate-100`}
+        data-view-mode={dashboardViewMode}
+        style={{ fontFamily: 'IBM Plex Sans, Space Grotesk, sans-serif' }}
+      >
         <div className="mx-auto w-full max-w-[1420px] px-2 sm:px-3 md:px-5 lg:px-6 py-3 sm:py-4 md:py-5">
           <header className="helix-command-bar rounded-2xl border border-cyan-300/15 bg-slate-950/70 backdrop-blur-md p-3 sm:p-4 md:p-5 shadow-2xl shadow-cyan-950/30">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -2065,7 +2566,31 @@ export default function Home() {
                 <div className="text-slate-400 text-sm">Last update: {lastUpdated || '—'}</div>
               </div>
               <div className="flex items-center gap-3">
-                <a href="/settings" className="rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 px-4 py-2 text-sm font-medium">Settings</a>
+                <a href="/settings" className="helix-header-action rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 px-4 py-2 text-sm font-medium">Settings</a>
+              </div>
+            </div>
+            <div className="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-[1.3fr_1fr]">
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <MetricTag label="Account Mode" value={accountMode.label} tone={accountMode.tone} />
+                  <MetricTag label="Equity Source" value={String(portfolio?.equitySource || 'allocation').toUpperCase()} tone={portfolio?.equitySource === 'exchange' ? 'green' : portfolio?.equitySource === 'journal' ? 'amber' : 'slate'} />
+                  <MetricTag label="Ops" value={String(journalMeta?.executionMode || (paperTradingEnabled ? 'paper' : 'live')).toUpperCase()} tone="slate" />
+                  <MetricTag label="Policy" value={`${Number(journalMeta?.policy?.minLeverage ?? (riskSettings as any).minLeverage ?? 10)}x-${Number(journalMeta?.policy?.maxLeverage ?? riskSettings.maxLeverage ?? 20)}x`} tone="slate" />
+                </div>
+                <div className="mt-3 text-xs text-slate-400">{accountMode.detail}</div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {syncStatus.map((item) => (
+                    <FreshnessBadge key={item.label} label={item.label} state={item.state} detail={item.detail} />
+                  ))}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+                <div className="text-[10px] uppercase tracking-[0.26em] text-cyan-200/70">System Health</div>
+                <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {systemHealth.map((item) => (
+                    <HealthChip key={item.label} label={item.label} value={item.value} tone={item.tone} />
+                  ))}
+                </div>
               </div>
             </div>
           </header>
@@ -2077,20 +2602,57 @@ export default function Home() {
                 Paper Trading Mode is enabled. Orders are being simulated and are not sent to the exchange.
               </div>
             )}
+            {!isPresentationView && (
             <div className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-xs text-slate-300">
               Ops Mode: <span className="font-semibold text-slate-100 uppercase">{journalMeta?.executionMode || (paperTradingEnabled ? 'paper' : 'live')}</span>
               <span className="mx-2 text-slate-500">•</span>
               Policy: {Number(journalMeta?.policy?.minLeverage ?? (riskSettings as any).minLeverage ?? 10)}x–{Number(journalMeta?.policy?.maxLeverage ?? riskSettings.maxLeverage ?? 20)}x, max {Number(journalMeta?.policy?.maxOpenPositions ?? (riskSettings as any).maxOpenPositions ?? 4)} open, {Number(journalMeta?.policy?.maxTradesPerDay ?? riskSettings.maxTradesPerDay ?? 8)} trades/day
             </div>
+            )}
 
-            <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-1.5 sm:gap-2">
-              <TopMetric label="Binance Wallet Balance" value={walletBalance > 0 ? money(walletBalance) : '—'} />
-              <TopMetric label="Available Margin" value={availableMargin > 0 ? money(availableMargin) : '—'} tone="green" />
-              <TopMetric label="Daily P&L" value={typeof account.previousDayPnl === 'number' ? signedMoney(account.previousDayPnl) : '—'} tone={Number(account.previousDayPnl || 0) >= 0 ? 'green' : 'red'} />
-              <TopMetric label="Open Positions" value={String(openPositions)} />
+            {!showDisconnectedShell && (
+              <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <div className="text-[10px] uppercase tracking-[0.24em] text-cyan-200/75">View Mode</div>
+                    <div className="mt-1 text-sm text-slate-400">
+                      {dashboardViewMode === 'operator'
+                        ? 'Balanced tactical view for live monitoring and action.'
+                        : dashboardViewMode === 'quant'
+                          ? 'Higher-density diagnostics for deeper review.'
+                          : 'Cleaner polished view for presentation and rapid readout.'}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {([
+                      { key: 'operator', label: 'Operator', detail: 'Live tactical' },
+                      { key: 'quant', label: 'Quant', detail: 'Deeper diagnostics' },
+                      { key: 'presentation', label: 'Presentation', detail: 'Clean polished' },
+                    ] as const).map((mode) => (
+                      <button
+                        key={mode.key}
+                        onClick={() => persistDashboardViewMode(mode.key)}
+                        className={`rounded-xl border px-3 py-2 text-left transition ${dashboardViewMode === mode.key ? 'border-cyan-300/50 bg-cyan-400/10 text-cyan-100' : 'border-white/10 bg-black/20 text-slate-300 hover:bg-white/[0.05]'}`}
+                      >
+                        <div className="text-xs font-semibold uppercase tracking-wide">{mode.label}</div>
+                        <div className="mt-1 text-[11px] text-slate-400">{mode.detail}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </section>
+            )}
+
+            <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-1.5 sm:gap-2">
+              <TopMetric label="Binance Wallet Balance" value={walletBalance > 0 ? money(walletBalance) : '—'} meta="exchange" />
+              <TopMetric label="Available Margin" value={availableMargin > 0 ? money(availableMargin) : '—'} tone="green" meta="exchange" />
+              <TopMetric label="Bot Equity" value={botEquity > 0 ? money(botEquity) : '—'} meta={portfolio?.equitySource || 'allocation'} />
+              <TopMetric label="Bot Session P&L" value={Number.isFinite(botDailyPnl) ? signedMoney(botDailyPnl) : '—'} tone={Number(botDailyPnl || 0) >= 0 ? 'green' : 'red'} meta="derived" />
+              <TopMetric label="Open Positions" value={String(openPositions)} meta="worker" />
               <div className={`rounded-xl border px-4 py-3 ${riskPosture.tone}`}>
                 <div className="text-xs uppercase tracking-wider text-slate-300/80">Risk Posture</div>
                 <div className="text-2xl font-semibold mt-1">{riskPosture.label}</div>
+                <div className="mt-2"><MetricTag label="Source" value="derived" tone="slate" /></div>
               </div>
             </section>
 
@@ -2146,6 +2708,66 @@ export default function Home() {
               </div>
             </section>
 
+            {!showDisconnectedShell && isPresentationView && (
+              <section className="helix-presentation-hero rounded-[28px] border border-cyan-300/20 p-5 sm:p-6">
+                <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+                  <div className="max-w-4xl">
+                    <div className="text-[10px] uppercase tracking-[0.34em] text-cyan-200/75">{presentationSummary.eyebrow}</div>
+                    <h1 className="mt-3 max-w-4xl text-3xl font-black tracking-tight text-slate-50 sm:text-4xl xl:text-[2.8rem] xl:leading-[1.02]" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
+                      {presentationSummary.headline}
+                    </h1>
+                    <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-300 sm:text-[15px]">
+                      {presentationSummary.subhead}
+                    </p>
+                  </div>
+                  <div className="helix-presentation-focus rounded-2xl border border-white/10 px-4 py-4 xl:max-w-[340px]">
+                    <div className="text-[10px] uppercase tracking-[0.24em] text-cyan-200/75">{presentationSummary.focusTone}</div>
+                    <div className="mt-2 text-xl font-black text-slate-50">{tradeFocus.symbol}</div>
+                    <div className="mt-1 text-sm font-semibold text-cyan-100">{tradeFocus.side} • {tradeFocus.setupState}</div>
+                    <div className="mt-3 text-sm leading-6 text-slate-300">{presentationSummary.focusDetail}</div>
+                  </div>
+                </div>
+                <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-3">
+                  {presentationSummary.cards.map((card) => (
+                    <div key={card.label} className="helix-presentation-card rounded-2xl border border-white/10 px-4 py-4">
+                      <div className="text-[10px] uppercase tracking-[0.26em] text-slate-400">{card.label}</div>
+                      <div className="mt-2 text-2xl font-black text-slate-50" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{card.value}</div>
+                      <div className="mt-2 text-sm leading-6 text-slate-300">{card.detail}</div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {!showDisconnectedShell && !isPresentationView && (
+              <section className="grid grid-cols-1 gap-3 xl:grid-cols-[1.4fr_1fr]">
+                <div className="rounded-2xl border border-amber-300/20 bg-amber-400/[0.045] p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-[0.24em] text-amber-200/75">Why Not Trading?</div>
+                      <div className="mt-1 text-lg font-semibold text-slate-100">{whyNotTrading.headline}</div>
+                      <div className="mt-2 max-w-3xl text-sm leading-relaxed text-slate-300">{whyNotTrading.summary}</div>
+                    </div>
+                    <MetricTag label="Now" value={decision.label === 'TRADE' ? 'trade allowed' : 'gated'} tone={decision.label === 'TRADE' ? 'green' : 'amber'} />
+                  </div>
+                  <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-2">
+                    {whyNotTrading.blockers.map((item) => (
+                      <BlockerCard key={item.key} title={item.title} detail={item.detail} severity={item.severity} source={item.source} />
+                    ))}
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-cyan-300/15 bg-slate-950/55 p-4">
+                  <div className="text-[10px] uppercase tracking-[0.24em] text-cyan-200/75">Risk Capacity</div>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <TopMetric label="Trades Left" value={String(riskCapacity.tradeSlotsLeft)} meta={`${riskCapacity.tradesToday}/${riskCapacity.maxTrades} used`} />
+                    <TopMetric label="Loss Buffer" value={`${riskCapacity.lossCapacityLeftPct.toFixed(2)}%`} tone={riskCapacity.lossCapacityLeftPct > 1 ? 'green' : 'red'} meta={`limit ${riskCapacity.dailyLossLimitPct.toFixed(1)}%`} />
+                    <TopMetric label="Open Slots" value={`${Math.max(0, riskCapacity.maxOpenPositions - riskCapacity.openPositions)}`} meta={`${riskCapacity.openPositions}/${riskCapacity.maxOpenPositions} used`} />
+                    <TopMetric label="Cooldown" value={riskCapacity.cooldownMinutes > 0 ? `${riskCapacity.cooldownMinutes}m` : 'clear'} tone={riskCapacity.cooldownMinutes > 0 ? 'amber' : 'green'} meta="risk engine" />
+                  </div>
+                </div>
+              </section>
+            )}
+
             {showDisconnectedShell && (
               <section className="grid grid-cols-1 lg:grid-cols-3 gap-3 items-start">
                 <Panel className="lg:col-span-2" title="System Status">
@@ -2187,10 +2809,12 @@ export default function Home() {
 
             {!showDisconnectedShell && (
               <div className="space-y-3">
+                {!isPresentationView && (
                 <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-4 py-3 text-xs text-slate-300">
                   <div className="font-semibold text-slate-100">Dashboard layout builder active</div>
                   <div className="mt-1 text-slate-400">Drag from widget headers. Resize from any edge or corner. Layout snaps to grid and reflows neighboring widgets without overlap.</div>
                 </div>
+                )}
 
                 <ResponsiveGridLayout
                   className={`helix-widget-grid ${layoutInteraction !== 'idle' ? `is-${layoutInteraction}` : ''}`}
@@ -2217,7 +2841,7 @@ export default function Home() {
                   onLayoutChange={(_currentLayout, allLayouts) => persistWidgetLayouts(allLayouts)}
                 >
                   <div key="market-overview" data-grid={(widgetLayouts.lg || DEFAULT_WIDGET_LAYOUTS.lg).find((item) => item.i === "market-overview")}>
-                    <Panel title="Market Overview" className="helix-market-panel relative h-full overflow-hidden">
+                    <Panel title="Market Intel" subtitle="Live regime, watchlist pricing, and setup grades across the tape." className="helix-market-panel relative h-full overflow-hidden">
                       <div className="widget-drag-handle mb-3 flex cursor-move items-center justify-between gap-2 rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-2 pr-10 text-[11px] uppercase tracking-wide text-slate-400">
                         <span>Drag to move</span><span>Resize edges or corners</span>
                       </div>
@@ -2267,7 +2891,7 @@ export default function Home() {
                                     <span className="rounded-full border border-emerald-300/30 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-bold text-emerald-200">Q{row.qualityScore}</span>
                                   )}
                                 </div>
-                                <div className="mt-1 text-[11px] text-slate-400">{row.decisionText} • live market snapshot</div>
+                                <div className="mt-1 text-[11px] text-slate-400">{row.decisionText} • {row.priceSource}</div>
                               </div>
                               <div className="text-right">
                                 <div className="font-black text-slate-50">${row.price.toFixed(row.price < 1 ? 4 : 2)}</div>
@@ -2284,12 +2908,12 @@ export default function Home() {
                   </div>
 
                   <div key="decision-summary" data-grid={(widgetLayouts.lg || DEFAULT_WIDGET_LAYOUTS.lg).find((item) => item.i === "decision-summary")}>
-                    <Panel title="Trade Targeting HUD" className="helix-hud-panel">
+                    <Panel title="Execution Radar" subtitle="Best setup, execution trigger, and immediate guardrails." className="helix-hud-panel">
                       <div className="widget-drag-handle mb-3 flex cursor-move items-center justify-between gap-2 rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
                         <span>Drag to move</span><span>Resize edges or corners</span>
                       </div>
                     <div className={`helix-targeting-hud rounded-2xl border px-4 py-4 ${decision.label === 'TRADE' ? 'border-emerald-400/60 bg-emerald-500/10' : 'border-cyan-400/30 bg-cyan-500/[0.06]'}`}>
-                      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_auto] lg:items-center">
+                      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.1fr_0.9fr]">
                         <div>
                           <div className="text-[10px] uppercase tracking-[0.28em] text-cyan-200/80">Current Target</div>
                           <div className="mt-1 flex flex-wrap items-center gap-3">
@@ -2297,15 +2921,45 @@ export default function Home() {
                             <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${tradeFocus.side === 'LONG' ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200' : tradeFocus.side === 'SHORT' ? 'border-red-400/40 bg-red-500/10 text-red-200' : 'border-slate-400/30 bg-slate-500/10 text-slate-200'}`}>{tradeFocus.side}</span>
                             <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${decision.label === 'TRADE' ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-400/40 bg-amber-500/10 text-amber-200'}`}>{decision.label}</span>
                             <span className="rounded-full border border-cyan-300/30 bg-cyan-400/10 px-3 py-1 text-xs font-semibold capitalize text-cyan-100">{tradeFocus.setupType}</span>
+                            <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-semibold text-slate-200">{executionRadar.regimeBadge}</span>
                           </div>
-                          {tradeFocus.thesis && <div className="mt-3 max-w-2xl text-sm font-semibold leading-relaxed text-cyan-100">{tradeFocus.thesis}</div>}
-                          <div className="mt-3 max-w-2xl text-sm leading-relaxed text-slate-300">{tradeFocus.waitFor}</div>
+                          <div className="mt-3 max-w-3xl text-sm font-semibold leading-relaxed text-cyan-100">
+                            {tradeFocus.thesis || executionRadar.setupStatus}
+                          </div>
+                          <div className="mt-2 max-w-3xl text-sm leading-relaxed text-slate-300">
+                            {executionRadar.readinessText}
+                          </div>
+                          <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                            <div className="rounded-xl border border-white/10 bg-black/25 p-3 text-xs">
+                              <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Trigger Stack</div>
+                              <div className="mt-2 text-sm font-medium leading-relaxed text-slate-100">{executionRadar.triggerLine}</div>
+                              <div className="mt-2 text-slate-400">Action: <span className="text-cyan-100">{executionRadar.actionLine}</span></div>
+                            </div>
+                            <div className="rounded-xl border border-white/10 bg-black/25 p-3 text-xs">
+                              <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Invalidation</div>
+                              <div className="mt-2 text-sm font-medium leading-relaxed text-red-200">{executionRadar.invalidationLine}</div>
+                              <div className="mt-2 text-slate-400">Status: <span className="text-amber-100">{executionRadar.setupStatus}</span></div>
+                            </div>
+                          </div>
                         </div>
-                        <div className="mx-auto flex h-32 w-32 shrink-0 items-center justify-center rounded-full border border-cyan-300/25 bg-black/30 helix-orb">
-                          <div className="text-center">
-                            <div className="text-3xl font-bold text-cyan-100">{tradeFocus.qualityScore || readinessScore}</div>
-                            <div className="text-[10px] uppercase tracking-wide text-slate-400">{tradeFocus.qualityScore ? 'quality' : 'readiness'}</div>
-                            <div className="mt-1 text-xs text-slate-300">{tradeFocus.confidence}% conf</div>
+                        <div className="grid grid-cols-1 gap-3">
+                          <div className="mx-auto flex h-32 w-32 shrink-0 items-center justify-center rounded-full border border-cyan-300/25 bg-black/30 helix-orb">
+                            <div className="text-center">
+                              <div className="text-3xl font-bold text-cyan-100">{tradeFocus.qualityScore || readinessScore}</div>
+                              <div className="text-[10px] uppercase tracking-wide text-slate-400">{tradeFocus.qualityScore ? 'setup grade' : 'readiness'}</div>
+                              <div className="mt-1 text-xs text-slate-300">{tradeFocus.confidence}% conf</div>
+                            </div>
+                          </div>
+                          <div className="rounded-xl border border-white/10 bg-black/25 p-3 text-xs">
+                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Setup Card</div>
+                            <div className="mt-2 grid grid-cols-2 gap-2 text-slate-300">
+                              <div>Entry <span className="font-semibold text-slate-100">{tradeFocus.entryZone}</span></div>
+                              <div>R:R <span className="font-semibold text-slate-100">{tradeFocus.expectedR}</span></div>
+                              <div>Stop <span className="font-semibold text-red-200">{tradeFocus.stop}</span></div>
+                              <div>Targets <span className="font-semibold text-emerald-200">{tradeFocus.targets}</span></div>
+                              <div>Edge <span className="font-semibold text-cyan-100">{tradeFocus.edge}</span></div>
+                              <div>AI <span className="font-semibold text-slate-100">{tradeFocus.journalDecision}</span></div>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -2316,10 +2970,10 @@ export default function Home() {
                       <HudMetric label="Targets" value={tradeFocus.targets} tone="green" />
                       <HudMetric label="Expected R:R" value={tradeFocus.expectedR} tone="amber" />
                     </div>
-                    <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-                      <div className="rounded-xl border border-cyan-300/15 bg-black/25 p-3">
-                        <div className="text-[10px] uppercase tracking-[0.22em] text-cyan-200/70 mb-2">Awaiting Confirmation</div>
-                        <div className="space-y-2 text-slate-200">
+                      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                        <div className="rounded-xl border border-cyan-300/15 bg-black/25 p-3">
+                          <div className="text-[10px] uppercase tracking-[0.22em] text-cyan-200/70 mb-2">Awaiting Confirmation</div>
+                          <div className="space-y-2 text-slate-200">
                           <div><span className="text-slate-400">Primary trigger:</span> {tradeFocus.waitFor}</div>
                           <div><span className="text-slate-400">Market:</span> {String(market.regime || 'unclear').toUpperCase()} • {String(market.liquidityState || 'unknown').toUpperCase()} liquidity • {String(market.volatilityState || 'unknown').toUpperCase()} volatility</div>
                           <div><span className="text-slate-400">Watched:</span> {tradeFocus.watched || 'Waiting for scanner'}</div>
@@ -2380,7 +3034,7 @@ export default function Home() {
                   </div>
 
                   <div key="ops-snapshot" data-grid={(widgetLayouts.lg || DEFAULT_WIDGET_LAYOUTS.lg).find((item) => item.i === "ops-snapshot")}>
-                    <Panel title="Worker Runtime + Risk Shield" className="helix-worker-panel">
+                    <Panel title="Runtime Shield" subtitle="Worker heartbeat, execution state, and hard risk capacity." className="helix-worker-panel">
                       <div className="widget-drag-handle mb-3 flex cursor-move items-center justify-between gap-2 rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
                         <span>Drag to move</span><span>Resize edges or corners</span>
                       </div>
@@ -2484,8 +3138,60 @@ export default function Home() {
                     </Panel>
                   </div>
 
+                  <div key="risk-console" data-grid={(widgetLayouts.lg || DEFAULT_WIDGET_LAYOUTS.lg).find((item) => item.i === "risk-console")}>
+                    <Panel title="Risk Console" subtitle="Open-risk instrumentation, kill-switch proximity, and live capacity usage." className="helix-risk-panel">
+                      <div className="widget-drag-handle mb-3 flex cursor-move items-center justify-between gap-2 rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
+                        <span>Drag to move</span><span>Resize edges or corners</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <HudMetric label="Posture" value={riskConsole.posture} tone={riskConsole.posture === 'CLEAR' ? 'green' : riskConsole.posture === 'COOLDOWN' || riskConsole.posture === 'CAPACITY BLOCKED' ? 'amber' : 'red'} />
+                        <HudMetric label="Daily Loss Used" value={`${riskConsole.dailyLossUsedPct.toFixed(2)}%`} tone={riskConsole.dailyLossUsedPct < 33 ? 'green' : riskConsole.dailyLossUsedPct < 70 ? 'amber' : 'red'} />
+                        <HudMetric label="Open Risk" value={openRiskUsd > 0 ? signedMoney(-openRiskUsd) : '$0.00'} tone={openRiskUsd > 0 ? 'amber' : 'green'} />
+                        <HudMetric label="Slots Left" value={String(riskConsole.slotsLeft)} tone={riskConsole.slotsLeft > 0 ? 'green' : 'red'} />
+                      </div>
+                      <div className="mt-3 grid grid-cols-1 gap-2">
+                        <ProgressRail label="Kill-switch proximity" value={riskConsole.killSwitchProximityPct} valueText={`${riskConsole.drawdownFromAllocationPct.toFixed(2)}% / ${riskConsole.killSwitchLimitPct.toFixed(1)}%`} tone={riskConsole.killSwitchProximityPct >= 75 ? 'red' : riskConsole.killSwitchProximityPct >= 45 ? 'amber' : 'green'} />
+                        <ProgressRail label="Open-risk load" value={Math.min(100, openRiskPctOfWallet * 10)} valueText={`${openRiskPctOfWallet.toFixed(2)}% of wallet`} tone={openRiskPctOfWallet >= 3 ? 'red' : openRiskPctOfWallet >= 1.5 ? 'amber' : 'cyan'} />
+                        <ProgressRail label="Trade-capacity use" value={riskCapacity.maxTrades > 0 ? (riskCapacity.tradesToday / riskCapacity.maxTrades) * 100 : 0} valueText={`${riskCapacity.tradesToday}/${riskCapacity.maxTrades} used`} tone={riskCapacity.tradeSlotsLeft <= 0 ? 'red' : riskCapacity.tradeSlotsLeft <= 2 ? 'amber' : 'green'} />
+                      </div>
+                      <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs">
+                        <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Exposure Ladder</div>
+                        <div className="mt-3 space-y-2">
+                          {riskConsole.exposures.length ? riskConsole.exposures.map((row) => (
+                            <div key={`${row.symbol}-${row.side}`} className="rounded-lg border border-white/10 bg-black/20 p-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="font-semibold text-slate-100">{row.symbol} <span className={row.side === 'LONG' ? 'text-emerald-300' : 'text-red-300'}>{row.side}</span></div>
+                                <div className="text-slate-300">{signedMoney(-row.riskUsd)}</div>
+                              </div>
+                              <div className="mt-1 text-[11px] text-slate-400">Current R: <span className="font-semibold text-slate-200">{row.currentR.toFixed(2)}R</span></div>
+                            </div>
+                          )) : (
+                            <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-slate-400">No open-risk ladder right now. The portfolio is flat.</div>
+                          )}
+                        </div>
+                      </div>
+                      {isQuantView && (
+                        <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs">
+                          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Heat Matrix</div>
+                          <div className="mt-3 space-y-2">
+                            {heatMatrixRows.slice(0, 5).map((row) => (
+                              <div key={row.symbol} className="grid grid-cols-[72px_repeat(5,1fr)] items-center gap-2">
+                                <div className="font-semibold text-slate-100">{row.symbol.replace('USDT', '')}</div>
+                                <HeatCell value={row.structure} blocked={row.blocked} />
+                                <HeatCell value={row.momentum} blocked={row.blocked} />
+                                <HeatCell value={row.volume} blocked={row.blocked} />
+                                <HeatCell value={row.risk} blocked={row.blocked} />
+                                <HeatCell value={row.gate} blocked={row.blocked} />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </Panel>
+                  </div>
+
                   <div key="manual-trade" data-grid={(widgetLayouts.lg || DEFAULT_WIDGET_LAYOUTS.lg).find((item) => item.i === "manual-trade")}>
-                    <Panel title="Manual Trade" className="helix-ticket-panel">
+                    <Panel title="Manual Trade" subtitle="Hand-entered execution ticket with live mark and risk preview." className="helix-ticket-panel">
                       <div className="widget-drag-handle mb-3 flex cursor-move items-center justify-between gap-2 rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
                         <span>Drag to move</span><span>Resize edges or corners</span>
                       </div>
@@ -2520,7 +3226,13 @@ export default function Home() {
                         <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
                           <span className={`rounded-full border px-2 py-1 ${manualTradePreview.stopAligned ? 'border-emerald-300/30 bg-emerald-400/10 text-emerald-200' : 'border-red-300/30 bg-red-400/10 text-red-200'}`}>Stop {manualTradePreview.stopAligned ? 'aligned' : 'needs check'}</span>
                           <span className={`rounded-full border px-2 py-1 ${manualTradePreview.targetAligned ? 'border-emerald-300/30 bg-emerald-400/10 text-emerald-200' : 'border-red-300/30 bg-red-400/10 text-red-200'}`}>Target {manualTradePreview.targetAligned ? 'aligned' : 'needs check'}</span>
-                          <span className="rounded-full border border-cyan-300/25 bg-cyan-400/10 px-2 py-1 text-cyan-100">Live mark ${manualTradePreview.marketPrice > 0 ? manualTradePreview.marketPrice.toFixed(manualTradePreview.marketPrice < 1 ? 5 : 2) : '—'}</span>
+                          <span className="rounded-full border border-cyan-300/25 bg-cyan-400/10 px-2 py-1 text-cyan-100">Display mark ${manualTradePreview.marketPrice > 0 ? manualTradePreview.marketPrice.toFixed(manualTradePreview.marketPrice < 1 ? 5 : 2) : '—'} • {manualTradePreview.priceSource}</span>
+                          {manualTradePreview.positionMark > 0 && manualTradePreview.priceSource !== 'position' && (
+                            <span className="rounded-full border border-white/15 bg-white/[0.035] px-2 py-1 text-slate-300">
+                              Position mark ${manualTradePreview.positionMark.toFixed(manualTradePreview.positionMark < 1 ? 5 : 2)}
+                              {Math.abs(manualTradePreview.markDelta) > 0 && <span className="text-slate-500"> • Δ {manualTradePreview.markDelta >= 0 ? '+' : ''}{manualTradePreview.markDelta.toFixed(manualTradePreview.marketPrice < 1 ? 5 : 2)}</span>}
+                            </span>
+                          )}
                         </div>
                       </div>
 
@@ -2589,18 +3301,18 @@ export default function Home() {
                   </div>
 
                   <div key="open-positions" data-grid={(widgetLayouts.lg || DEFAULT_WIDGET_LAYOUTS.lg).find((item) => item.i === "open-positions")}>
-                    <Panel title="Position Command Deck" className="helix-position-panel">
+                    <Panel title="Position Command Deck" subtitle="Open-trade protection, partials, runner mode, and stop control." className="helix-position-panel">
                       <div className="widget-drag-handle mb-3 flex cursor-move items-center justify-between gap-2 rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
                         <span>Drag to move</span><span>Resize edges or corners</span>
                       </div>
                       <div className="mb-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
                         <HudMetric label="Active" value={String(activeTradeRows.length)} tone={activeTradeRows.length ? 'green' : 'cyan'} />
                         <HudMetric label="Unrealized" value={signedMoney(activeTradeRows.reduce((sum, t) => sum + Number(t.unrealized || 0), 0))} tone={activeTradeRows.reduce((sum, t) => sum + Number(t.unrealized || 0), 0) >= 0 ? 'green' : 'red'} />
-                        <HudMetric label="Secured" value={signedMoney(activeTradeRows.reduce((sum, t) => sum + Number(t.secured || 0), 0))} tone="cyan" />
+                        <HudMetric label="If Stopped" value={signedMoney(activeTradeRows.reduce((sum, t) => sum + Number(t.secured || 0), 0))} tone={activeTradeRows.reduce((sum, t) => sum + Number(t.secured || 0), 0) >= 0 ? 'green' : 'red'} />
                         <HudMetric label="Risk Tools" value="BE+ / Runner / SL" tone="amber" />
                       </div>
                       <div className="mb-3 rounded-xl border border-cyan-300/15 bg-cyan-400/[0.05] px-3 py-2 text-xs leading-relaxed text-cyan-100">
-                        BE+ protects past raw entry by estimating exchange fees, slippage, and your safety buffer. Winner mode takes a partial, moves risk to BE+, then trails the remaining runner instead of killing the whole trade at the first target.
+                        “If stopped” is not current P&L. It estimates what the position would realize if the current stop-loss were hit right now. BE+ protects past raw entry by estimating exchange fees, slippage, and your safety buffer.
                       </div>
 
                       {activeTradeRows.length === 0 ? (
@@ -2630,11 +3342,22 @@ export default function Home() {
                                   </div>
                                   <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-300 md:grid-cols-4">
                                     <div>Entry <span className="font-semibold text-slate-100">{typeof t.entry === 'number' ? t.entry.toFixed(2) : '—'}</span></div>
-                                    <div>Mark <span className="font-semibold text-slate-100">{typeof t.mark === 'number' && t.mark > 0 ? t.mark.toFixed(2) : '—'}</span></div>
+                                    <div>Mark <span className="font-semibold text-slate-100">{typeof t.mark === 'number' && t.mark > 0 ? t.mark.toFixed(2) : '—'}</span> <span className="text-slate-500">({t.markSource})</span></div>
                                     <div>PnL <span className={`font-semibold ${t.pnlState === 'profit' ? 'text-emerald-300' : t.pnlState === 'loss' ? 'text-red-300' : 'text-slate-300'}`}>{signedMoney(Number(t.unrealized || 0))}</span></div>
-                                    <div>Secured <span className={`font-semibold ${Number(t.secured || 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>{signedMoney(Number(t.secured || 0))}</span></div>
+                                    <div>If stopped <span className={`font-semibold ${Number(t.secured || 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>{signedMoney(Number(t.secured || 0))}</span></div>
                                   </div>
-                                  <div className="mt-2 grid grid-cols-1 gap-2 text-[11px] text-slate-300 sm:grid-cols-3">
+                                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                                    <StateBadge label="Risk State" value={t.riskState} tone={t.riskState === 'Protected' || t.riskState === 'Working' ? 'green' : t.riskState === 'Under Pressure' || t.riskState === 'Neutral' ? 'amber' : 'red'} />
+                                    <StateBadge label="Protection" value={t.protectionState} tone={t.protectionState === 'Locked Profit' || t.protectionState === 'BE Active' ? 'green' : t.protectionState === 'BE Ready' || t.protectionState === 'Initial Risk' ? 'amber' : 'red'} />
+                                    <StateBadge label="Runner" value={t.runnerState} tone={t.runnerState === 'Runner Live' || t.runnerState === 'Runner Armed' ? 'green' : t.runnerState === 'Partial Ready' ? 'amber' : 'slate'} />
+                                  </div>
+                                  <div className="mt-3 grid grid-cols-1 gap-2">
+                                    <ProgressRail label="Stop Pressure" value={t.stopPressurePct} valueText={t.stop > 0 ? `${t.distanceToStopPct?.toFixed?.(2) ?? '—'}% to stop` : 'No stop'} tone={t.stopPressurePct >= 70 ? 'red' : t.stopPressurePct >= 45 ? 'amber' : 'green'} />
+                                    <ProgressRail label="BE+ Readiness" value={t.beProgressPct} valueText={`${t.currentR.toFixed(2)}R earned`} tone={t.beProgressPct >= 100 ? 'green' : 'cyan'} />
+                                    <ProgressRail label="Runner / Partial Trigger" value={t.partialProgressPct} valueText={t.partialTargetPrice > 0 ? `${formatPrice(t.partialTargetPrice)} trigger` : 'Waiting for stop'} tone={t.partialProgressPct >= 100 ? 'green' : 'amber'} />
+                                  </div>
+                                  <div className="mt-2 grid grid-cols-1 gap-2 text-[11px] text-slate-300 sm:grid-cols-4">
+                                    <div className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1">Current stop <span className={`font-semibold ${Number(t.secured || 0) >= 0 ? 'text-emerald-200' : 'text-red-200'}`}>{Number(t.stop || 0) > 0 ? formatPrice(Number(t.stop)) : 'missing'}</span></div>
                                     <div className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1">BE+ stop <span className="font-semibold text-cyan-200">{Number(t.bePlusStop || 0) > 0 ? formatPrice(Number(t.bePlusStop)) : '—'}</span></div>
                                     <div className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1">Runner <span className="font-semibold text-emerald-200">{winnersRunEnabled ? `${runnerPartialPct}% off @ ${runnerActivationR.toFixed(1)}R, trail ${runnerTrailPct.toFixed(2)}%` : 'Off'}</span></div>
                                     <div className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1">Partial taken <span className="font-semibold text-slate-100">{Number(t.partialTakenPct || 0) > 0 ? `${Number(t.partialTakenPct).toFixed(0)}%` : 'None yet'}</span></div>
@@ -2662,7 +3385,7 @@ export default function Home() {
                   </div>
 
                   <div key="deepseek-live" data-grid={(widgetLayouts.lg || DEFAULT_WIDGET_LAYOUTS.lg).find((item) => item.i === "deepseek-live")}>
-                    <Panel title="DeepSeek Live Brain" className="helix-brain-panel">
+                    <Panel title="Portfolio Manager" subtitle="DeepSeek briefing, operator context, and open-trade supervision." className="helix-brain-panel">
                       <div className="widget-drag-handle mb-3 flex cursor-move items-center justify-between gap-2 rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
                         <span>Drag to move</span><span>Resize edges or corners</span>
                       </div>
@@ -2694,14 +3417,18 @@ export default function Home() {
                         <div className="mb-2 text-[10px] uppercase tracking-[0.24em] text-cyan-200/70">Portfolio Manager Briefing</div>
                         <div className="text-lg font-semibold leading-snug text-slate-100">{deepseekBriefing.stance}</div>
                         <div className="mt-2 text-sm leading-relaxed text-slate-300">{deepseekBriefing.plainReason}</div>
-                        <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
-                          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
-                            <div className="text-[10px] uppercase tracking-wide text-slate-400">What would change my mind</div>
-                            <div className="mt-1 text-sm leading-relaxed text-cyan-100">{deepseekBriefing.next}</div>
-                          </div>
-                          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
-                            <div className="text-[10px] uppercase tracking-wide text-slate-400">Risk posture</div>
-                            <div className="mt-1 text-sm leading-relaxed text-amber-100">{deepseekBriefing.riskTone}</div>
+                        <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-2">
+                          <ManagerNoteCard title="What I Like" body={portfolioManagerSections.like} tone="cyan" />
+                          <ManagerNoteCard title="What Blocks Me" body={portfolioManagerSections.blocks} tone="amber" />
+                          <ManagerNoteCard title="What Changes My Mind" body={portfolioManagerSections.changesMind} tone="green" />
+                          <ManagerNoteCard title="What I’m Managing Now" body={portfolioManagerSections.managingNow} tone="slate" />
+                        </div>
+                        <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Confidence Path</div>
+                          <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-5">
+                            {portfolioManagerSections.path.map((step) => (
+                              <PathStep key={step.label} label={step.label} value={step.value} />
+                            ))}
                           </div>
                         </div>
                       </div>
@@ -2872,6 +3599,7 @@ export default function Home() {
                         </div>
                       </div>
 
+                      {!isPresentationView && (
                       <details className="no-drag mt-3 rounded-xl border border-white/10 bg-black/20 p-3 text-xs">
                         <summary className="cursor-pointer text-[10px] uppercase tracking-wide text-slate-400">Raw DeepSeek exchange</summary>
                         <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
@@ -2885,11 +3613,12 @@ export default function Home() {
                           </div>
                         </div>
                       </details>
+                      )}
                     </Panel>
                   </div>
 
                   <div key="live-feed" data-grid={(widgetLayouts.lg || DEFAULT_WIDGET_LAYOUTS.lg).find((item) => item.i === "live-feed")}>
-                    <Panel title="Trade Lifecycle Timeline" className="helix-lifecycle-panel">
+                    <Panel title="Trade Journal" subtitle="Cycle-by-cycle execution readout and recent decision trail." className="helix-lifecycle-panel">
                       <div className="widget-drag-handle mb-3 flex cursor-move items-center justify-between gap-2 rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
                         <span>Drag to move</span><span>Resize edges or corners</span>
                       </div>
@@ -2914,33 +3643,42 @@ export default function Home() {
                         </div>
                       </div>
 
+                      <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.035] p-3">
+                        <div className="text-[10px] uppercase tracking-[0.22em] text-slate-400">Recent execution events</div>
+                        <div className="mt-3 space-y-2">
+                          {groupedJournal.executionRows.length ? groupedJournal.executionRows.map((row) => (
+                            <div key={`${row.ts}-${row.label}`} className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className={`font-semibold ${row.tone === 'green' ? 'text-emerald-200' : 'text-red-200'}`}>{row.label}</span>
+                                <span className="text-slate-500">{row.ts ? new Date(row.ts).toLocaleTimeString() : '—'}</span>
+                              </div>
+                              <div className="mt-1 text-slate-300">{row.detail}</div>
+                            </div>
+                          )) : (
+                            <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-xs text-slate-400">No execution events yet. The journal will populate as trades open and close.</div>
+                          )}
+                        </div>
+                      </div>
+
                       <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
-                        {lifecycleBrief.reviewRows.map((row) => (
-                          <div key={`${row.symbol}-${row.reason}`} className="rounded-2xl border border-white/10 bg-white/[0.035] p-3 text-xs transition hover:border-cyan-300/30 hover:bg-cyan-400/[0.06]">
+                        {groupedJournal.reviewRows.map((row, idx) => (
+                          <div key={`${row.label}-${idx}`} className="rounded-2xl border border-white/10 bg-white/[0.035] p-3 text-xs transition hover:border-cyan-300/30 hover:bg-cyan-400/[0.06]">
                             <div className="flex items-start justify-between gap-3">
                               <div>
-                                <div className="font-black tracking-wide text-slate-50">{row.symbol}</div>
-                                <div className="mt-1 text-slate-400">
-                                  {row.price > 0 ? `$${row.price.toFixed(row.price < 1 ? 5 : 2)}` : 'price n/a'}
-                                  {row.change !== 0 && <span className={row.change >= 0 ? 'text-emerald-300' : 'text-red-300'}> • {row.change >= 0 ? '+' : ''}{row.change.toFixed(2)}%</span>}
-                                </div>
+                                <div className="font-black tracking-wide text-slate-50">{row.label}</div>
+                                <div className="mt-1 text-slate-400">{row.ts ? new Date(row.ts).toLocaleTimeString() : '—'}</div>
                               </div>
-                              <div className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${row.state === 'TRADE' ? 'border-emerald-300/40 text-emerald-200' : 'border-amber-300/30 text-amber-200'}`}>
-                                {row.state}
+                              <div className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${row.tone === 'green' ? 'border-emerald-300/40 text-emerald-200' : row.tone === 'red' ? 'border-red-300/40 text-red-200' : 'border-amber-300/30 text-amber-200'}`}>
+                                {row.tone === 'green' ? 'ACTION' : row.tone === 'red' ? 'RISK' : 'REVIEW'}
                               </div>
                             </div>
-                            <div className="mt-2 line-clamp-2 text-slate-300">{row.reason}</div>
-                            <div className="mt-2 flex items-center gap-2">
-                              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/10">
-                                <div className="h-full rounded-full bg-gradient-to-r from-cyan-300 to-emerald-300" style={{ width: `${Math.max(4, Math.min(100, row.confidence))}%` }} />
-                              </div>
-                              <span className="text-[11px] text-slate-400">{row.confidence}%</span>
-                            </div>
+                            <div className="mt-2 line-clamp-2 text-slate-300">{row.detail}</div>
                           </div>
                         ))}
                       </div>
 
-                      <details className="no-drag mt-3 rounded-2xl border border-white/10 bg-black/20 p-3 text-xs">
+                      {isQuantView && (
+                      <details className="no-drag mt-3 rounded-2xl border border-white/10 bg-black/20 p-3 text-xs" open>
                         <summary className="cursor-pointer list-none font-bold uppercase tracking-[0.18em] text-slate-400">Diagnostics stream</summary>
                         <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
                           {(['ALL', 'DECISIONS', 'RISK', 'EXECUTION'] as const).map((filter) => (
@@ -2967,11 +3705,12 @@ export default function Home() {
                           ))}
                         </div>
                       </details>
+                      )}
                     </Panel>
                   </div>
 
                   <div key="recent-trades" data-grid={(widgetLayouts.lg || DEFAULT_WIDGET_LAYOUTS.lg).find((item) => item.i === "recent-trades")}>
-                    <Panel title="Recent Trades & Performance" className="helix-performance-panel">
+                    <Panel title="Performance Ledger" subtitle="Closed-trade outcomes, open orders, and edge quality." className="helix-performance-panel">
                       <div className="widget-drag-handle mb-3 flex cursor-move items-center justify-between gap-2 rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
                         <span>Drag to move</span><span>Resize edges or corners</span>
                       </div>
@@ -3105,10 +3844,23 @@ function LiveBlock({ title, items, tone }: { title: string; items: string[]; ton
   );
 }
 
-function Panel({ title, className = '', children }: { title: string; className?: string; children: React.ReactNode }) {
+function Panel({
+  title,
+  subtitle,
+  className = '',
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
   return (
-    <section className={`flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900/60 backdrop-blur-md p-3 sm:p-4 shadow-xl shadow-black/30 ${className}`}>
-      <h2 className="shrink-0 text-lg sm:text-xl font-semibold mb-3" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{title}</h2>
+    <section className={`helix-panel-shell flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900/60 backdrop-blur-md p-3 sm:p-4 shadow-xl shadow-black/30 ${className}`}>
+      <div className="mb-3 shrink-0">
+        <h2 className="helix-panel-title text-lg sm:text-xl font-semibold" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{title}</h2>
+        {subtitle && <div className="helix-panel-subtitle mt-1 text-xs leading-relaxed text-slate-400">{subtitle}</div>}
+      </div>
       <div className="min-h-0 flex-1 overflow-auto pr-1">
         {children}
       </div>
@@ -3116,12 +3868,217 @@ function Panel({ title, className = '', children }: { title: string; className?:
   );
 }
 
-function TopMetric({ label, value, tone = 'default' }: { label: string; value: string; tone?: 'default' | 'green' | 'red' }) {
-  const toneClass = tone === 'green' ? 'text-emerald-300' : tone === 'red' ? 'text-red-300' : 'text-slate-100';
+function TopMetric({
+  label,
+  value,
+  tone = 'default',
+  meta,
+}: {
+  label: string;
+  value: string;
+  tone?: 'default' | 'green' | 'red' | 'amber';
+  meta?: string;
+}) {
+  const toneClass = tone === 'green' ? 'text-emerald-300' : tone === 'red' ? 'text-red-300' : tone === 'amber' ? 'text-amber-300' : 'text-slate-100';
   return (
-    <div className="rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-md px-2.5 sm:px-3 py-2">
-      <div className="text-[11px] uppercase tracking-wider text-slate-400">{label}</div>
+    <div className="helix-top-metric rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-md px-2.5 sm:px-3 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[11px] uppercase tracking-wider text-slate-400">{label}</div>
+        {meta ? <MetricTag label="Source" value={meta} tone="slate" compact /> : null}
+      </div>
       <div className={`text-2xl sm:text-3xl font-semibold mt-1 ${toneClass}`} style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{value}</div>
+    </div>
+  );
+}
+
+function MetricTag({
+  label,
+  value,
+  tone = 'slate',
+  compact = false,
+}: {
+  label: string;
+  value: string;
+  tone?: 'green' | 'amber' | 'red' | 'slate';
+  compact?: boolean;
+}) {
+  const toneMap = {
+    green: 'border-emerald-300/30 bg-emerald-400/10 text-emerald-200',
+    amber: 'border-amber-300/30 bg-amber-400/10 text-amber-200',
+    red: 'border-red-300/30 bg-red-400/10 text-red-200',
+    slate: 'border-white/10 bg-white/[0.04] text-slate-200',
+  } as const;
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full border ${compact ? 'px-2' : 'px-3'} py-1 text-[10px] font-semibold uppercase tracking-wide ${toneMap[tone]}`}>
+      {!compact && <span className="text-slate-400">{label}</span>}
+      <span>{value}</span>
+    </span>
+  );
+}
+
+function FreshnessBadge({
+  label,
+  state,
+  detail,
+}: {
+  label: string;
+  state: 'fresh' | 'stale' | 'off';
+  detail: string;
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-black/25 px-3 py-2 text-xs">
+      <span className={`h-2.5 w-2.5 rounded-full ${state === 'fresh' ? 'bg-emerald-300 shadow-[0_0_12px_rgba(110,231,183,0.7)]' : state === 'stale' ? 'bg-amber-300 shadow-[0_0_12px_rgba(252,211,77,0.55)]' : 'bg-red-300 shadow-[0_0_12px_rgba(252,165,165,0.55)]'}`} />
+      <div>
+        <div className="font-semibold text-slate-100">{label}</div>
+        <div className="text-[10px] text-slate-400">{detail}</div>
+      </div>
+    </div>
+  );
+}
+
+function HealthChip({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: 'good' | 'warn' | 'bad';
+}) {
+  const toneMap = {
+    good: 'border-emerald-300/30 bg-emerald-400/10 text-emerald-200',
+    warn: 'border-amber-300/30 bg-amber-400/10 text-amber-200',
+    bad: 'border-red-300/30 bg-red-400/10 text-red-200',
+  } as const;
+  return (
+    <div className={`rounded-xl border px-3 py-2 ${toneMap[tone]}`}>
+      <div className="text-[10px] uppercase tracking-[0.18em] opacity-80">{label}</div>
+      <div className="mt-1 text-sm font-semibold uppercase">{value}</div>
+    </div>
+  );
+}
+
+function StateBadge({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: 'green' | 'amber' | 'red' | 'slate';
+}) {
+  const toneMap = {
+    green: 'border-emerald-300/30 bg-emerald-400/10 text-emerald-200',
+    amber: 'border-amber-300/30 bg-amber-400/10 text-amber-200',
+    red: 'border-red-300/30 bg-red-400/10 text-red-200',
+    slate: 'border-white/10 bg-white/[0.04] text-slate-200',
+  } as const;
+  return (
+    <div className={`rounded-xl border px-3 py-2 text-xs ${toneMap[tone]}`}>
+      <div className="text-[10px] uppercase tracking-[0.18em] opacity-70">{label}</div>
+      <div className="mt-1 font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function ProgressRail({
+  label,
+  value,
+  valueText,
+  tone,
+}: {
+  label: string;
+  value: number;
+  valueText: string;
+  tone: 'green' | 'amber' | 'red' | 'cyan';
+}) {
+  const pct = Math.max(0, Math.min(100, Number(value || 0)));
+  const barTone = {
+    green: 'from-emerald-300 to-lime-200',
+    amber: 'from-amber-300 to-yellow-200',
+    red: 'from-red-300 to-rose-200',
+    cyan: 'from-cyan-300 to-sky-200',
+  } as const;
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-2.5 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-slate-400">{label}</span>
+        <span className="font-semibold text-slate-100">{valueText}</span>
+      </div>
+      <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/10">
+        <div className={`h-full rounded-full bg-gradient-to-r ${barTone[tone]}`} style={{ width: `${Math.max(3, pct)}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function ManagerNoteCard({
+  title,
+  body,
+  tone,
+}: {
+  title: string;
+  body: string;
+  tone: 'cyan' | 'amber' | 'green' | 'slate';
+}) {
+  const toneMap = {
+    cyan: 'border-cyan-300/20 bg-cyan-400/[0.06] text-cyan-100',
+    amber: 'border-amber-300/20 bg-amber-400/[0.06] text-amber-100',
+    green: 'border-emerald-300/20 bg-emerald-400/[0.06] text-emerald-100',
+    slate: 'border-white/10 bg-white/[0.03] text-slate-200',
+  } as const;
+  return (
+    <div className={`rounded-xl border p-3 ${toneMap[tone]}`}>
+      <div className="text-[10px] uppercase tracking-[0.18em] opacity-75">{title}</div>
+      <div className="mt-2 text-sm leading-relaxed">{body}</div>
+    </div>
+  );
+}
+
+function PathStep({ label, value }: { label: string; value: number }) {
+  const pct = Math.max(0, Math.min(100, Number(value || 0)));
+  return (
+    <div className="rounded-xl border border-white/10 bg-black/25 p-2 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-slate-400">{label}</span>
+        <span className="font-semibold text-slate-100">{pct}</span>
+      </div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
+        <div className={`h-full rounded-full bg-gradient-to-r ${pct >= 75 ? 'from-emerald-300 to-lime-200' : pct >= 55 ? 'from-cyan-300 to-sky-200' : 'from-amber-300 to-red-300'}`} style={{ width: `${Math.max(3, pct)}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function BlockerCard({
+  title,
+  detail,
+  severity,
+  source,
+}: {
+  title: string;
+  detail: string;
+  severity: 'critical' | 'warning' | 'info';
+  source: string;
+}) {
+  const toneMap = {
+    critical: 'border-red-300/30 bg-red-400/[0.06]',
+    warning: 'border-amber-300/30 bg-amber-400/[0.06]',
+    info: 'border-cyan-300/25 bg-cyan-400/[0.05]',
+  } as const;
+  const textTone = {
+    critical: 'text-red-200',
+    warning: 'text-amber-200',
+    info: 'text-cyan-100',
+  } as const;
+
+  return (
+    <div className={`rounded-2xl border p-3 ${toneMap[severity]}`}>
+      <div className="flex items-center justify-between gap-2">
+        <div className={`font-semibold ${textTone[severity]}`}>{title}</div>
+        <MetricTag label="Source" value={source} tone={severity === 'critical' ? 'red' : severity === 'warning' ? 'amber' : 'slate'} compact />
+      </div>
+      <div className="mt-2 text-sm leading-relaxed text-slate-300">{detail}</div>
     </div>
   );
 }
@@ -3157,8 +4114,12 @@ function HeatCell({ value, blocked = false }: { value: number; blocked?: boolean
   return <span className={`inline-flex min-w-12 justify-center rounded border px-1.5 py-0.5 ${tone}`}>{v}</span>;
 }
 
-function StatusPill({ children, tone }: { children: React.ReactNode; tone: 'good' | 'bad' }) {
-  const cls = tone === 'good' ? 'border-emerald-500/50 bg-emerald-500/20 text-emerald-200' : 'border-red-500/50 bg-red-500/20 text-red-200';
+function StatusPill({ children, tone }: { children: React.ReactNode; tone: 'good' | 'bad' | 'warn' }) {
+  const cls = tone === 'good'
+    ? 'border-emerald-500/50 bg-emerald-500/20 text-emerald-200'
+    : tone === 'warn'
+      ? 'border-amber-500/50 bg-amber-500/20 text-amber-200'
+      : 'border-red-500/50 bg-red-500/20 text-red-200';
   return <span className={`rounded-full border px-3 py-1 text-xs font-medium uppercase tracking-wider ${cls}`}>{children}</span>;
 }
 

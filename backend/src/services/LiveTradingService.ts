@@ -79,6 +79,7 @@ export interface ModelTradingAccount {
   dailyPnl: number;
   cooldownUntil?: string;
   killSwitchTriggered: boolean;
+  equitySource?: 'exchange' | 'journal' | 'allocation';
 }
 
 export class LiveTradingService extends EventEmitter {
@@ -141,10 +142,61 @@ export class LiveTradingService extends EventEmitter {
       tradesToday: 0,
       dailyPnl: 0,
       killSwitchTriggered: false,
+      equitySource: 'allocation',
     };
 
+    this.hydrateAccountFromJournal(account);
     this.modelAccounts.set(modelId, account);
     return account;
+  }
+
+  private hydrateAccountFromJournal(account: ModelTradingAccount) {
+    try {
+      const entries = this.journal.list(200_000) || [];
+      const closes = entries
+        .filter((entry: any) => entry?.type === 'trade_close' && String(entry?.modelId || '') === String(account.modelId))
+        .sort((a: any, b: any) => new Date(String(a?.ts || 0)).getTime() - new Date(String(b?.ts || 0)).getTime());
+      const opens = entries
+        .filter((entry: any) => entry?.type === 'trade_open' && String(entry?.modelId || '') === String(account.modelId))
+        .sort((a: any, b: any) => new Date(String(a?.ts || 0)).getTime() - new Date(String(b?.ts || 0)).getTime());
+
+      const today = new Date().toISOString().slice(0, 10);
+      let realized = 0;
+      let dailyRealized = 0;
+      let consecutiveLosses = 0;
+      let wins = 0;
+
+      for (const close of closes) {
+        const pnl = Number(close?.pnl || 0);
+        realized += pnl;
+        if (String(close?.ts || '').startsWith(today)) dailyRealized += pnl;
+        if (pnl > 0) {
+          wins += 1;
+          consecutiveLosses = 0;
+        } else if (pnl < 0) {
+          consecutiveLosses += 1;
+        }
+      }
+
+      account.realizedPnL = realized;
+      account.dailyRealizedPnL = dailyRealized;
+      account.totalPnL = realized;
+      account.dailyPnl = dailyRealized;
+      account.currentBalance = account.allocatedBalance + realized;
+      account.equitySource = closes.length ? 'journal' : 'allocation';
+      account.totalTrades = closes.length;
+      account.winRate = closes.length ? wins / closes.length : 0;
+      account.consecutiveLosses = consecutiveLosses;
+      account.tradesToday = opens.filter((entry: any) => String(entry?.ts || '').startsWith(today)).length;
+      const latest = closes[closes.length - 1] || opens[opens.length - 1];
+      if (latest?.cooldownUntil) account.cooldownUntil = latest.cooldownUntil;
+      if (latest?.ts) account.lastTradeDay = String(latest.ts).slice(0, 10);
+    } catch (error: any) {
+      this.logger.warn('account_journal_hydration_failed', {
+        modelId: account.modelId,
+        error: error?.message || 'unknown',
+      });
+    }
   }
 
   async processTradeSignal(signal: TradeSignal): Promise<boolean> {
@@ -852,9 +904,25 @@ export class LiveTradingService extends EventEmitter {
       }
 
       const openPnL = account.positions.reduce((sum, pos) => sum + pos.pnl, 0);
-      account.totalPnL = account.realizedPnL + openPnL;
+      try {
+        const exchangeAccount = await this.binance.getAccountInfo();
+        const exchangeWallet = Number(exchangeAccount.totalWalletBalance || 0);
+        if (Number.isFinite(exchangeWallet) && exchangeWallet > 0) {
+          account.currentBalance = exchangeWallet;
+          account.totalPnL = exchangeWallet - account.allocatedBalance;
+          account.realizedPnL = account.totalPnL - openPnL;
+          account.equitySource = 'exchange';
+        } else {
+          account.totalPnL = account.realizedPnL + openPnL;
+          account.currentBalance = account.allocatedBalance + account.totalPnL;
+          account.equitySource = account.equitySource || 'journal';
+        }
+      } catch {
+        account.totalPnL = account.realizedPnL + openPnL;
+        account.currentBalance = account.allocatedBalance + account.totalPnL;
+        account.equitySource = account.equitySource || 'journal';
+      }
       account.dailyPnl = account.dailyRealizedPnL + openPnL;
-      account.currentBalance = account.allocatedBalance + account.totalPnL;
 
       const drawdownPct = (account.allocatedBalance - account.currentBalance) / account.allocatedBalance;
       if (drawdownPct >= (this.config.killSwitchDrawdownPct ?? 0.05)) {
@@ -1141,7 +1209,14 @@ export class LiveTradingService extends EventEmitter {
       activePortfolios: this.getAllModelAccounts().map((a) => ({
         modelId: Number(a.modelId),
         modelName: a.modelName,
+        allocatedBalance: a.allocatedBalance,
         currentBalance: a.currentBalance,
+        realizedPnL: a.realizedPnL,
+        totalPnL: a.totalPnL,
+        dailyPnl: a.dailyPnl,
+        equitySource: a.equitySource || 'allocation',
+        tradesToday: a.tradesToday,
+        consecutiveLosses: a.consecutiveLosses,
         positionsCount: a.positions.length,
         positions: a.positions.map((p) => ({
           symbol: p.symbol,

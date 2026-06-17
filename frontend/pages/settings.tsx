@@ -106,6 +106,7 @@ export default function Settings() {
   const [settingsAudit, setSettingsAudit] = useState<any[]>([]);
   const [workerStatus, setWorkerStatus] = useState<any>(null);
   const [learningReviewRunning, setLearningReviewRunning] = useState(false);
+  const [learningReviewResult, setLearningReviewResult] = useState<any>(null);
   const [selfLearningStatus, setSelfLearningStatus] = useState<any>(null);
   const [selfLearningEnabled, setSelfLearningEnabled] = useState(true);
   const [selfLearningIntervalHours, setSelfLearningIntervalHours] = useState(6);
@@ -1027,14 +1028,16 @@ export default function Settings() {
       return;
     }
     setLearningReviewRunning(true);
+    setLearningReviewResult(null);
     setBanner(null);
     try {
       const res = await fetchWithTimeout(`${API}/helix/self-learning/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
-      }, 30000);
+      }, 60000);
       const data = await res.json();
       if (!res.ok || data?.success === false) throw new Error(data?.error || data?.reason || 'self_learning_review_failed');
+      setLearningReviewResult(data);
       setSelfLearningStatus({
         success: true,
         running: false,
@@ -1051,8 +1054,24 @@ export default function Settings() {
         lastResult: data,
       });
       setLiveGovernanceOutput(data);
-      setBanner({ type: 'success', text: 'Guarded self-learning review completed and audit was written.' });
+      const decision = String(data?.record?.result?.decision || 'completed').toUpperCase();
+      const reasons = Array.isArray(data?.record?.result?.reasons) ? data.record.result.reasons : [];
+      setBanner({ type: 'success', text: `Guarded self-learning review completed: ${decision}${reasons.length ? ` (${reasons.slice(0, 2).join(', ')})` : ''}.` });
+
+      const [statusRes, auditRes] = await Promise.allSettled([
+        fetchWithTimeout(`${API}/helix/self-learning/status`, {}, 5000),
+        fetchWithTimeout(`${API}/helix/promotion-audit?limit=30`, { headers: { ...authHeaders } }, 5000),
+      ]);
+      if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
+        const statusData = await statusRes.value.json().catch(() => null);
+        if (statusData?.success) setSelfLearningStatus(statusData);
+      }
+      if (auditRes.status === 'fulfilled' && auditRes.value.ok) {
+        const auditData = await auditRes.value.json().catch(() => null);
+        if (Array.isArray(auditData?.entries)) setExecutionAudit(auditData.entries);
+      }
     } catch (e: any) {
+      setLearningReviewResult({ success: false, error: e?.message || 'Self-learning review failed.' });
       setBanner({ type: 'error', text: e?.message || 'Self-learning review failed.' });
     } finally {
       setLearningReviewRunning(false);
@@ -1204,6 +1223,61 @@ export default function Settings() {
     },
   };
 
+  const settingsOverviewCards = [
+    {
+      label: 'Exchange Auth',
+      value: status?.exchangeAuthConnected ? 'VERIFIED' : 'CHECKING',
+      tone: status?.exchangeAuthConnected ? 'green' : 'amber',
+      detail: status?.exchangeAuthConnected ? 'Binance credentials validated' : 'Waiting for exchange auth check',
+    },
+    {
+      label: 'Worker State',
+      value: String(workerStatus?.health || 'idle').toUpperCase(),
+      tone: workerStatus?.health === 'HEALTHY' ? 'green' : workerStatus?.health === 'STALE' ? 'amber' : 'cyan',
+      detail: workerStatus?.lastRunAt ? `Last cycle ${new Date(workerStatus.lastRunAt).toLocaleTimeString()}` : 'No worker cycle reported yet',
+    },
+    {
+      label: 'Alert Routing',
+      value: notificationsTelegram ? 'TELEGRAM ON' : notificationsPush ? 'PUSH ON' : 'QUIET',
+      tone: notificationsTelegram || notificationsPush ? 'cyan' : 'amber',
+      detail: notificationsTelegram ? `Severity floor ${telegramMinSeverity.toUpperCase()}` : 'Notifications can be armed in Signal Relay',
+    },
+    {
+      label: 'Risk Posture',
+      value: String(briefing?.recommendedRiskLevel || 'normal').toUpperCase(),
+      tone: String(briefing?.recommendedRiskLevel || 'normal').toLowerCase() === 'normal' ? 'green' : 'amber',
+      detail: `Regime ${String(market.regime || 'unknown').toUpperCase()} • ${Number(market.regimeConfidence || 0)}% confidence`,
+    },
+  ];
+
+  const tabFocusCards: Record<SettingsTab, Array<{ label: string; value: string; detail: string; tone: 'green' | 'amber' | 'red' | 'cyan' }>> = {
+    General: [
+      { label: 'Execution Boundary', value: paperTrading ? 'PAPER' : testnet ? 'TESTNET' : 'LIVE', detail: paperTrading ? 'Orders are simulated' : testnet ? 'Binance testnet active' : 'Real Binance routing', tone: paperTrading || testnet ? 'amber' : 'green' },
+      { label: 'Brain Routing', value: aiProvider.toUpperCase(), detail: deepseekDecisionEnabled ? 'AI decision gate is active' : 'AI gate is disabled', tone: deepseekDecisionEnabled ? 'cyan' : 'amber' },
+      { label: 'Credential State', value: hasMasterApiKey && hasMasterSecretKey ? 'READY' : 'INCOMPLETE', detail: hasMasterApiKey && hasMasterSecretKey ? 'Exchange keys are saved' : 'Add Binance key and secret', tone: hasMasterApiKey && hasMasterSecretKey ? 'green' : 'red' },
+    ],
+    Trading: [
+      { label: 'Global Gate', value: globalTradingEnabled ? 'ENABLED' : 'DISABLED', detail: globalTradingEnabled ? 'Runtime can accept fresh entries' : 'Fresh entries are blocked', tone: globalTradingEnabled ? 'green' : 'red' },
+      { label: 'Portfolio Engine', value: portfolioTradingEnabled ? 'ARMED' : 'LOCKED', detail: portfolioTradingEnabled ? 'DeepSeek portfolio may execute' : 'Portfolio execution is blocked', tone: portfolioTradingEnabled ? 'green' : 'amber' },
+      { label: 'Confirmation', value: tradeConfirmation ? 'MANUAL' : 'AUTO', detail: tradeConfirmation ? 'Orders require manual confirmation' : 'Execution proceeds automatically when allowed', tone: tradeConfirmation ? 'amber' : 'cyan' },
+    ],
+    'Risk Management': [
+      { label: 'Daily Loss Cap', value: `${maxDailyLossPct}%`, detail: `Kill switch at ${killSwitchDrawdownPct}% drawdown`, tone: maxDailyLossPct <= 3 ? 'green' : 'amber' },
+      { label: 'Winner Mode', value: letWinnersRunEnabled ? 'RUNNER ON' : 'STATIC TP', detail: letWinnersRunEnabled ? `${runnerPartialTakeProfitPct}% partial • ${runnerTrailPct * 100}% trail` : 'Close full size at TP', tone: letWinnersRunEnabled ? 'green' : 'amber' },
+      { label: 'Position Budget', value: `${maxPositionSizePct}%`, detail: `${maxOpenPositions} max open • ${maxTradesPerDay} trades/day`, tone: maxPositionSizePct <= 10 ? 'green' : 'amber' },
+    ],
+    Notifications: [
+      { label: 'Telegram', value: notificationsTelegram ? 'ARMED' : 'OFF', detail: notificationsTelegram ? `User ${telegramUserId || 'not set'}` : 'Telegram delivery disabled', tone: notificationsTelegram ? 'green' : 'amber' },
+      { label: 'Rate Limit', value: `${telegramRateLimitSec}s`, detail: `Severity floor ${telegramMinSeverity.toUpperCase()}`, tone: telegramRateLimitSec <= 120 ? 'cyan' : 'amber' },
+      { label: 'Delivery Mix', value: `${notificationsPush ? 'Push' : '—'} ${notificationsEmail ? 'Email' : ''}`.trim() || 'None', detail: notificationEmail ? `Email ${notificationEmail}` : 'Only enabled channels will receive alerts', tone: notificationsPush || notificationsEmail || notificationsTelegram ? 'green' : 'amber' },
+    ],
+    Advanced: [
+      { label: 'Evidence', value: `${evidenceCount}/${evidenceTarget}`, detail: `${learningEvidencePct}% readiness`, tone: evidenceCount >= evidenceTarget ? 'green' : 'cyan' },
+      { label: 'Scheduler', value: selfLearningEnabled ? 'ARMED' : 'PAUSED', detail: selfLearningStatus?.nextRunAt ? `Next ${new Date(selfLearningStatus.nextRunAt).toLocaleString()}` : 'Waiting for next schedule', tone: selfLearningEnabled ? 'green' : 'amber' },
+      { label: 'Promotion Mode', value: selfLearningAllowLivePromotion ? 'LIVE' : 'DRY RUN', detail: selfLearningAllowLivePromotion ? 'Live promotion allowed with gates' : 'Promotion stays guarded and manual', tone: selfLearningAllowLivePromotion ? 'amber' : 'cyan' },
+    ],
+  };
+
   return (
     <>
       <Head>
@@ -1211,7 +1285,7 @@ export default function Settings() {
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
 
-      <div className="helix-shell min-h-screen text-slate-100" style={{ fontFamily: 'IBM Plex Sans, Space Grotesk, sans-serif' }}>
+      <div className="helix-shell helix-settings-shell min-h-screen text-slate-100" style={{ fontFamily: 'IBM Plex Sans, Space Grotesk, sans-serif' }}>
         <div className="mx-auto max-w-[1500px] px-4 md:px-8 py-5">
           <header className="helix-command-bar rounded-3xl border border-white/10 bg-slate-950/70 backdrop-blur-xl p-4 md:p-5 shadow-2xl shadow-black/40">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -1282,11 +1356,56 @@ export default function Settings() {
                   </div>
                   <div className="text-xs text-slate-500">{refreshing ? 'Refreshing...' : `Last updated: ${lastUpdated || '—'}`}</div>
                 </div>
-                <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4">
+              <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4">
                   {settingsHealthCards.map((card) => (
                     <StatusTile key={card.label} {...card} />
                   ))}
                 </div>
+              </div>
+              <div className="lg:col-span-12 grid grid-cols-1 gap-3 xl:grid-cols-[1.35fr_1fr]">
+                <section className="helix-settings-hero rounded-3xl border border-cyan-300/15 p-5">
+                  <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+                    <div className="max-w-3xl">
+                      <div className="text-[10px] uppercase tracking-[0.3em] text-cyan-200/75">{tabDetails[activeTab].eyebrow}</div>
+                      <div className="mt-2 text-3xl font-black tracking-tight text-slate-50" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
+                        {tabDetails[activeTab].title}
+                      </div>
+                      <div className="mt-3 text-sm leading-7 text-slate-300">
+                        {tabDetails[activeTab].summary}
+                      </div>
+                    </div>
+                    <div className="helix-settings-focus rounded-2xl border border-white/10 px-4 py-4 xl:max-w-[320px]">
+                      <div className="text-[10px] uppercase tracking-[0.24em] text-cyan-200/75">Control posture</div>
+                      <div className="mt-2 text-xl font-black text-slate-50">
+                        {settingsLoaded ? (globalTradingEnabled && portfolioTradingEnabled ? 'Armed with guardrails' : 'Configured but gated') : 'Syncing settings'}
+                      </div>
+                      <div className="mt-2 text-sm leading-6 text-slate-300">
+                        {activeTab === 'Advanced'
+                          ? selfLearningOverview.nextBestAction
+                          : activeTab === 'Risk Management'
+                            ? 'Risk rules here are hard backend limits. DeepSeek can recommend, but it cannot override these caps.'
+                            : activeTab === 'Notifications'
+                              ? 'Alert routing should stay selective: trade events, API health, risk shifts, and learning review outcomes.'
+                              : activeTab === 'Trading'
+                                ? 'Execution controls should make intent obvious: whether entries are allowed, confirmed, simulated, or blocked.'
+                                : 'Keys stay masked, saves are intentional, and provider routing should stay explicit.'}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-3">
+                    {tabFocusCards[activeTab].map((card) => (
+                      <CommandFocusCard key={`${activeTab}-${card.label}`} {...card} />
+                    ))}
+                  </div>
+                </section>
+                <section className="rounded-3xl border border-white/10 bg-slate-950/55 p-4 shadow-xl shadow-black/30 backdrop-blur-xl">
+                  <div className="text-[10px] uppercase tracking-[0.28em] text-cyan-200/70">Command overview</div>
+                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {settingsOverviewCards.map((card) => (
+                      <StatusTile key={`overview-${card.label}`} {...card} />
+                    ))}
+                  </div>
+                </section>
               </div>
               {settingsLoaded && paperTrading && (
                 <div className="lg:col-span-12 rounded-2xl border border-amber-500/40 bg-amber-900/30 px-4 py-3 text-sm text-amber-100">
@@ -1296,7 +1415,7 @@ export default function Settings() {
               {lastSavedAt && <div className="lg:col-span-12 text-xs text-emerald-300">Last saved: {lastSavedAt}</div>}
 
               {activeTab === 'General' && (
-              <Panel className="lg:col-span-8" title="General">
+              <Panel className="lg:col-span-8" title="General" subtitle="Exchange identity, admin access, and AI-provider routing.">
                 <SectionIntro eyebrow="Access Layer" title="Keys stay masked, saves are intentional" text="Credentials are never persisted in browser storage. Masked values mean the backend already has a saved secret; leaving them unchanged will not wipe the stored key." />
                 <TextField label="Admin Key" type="password" value={adminKey} onChange={setAdminKey} />
                 <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
@@ -1328,7 +1447,7 @@ export default function Settings() {
               )}
 
               {activeTab === 'Trading' && (
-              <Panel className="lg:col-span-6" title="Trading">
+              <Panel className="lg:col-span-6" title="Trading" subtitle="Execution behavior, operator toggles, and order-handling preferences.">
                 <SectionIntro eyebrow="Execution Behavior" title="How orders should behave" text="These settings control execution UX and basic order handling. Hard risk rules still live in Risk Management." />
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                   <SelectField
@@ -1351,7 +1470,7 @@ export default function Settings() {
               )}
 
               {activeTab === 'Risk Management' && (
-              <Panel className="lg:col-span-8" title="Risk Management">
+              <Panel className="lg:col-span-8" title="Risk Management" subtitle="Hard limits, BE+ buffers, runner rules, and capital-preservation controls.">
                 <SectionIntro eyebrow="Hard Guardrails" title="The system protects capital before seeking trades" text="These are backend-enforced limits. DeepSeek can recommend, but it cannot override these caps." />
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
                   <NumberField label="Max Daily Loss (%)" value={maxDailyLossPct} setValue={setMaxDailyLossPct} step="0.1" />
@@ -1411,7 +1530,7 @@ export default function Settings() {
               )}
 
               {(activeTab === 'Trading' || activeTab === 'Advanced') && (
-              <Panel className="lg:col-span-6" title="Operations">
+              <Panel className="lg:col-span-6" title="Operations" subtitle="Live interventions, health checks, and account refresh tools.">
                 <SectionIntro eyebrow="Live Ops" title="Manual operational controls" text="Use these for intervention, refresh, and API health checks. Close All Positions is intentionally visible and high-friction colored." />
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <button className="rounded-lg border border-red-400/40 bg-red-900/30 hover:bg-red-900/50 px-3 py-2 text-sm" onClick={closeAllPositions}>Close All Positions</button>
@@ -1431,7 +1550,7 @@ export default function Settings() {
               )}
 
               {activeTab === 'Notifications' && (
-              <Panel className="lg:col-span-8" title="Notifications">
+              <Panel className="lg:col-span-8" title="Notifications" subtitle="Alert routing, severity floors, and Telegram/email delivery controls.">
                 <SectionIntro eyebrow="Alert Routing" title="Keep only useful alerts loud" text="Telegram should carry trade opens/closes, kill switches, API disconnects, and self-learning reviews without spamming normal noise." />
                 <div className="space-y-3">
                   <Toggle label="Push Alerts" checked={notificationsPush} onChange={setNotificationsPush} onLabel="On" offLabel="Off" />
@@ -1451,7 +1570,7 @@ export default function Settings() {
               )}
 
               {(activeTab === 'General' || activeTab === 'Advanced') && (
-              <Panel className="lg:col-span-4" title="Active Services">
+              <Panel className="lg:col-span-4" title="Active Services" subtitle="Live runtime heartbeat for the local frontend and backend surfaces.">
                 <SectionIntro eyebrow="Runtime" title="Service heartbeat" text="Quick local health readout for the running backend and frontend processes." compact />
                 <ServiceRow name="Backend Engine" state={status ? (Boolean(status?.engineConnected) ? 'running' : 'down') : 'unknown'} meta={`Last update ${lastUpdated || '—'}`} />
                 <ServiceRow name="Frontend Server" state={lastUpdated ? 'running' : 'unknown'} meta={`Auto-refresh ${refreshing ? 'active' : 'idle'}`} />
@@ -1462,7 +1581,7 @@ export default function Settings() {
               )}
 
               {activeTab === 'Advanced' && (
-              <Panel className="lg:col-span-8" title="Self-Learning Engine">
+              <Panel className="lg:col-span-8" title="Self-Learning Engine" subtitle="Observe, evaluate, and only promote changes when evidence and governance agree.">
                 <div className="rounded-2xl border border-cyan-300/20 bg-cyan-500/[0.07] p-4">
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                     <div>
@@ -1514,15 +1633,59 @@ export default function Settings() {
                       <div className="text-[10px] uppercase tracking-[0.24em] text-emerald-200/80">Recommended next action</div>
                       <div className="mt-1 text-sm leading-relaxed text-slate-200">{selfLearningOverview.nextBestAction}</div>
                       <div className="mt-2 text-xs text-slate-400">Current playbook: {labRecommendation}</div>
+                      {!adminKey.trim() && (
+                        <div className="mt-2 rounded-lg border border-amber-300/25 bg-amber-400/[0.08] px-3 py-2 text-xs text-amber-100">
+                          Enter the Admin Key in General settings before running a manual guarded review.
+                        </div>
+                      )}
                     </div>
                     <button
                       className="rounded-xl border border-emerald-300/40 bg-emerald-500/15 px-4 py-3 text-sm font-bold text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-50"
                       onClick={runSelfLearningReview}
-                      disabled={learningReviewRunning}
+                      disabled={learningReviewRunning || !adminKey.trim()}
                     >
                       {learningReviewRunning ? 'Review Running...' : 'Run Guarded Learning Review'}
                     </button>
                   </div>
+                  {(learningReviewRunning || learningReviewResult || selfLearningStatus?.lastResult) && (
+                    <div className={`mt-4 rounded-2xl border p-4 text-sm ${learningReviewResult?.success === false ? 'border-red-300/25 bg-red-400/[0.08]' : learningReviewRunning ? 'border-cyan-300/25 bg-cyan-400/[0.08]' : 'border-emerald-300/25 bg-black/25'}`}>
+                      {(() => {
+                        const result = learningReviewResult || selfLearningStatus?.lastResult || {};
+                        const record = result?.record?.result || {};
+                        const decision = String(record?.decision || (learningReviewRunning ? 'RUNNING' : '—')).toUpperCase();
+                        const reasons = Array.isArray(record?.reasons) ? record.reasons : [];
+                        const evidence = result?.evidence || selfLearningStatus?.evidence || {};
+                        const completedAt = result?.completedAt || selfLearningStatus?.lastRunAt;
+                        return (
+                          <div>
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div>
+                                <div className="text-[10px] uppercase tracking-[0.24em] text-slate-400">Latest guarded review result</div>
+                                <div className="mt-1 text-xl font-black text-slate-50">{decision}</div>
+                              </div>
+                              <div className="text-right text-xs text-slate-400">
+                                {learningReviewRunning ? 'Running governance, walk-forward, and risk gates...' : completedAt ? new Date(completedAt).toLocaleString() : 'Waiting for first result'}
+                              </div>
+                            </div>
+                            {result?.error ? (
+                              <div className="mt-3 rounded-xl border border-red-300/20 bg-red-500/[0.08] p-3 text-red-100">{result.error}</div>
+                            ) : (
+                              <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+                                <LearningMetric label="Closed Trades" value={`${Number(evidence.closedTrades || 0)}/${Number(evidence.requiredClosedTrades || evidenceTarget || 0)}`} />
+                                <LearningMetric label="Risk Change" value={result?.riskAdjustment?.applied ? 'APPLIED' : 'NONE'} />
+                                <LearningMetric label="Next Action" value={String(result?.nextAction || '—').replace(/_/g, ' ').toUpperCase()} />
+                              </div>
+                            )}
+                            {reasons.length > 0 && (
+                              <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.035] p-3 text-xs text-slate-300">
+                                <span className="font-semibold text-slate-100">Reasons:</span> {reasons.join(', ')}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
                 </div>
 
                 <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1657,13 +1820,16 @@ export default function Settings() {
   );
 }
 
-function Panel({ title, className = '', children }: { title: string; className?: string; children: React.ReactNode }) {
+function Panel({ title, subtitle, className = '', children }: { title: string; subtitle?: string; className?: string; children: React.ReactNode }) {
   return (
-    <section className={`relative overflow-hidden rounded-3xl border border-white/10 bg-slate-950/65 p-4 shadow-2xl shadow-black/35 backdrop-blur-xl ${className}`}>
+    <section className={`helix-settings-panel relative overflow-hidden rounded-3xl border border-white/10 bg-slate-950/65 p-4 shadow-2xl shadow-black/35 backdrop-blur-xl ${className}`}>
       <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-300/50 to-transparent" />
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <h2 className="text-2xl font-black tracking-tight text-slate-50" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{title}</h2>
-        <span className="h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_18px_rgba(103,232,249,0.85)]" />
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-black tracking-tight text-slate-50" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{title}</h2>
+          {subtitle ? <div className="mt-1 max-w-3xl text-xs leading-relaxed text-slate-400">{subtitle}</div> : null}
+        </div>
+        <span className="mt-2 h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_18px_rgba(103,232,249,0.85)]" />
       </div>
       {children}
     </section>
@@ -1689,10 +1855,27 @@ function StatusTile({ label, value, detail, tone }: { label: string; value: stri
         ? 'border-amber-300/25 bg-amber-400/[0.07] text-amber-200'
         : 'border-cyan-300/25 bg-cyan-400/[0.07] text-cyan-200';
   return (
-    <div className={`rounded-2xl border p-3 ${toneClass}`}>
+    <div className={`helix-settings-tile rounded-2xl border p-3 ${toneClass}`}>
       <div className="text-[10px] uppercase tracking-[0.2em] opacity-70">{label}</div>
       <div className="mt-1 truncate text-lg font-black text-slate-50">{value}</div>
       <div className="mt-1 truncate text-[11px] text-slate-400">{detail}</div>
+    </div>
+  );
+}
+
+function CommandFocusCard({ label, value, detail, tone }: { label: string; value: string; detail: string; tone: 'green' | 'amber' | 'red' | 'cyan' }) {
+  const toneClass = tone === 'green'
+    ? 'border-emerald-300/20 bg-emerald-400/[0.07]'
+    : tone === 'amber'
+      ? 'border-amber-300/20 bg-amber-400/[0.07]'
+      : tone === 'red'
+        ? 'border-red-300/20 bg-red-400/[0.07]'
+        : 'border-cyan-300/20 bg-cyan-400/[0.07]';
+  return (
+    <div className={`helix-settings-focus-card rounded-2xl border px-4 py-4 ${toneClass}`}>
+      <div className="text-[10px] uppercase tracking-[0.24em] text-slate-400">{label}</div>
+      <div className="mt-2 text-xl font-black text-slate-50" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{value}</div>
+      <div className="mt-2 text-sm leading-6 text-slate-300">{detail}</div>
     </div>
   );
 }
@@ -1704,7 +1887,7 @@ function TextField({ label, value, onChange, type = 'text', placeholder = '', st
       ? 'bg-slate-500/20 text-slate-200 border-slate-400/40'
       : 'bg-amber-500/20 text-amber-200 border-amber-400/40';
   return (
-    <label className="mb-2 block rounded-2xl border border-white/10 bg-black/20 p-3 transition focus-within:border-cyan-300/40 focus-within:bg-cyan-400/[0.03]">
+    <label className="helix-settings-field mb-2 block rounded-2xl border border-white/10 bg-black/20 p-3 transition focus-within:border-cyan-300/40 focus-within:bg-cyan-400/[0.03]">
       <div className="mb-2 flex items-center justify-between text-sm text-slate-300">
         <span className="font-semibold">{label}</span>
         {status && <span className={`text-[10px] rounded-full border px-2 py-0.5 ${statusTone}`}>{status}</span>}
@@ -1716,7 +1899,7 @@ function TextField({ label, value, onChange, type = 'text', placeholder = '', st
 
 function NumberField({ label, value, setValue, step = '1' }: { label: string; value: number; setValue: (v: number) => void; step?: string }) {
   return (
-    <label className="mb-2 block rounded-2xl border border-white/10 bg-black/20 p-3 transition focus-within:border-cyan-300/40 focus-within:bg-cyan-400/[0.03]">
+    <label className="helix-settings-field mb-2 block rounded-2xl border border-white/10 bg-black/20 p-3 transition focus-within:border-cyan-300/40 focus-within:bg-cyan-400/[0.03]">
       <div className="mb-2 text-sm font-semibold text-slate-300">{label}</div>
       <input type="number" step={step} className="w-full rounded-xl border border-white/15 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-300/50" value={value} onChange={(e) => setValue(Number(e.target.value))} />
     </label>
@@ -1725,7 +1908,7 @@ function NumberField({ label, value, setValue, step = '1' }: { label: string; va
 
 function SelectField({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (v: string) => void }) {
   return (
-    <label className="mb-2 block rounded-2xl border border-white/10 bg-black/20 p-3 transition focus-within:border-cyan-300/40 focus-within:bg-cyan-400/[0.03]">
+    <label className="helix-settings-field mb-2 block rounded-2xl border border-white/10 bg-black/20 p-3 transition focus-within:border-cyan-300/40 focus-within:bg-cyan-400/[0.03]">
       <div className="mb-2 text-sm font-semibold text-slate-300">{label}</div>
       <select className="w-full rounded-xl border border-white/15 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-300/50" value={value} onChange={(e) => onChange(e.target.value)}>
         {options.map((o) => <option key={o} value={o}>{o}</option>)}
@@ -1736,7 +1919,7 @@ function SelectField({ label, value, options, onChange }: { label: string; value
 
 function Toggle({ label, checked, onChange, onLabel, offLabel }: { label: string; checked: boolean; onChange: (v: boolean) => void; onLabel: string; offLabel: string }) {
   return (
-    <div className={`flex items-center justify-between rounded-2xl border px-3 py-3 transition ${checked ? 'border-emerald-300/20 bg-emerald-400/[0.055]' : 'border-white/10 bg-white/[0.03]'}`}>
+    <div className={`helix-settings-toggle flex items-center justify-between rounded-2xl border px-3 py-3 transition ${checked ? 'border-emerald-300/20 bg-emerald-400/[0.055]' : 'border-white/10 bg-white/[0.03]'}`}>
       <span className="text-sm font-semibold text-slate-200">{label}</span>
       <button
         type="button"
@@ -1752,7 +1935,7 @@ function Toggle({ label, checked, onChange, onLabel, offLabel }: { label: string
 
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.035] px-3 py-3">
+    <div className="helix-settings-tile rounded-2xl border border-white/10 bg-white/[0.035] px-3 py-3">
       <div className="text-[10px] uppercase tracking-[0.2em] text-slate-500">{label}</div>
       <div className="mt-1 text-sm font-black text-slate-100">{value}</div>
     </div>
@@ -1767,7 +1950,7 @@ function ServiceRow({ name, state, meta }: { name: string; state: 'running' | 'd
       : 'bg-amber-500/30 text-amber-200';
   const label = state === 'running' ? 'Running' : state === 'down' ? 'Down' : 'Unknown';
   return (
-    <div className="mb-2 rounded-2xl border border-white/10 bg-white/[0.035] px-3 py-3">
+    <div className="helix-settings-tile mb-2 rounded-2xl border border-white/10 bg-white/[0.035] px-3 py-3">
       <div className="flex items-center justify-between">
         <span className="text-sm font-semibold text-slate-200">{name}</span>
         <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${badge}`}>{label}</span>
@@ -1779,7 +1962,7 @@ function ServiceRow({ name, state, meta }: { name: string; state: 'running' | 'd
 
 function LearningMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl border border-white/10 bg-white/[0.035] p-3">
+    <div className="helix-settings-tile rounded-xl border border-white/10 bg-white/[0.035] p-3">
       <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
       <div className="mt-1 truncate text-sm font-black text-slate-100">{value}</div>
     </div>
@@ -1790,7 +1973,7 @@ function TraderSummaryCard({ summary }: { summary: any }) {
   const edgeTone = summary.expectedEdgeBps > 0 ? 'text-emerald-300' : 'text-red-300';
   const actionTone = summary.actionNow.includes('TRADE') ? 'text-emerald-200' : 'text-amber-200';
   return (
-    <div className="rounded-lg border border-white/10 bg-slate-950/70 p-3">
+    <div className="helix-settings-panel rounded-3xl border border-white/10 bg-slate-950/70 p-4">
       <div className="text-xs text-slate-400 mb-2">Trader Summary (Human View)</div>
       <div className={`text-sm font-semibold ${actionTone}`}>Action now: {summary.actionNow}</div>
       <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
@@ -1811,7 +1994,7 @@ function EvidenceCard({ evidenceCount, evidenceTarget, marketRegime }: { evidenc
   const pct = evidenceTarget > 0 ? Math.min(100, Math.round((evidenceCount / evidenceTarget) * 100)) : 0;
   const ready = evidenceCount >= evidenceTarget;
   return (
-    <div className="rounded-lg border border-white/10 bg-slate-950/70 p-3">
+    <div className="helix-settings-panel rounded-3xl border border-white/10 bg-slate-950/70 p-4">
       <div className="text-xs text-slate-400 mb-2">Governance Readiness</div>
       <div className={`text-sm font-semibold ${ready ? 'text-emerald-200' : 'text-amber-200'}`}>
         {ready ? 'Evidence threshold met' : 'Not enough evidence yet'} ({evidenceCount}/{evidenceTarget} closed trades)
@@ -1831,7 +2014,7 @@ function money(v: number) {
 
 function JsonBlock({ title, value }: { title: string; value: any }) {
   return (
-    <div className="rounded-lg border border-white/10 bg-slate-950/70 p-3">
+    <div className="helix-settings-panel rounded-3xl border border-white/10 bg-slate-950/70 p-4">
       <div className="text-xs text-slate-400 mb-2">{title}</div>
       <pre className="text-xs text-slate-200 overflow-auto max-h-64 whitespace-pre-wrap">{JSON.stringify(value, null, 2)}</pre>
     </div>

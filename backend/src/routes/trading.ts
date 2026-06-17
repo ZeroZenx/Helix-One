@@ -240,7 +240,7 @@ function humanizeWorkerReason(reason: string) {
   if (!r) return 'No reason available.';
   if (r === 'not_started') return 'Worker has not started yet.';
   if (r === 'service_unavailable') return 'Trading service is unavailable right now.';
-  if (r === 'trading_or_portfolio_disabled') return 'Trading is currently disabled in settings.';
+  if (r === 'trading_or_portfolio_disabled') return 'Global trading or DeepSeek Portfolio Trading is disabled in settings.';
   if (r === 'trade_confirmation_required') return 'Trade confirmation is enabled. Auto-execution is blocked until manually confirmed.';
   if (r === 'deepseek_not_configured') return 'DeepSeek API key is missing or not configured.';
   if (r === 'openai_not_configured') return 'OpenAI API key is missing or not configured.';
@@ -783,10 +783,21 @@ function startExecutionWorker() {
         return;
       }
 
-      const exchangeAccount = await svc.getExchangeAccountInfo();
-      const balance = Number(exchangeAccount?.totalWalletBalance || 0);
-      const availableMargin = Number(exchangeAccount?.availableBalance || 0);
       const portfolio = svc.getModelAccount('1');
+      let balance = Number(portfolio?.currentBalance || portfolio?.allocatedBalance || 0);
+      let availableMargin = 0;
+      let exchangeRuntimeDegraded = false;
+
+      try {
+        const exchangeAccount = await svc.getExchangeAccountInfo();
+        balance = Number(exchangeAccount?.totalWalletBalance || balance || 0);
+        availableMargin = Number(exchangeAccount?.availableBalance || 0);
+      } catch (error: any) {
+        exchangeRuntimeDegraded = true;
+        logger.warn('worker_exchange_account_fallback', {
+          error: error?.message || 'unknown',
+        });
+      }
 
       const executionSymbols = getExecutionSymbols();
       const snapshot = await riskIntel.getSnapshot(executionSymbols);
@@ -805,7 +816,10 @@ function startExecutionWorker() {
           volatilityState: snapshot.volatilityState,
         },
         news: snapshot.newsHeadlines,
-        notes: snapshot.riskFlags,
+        notes: [
+          ...(snapshot.riskFlags || []),
+          ...(exchangeRuntimeDegraded ? ['exchange_account_fetch_degraded_using_portfolio_fallback'] : []),
+        ],
         maxTradesToday: s.riskSettings.maxTradesPerDay,
         riskSettings: {
           maxDailyLossPct: s.riskSettings.maxDailyLossPct,
@@ -1219,29 +1233,67 @@ function startExecutionWorker() {
   setInterval(runCycle, 60_000);
 }
 
-async function ensureTradingService() {
-  if (tradingService) return tradingService;
+function isTradingServiceHealthy(svc: LiveTradingService | null): boolean {
+  if (!svc) return false;
+  try {
+    const status = svc.getTradingStatus();
+    return Boolean(status.connected) && Number(status.accounts || 0) > 0;
+  } catch {
+    return false;
+  }
+}
 
+async function ensureTradingService(forceReinit = false) {
   const s = settingsStore.get();
-  if (!s.masterApiKey || !s.masterSecretKey) return null;
+  if (!s.masterApiKey || !s.masterSecretKey) {
+    tradingService = null;
+    return null;
+  }
 
-  tradingService = new LiveTradingService(
+  if (!forceReinit && isTradingServiceHealthy(tradingService)) {
+    return tradingService;
+  }
+
+  if (tradingService && !forceReinit) {
+    try {
+      const stale = tradingService.getTradingStatus();
+      logger.warn('trading_service_reinit_required', {
+        connected: stale.connected,
+        accounts: stale.accounts,
+        enabled: stale.enabled,
+      });
+    } catch {
+      logger.warn('trading_service_reinit_required', { reason: 'status_probe_failed' });
+    }
+  }
+
+  const nextService = new LiveTradingService(
     { apiKey: s.masterApiKey, secretKey: s.masterSecretKey, testnet: s.testnet },
     buildTradingConfigFromSettings()
   );
 
-  await tradingService.initialize();
+  try {
+    await nextService.initialize();
 
-  // DeepSeek-only account
-  const deepseekAccount = s.modelAccounts.find((m) => m.modelId === 1) || {
-    modelId: 1,
-    modelName: 'DeepSeek Chat V3.1',
-    balance: 10000,
-    tradingEnabled: false,
-  };
+    // DeepSeek-only account
+    const deepseekAccount = s.modelAccounts.find((m) => m.modelId === 1) || {
+      modelId: 1,
+      modelName: 'DeepSeek Chat V3.1',
+      balance: 10000,
+      tradingEnabled: false,
+    };
 
-  tradingService.createModelAccount('1', 'DeepSeek Chat V3.1', deepseekAccount.balance || 10000);
-  tradingService.setTradingEnabled(s.tradingEnabled);
+    nextService.createModelAccount('1', 'DeepSeek Chat V3.1', deepseekAccount.balance || 10000);
+    nextService.setTradingEnabled(s.tradingEnabled);
+    tradingService = nextService;
+  } catch (error: any) {
+    tradingService = null;
+    logger.error('trading_service_init_failed', {
+      error: error?.message || 'unknown',
+      testnet: Boolean(s.testnet),
+    });
+    throw error;
+  }
 
   tradingService.on('trade_open', async (event: any) => {
     await sendTelegramAlert(
@@ -1314,7 +1366,8 @@ router.get('/status', async (req, res) => {
     }
     await svc.updatePositions();
     const tradingStatus = svc.getTradingStatus();
-    const portfolioEnabled = tradingStatus.activePortfolios.some((p) => p.tradingEnabled);
+    const currentSettings = settingsStore.get();
+    const portfolioEnabled = Boolean(currentSettings.modelAccounts?.[0]?.tradingEnabled);
     let exchangeAuthConnected = false;
     let exchangeAuthError: string | null = null;
     try {
@@ -1381,13 +1434,13 @@ router.get('/symbol-profiles', async (_req, res) => {
 router.get('/worker-status', async (req, res) => {
   let effectivePositionFeedback = lastPositionFeedback;
 
-  // Fallback hydration: if monitor cache is empty but there are live positions,
-  // rebuild feedback at response-time so UI is never blank for open positions.
+  // Keep this route lightweight. It should always return the last known worker
+  // and AI heartbeat state even if exchange refreshes are slow or degraded.
+  // Use locally tracked positions only; do not block on live exchange calls here.
   if (!effectivePositionFeedback.length) {
     try {
       const svc = await ensureTradingService();
       if (svc) {
-        await svc.updatePositions();
         const openPositions = svc.getModelAccount('1')?.positions || [];
         if (openPositions.length > 0) {
           effectivePositionFeedback = openPositions.slice(0, 5).map((p) => buildPositionFeedback(p));
@@ -2377,5 +2430,11 @@ router.get('/settings-audit', authenticateAdmin, async (req, res) => {
 });
 
 startSelfLearningScheduler();
+
+void ensureTradingService().catch((error: any) => {
+  logger.error('trading_service_bootstrap_failed', {
+    error: error?.message || 'unknown',
+  });
+});
 
 export default router;
